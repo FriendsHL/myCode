@@ -215,6 +215,11 @@ lifecycle:
       # Char length cap on ScriptHandler.scriptBody. Paired with save-time validation in AgentService.
       max-script-body-chars: 4096
 
+# Application-wide settings (P12+: scheduler / channel push uses dashboard-url to build
+# clickable links in feishu / telegram messages — must be the operator-facing FE host).
+app:
+  dashboard-url: ${APP_DASHBOARD_URL:http://localhost:5173}
+
 logging:
   level:
     com.skillforge: DEBUG

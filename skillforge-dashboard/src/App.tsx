@@ -14,6 +14,7 @@ import Teams from './pages/Teams';
 import Eval from './pages/Eval';
 import HookMethods from './pages/HookMethods';
 import Channels from './pages/Channels';
+import Schedules from './pages/Schedules';
 import Login from './pages/Login';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { AuthProvider } from './contexts/AuthContext';
@@ -46,6 +47,7 @@ function App() {
             <Route path="eval" element={<ErrorBoundary context="Eval"><Eval /></ErrorBoundary>} />
             <Route path="hooks" element={<ErrorBoundary context="Hook Methods"><HookMethods /></ErrorBoundary>} />
             <Route path="channels" element={<ErrorBoundary context="Channels"><Channels /></ErrorBoundary>} />
+            <Route path="schedules" element={<ErrorBoundary context="Schedules"><Schedules /></ErrorBoundary>} />
             <Route path="chat" element={<ErrorBoundary context="Chat"><Chat /></ErrorBoundary>} />
             <Route path="chat/:sessionId" element={<ErrorBoundary context="Chat"><Chat /></ErrorBoundary>} />
           </Route>

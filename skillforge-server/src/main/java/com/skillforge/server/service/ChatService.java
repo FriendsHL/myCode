@@ -28,12 +28,14 @@ import com.skillforge.server.entity.SessionMessageEntity;
 import com.skillforge.server.repository.CollabRunRepository;
 import com.skillforge.server.repository.ModelUsageRepository;
 import com.skillforge.server.memory.SessionDigestExtractor;
+import com.skillforge.server.service.event.SessionLoopFinishedEvent;
 import com.skillforge.server.subagent.CollabRunService;
 import com.skillforge.server.subagent.SubAgentRegistry;
 import com.skillforge.server.util.StackTraceFormatter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
 
@@ -78,6 +80,13 @@ public class ChatService {
      */
     private final LlmTraceStore traceStore;
 
+    /**
+     * P12: publishes {@link SessionLoopFinishedEvent} in the loop teardown finally
+     * block so external consumers (e.g. {@code ScheduledTaskExecutor}) can react to
+     * terminal session states without a hard ChatService dependency.
+     */
+    private final ApplicationEventPublisher applicationEventPublisher;
+
     public ChatService(AgentService agentService,
                        SessionService sessionService,
                        SkillRegistry skillRegistry,
@@ -97,7 +106,8 @@ public class ChatService {
                        SessionConfirmCache sessionConfirmCache,
                        PendingConfirmationRegistry pendingConfirmationRegistry,
                        RootSessionLookup rootSessionLookup,
-                       LlmTraceStore traceStore) {
+                       LlmTraceStore traceStore,
+                       ApplicationEventPublisher applicationEventPublisher) {
         this.agentService = agentService;
         this.sessionService = sessionService;
         this.skillRegistry = skillRegistry;
@@ -118,6 +128,7 @@ public class ChatService {
         this.pendingConfirmationRegistry = pendingConfirmationRegistry;
         this.rootSessionLookup = rootSessionLookup;
         this.traceStore = traceStore;
+        this.applicationEventPublisher = applicationEventPublisher;
     }
 
     /**
@@ -720,6 +731,17 @@ public class ChatService {
                 }
             } catch (Exception hookErr) {
                 log.error("SubAgentRegistry hook failed: sessionId={}", sessionId, hookErr);
+            }
+
+            // P12: publish a generic session-finished event for external consumers
+            // (e.g. ScheduledTaskExecutor). Fired even on waiting_user, since a paused
+            // scheduled-task session is terminal from the schedule's POV (run.status=paused).
+            // Defensive: any listener exception MUST NOT bubble into the loop teardown.
+            try {
+                applicationEventPublisher.publishEvent(new SessionLoopFinishedEvent(
+                        sessionId, finalMessage, finalStatus, userId));
+            } catch (Exception evtErr) {
+                log.error("SessionLoopFinishedEvent publish failed: sessionId={}", sessionId, evtErr);
             }
 
             // CollabRun hooks: cancel cascade FIRST, then notify completion (null-safe for tests)

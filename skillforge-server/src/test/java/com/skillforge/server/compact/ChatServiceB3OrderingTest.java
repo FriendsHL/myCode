@@ -91,7 +91,8 @@ class ChatServiceB3OrderingTest {
                 new com.skillforge.core.engine.confirm.SessionConfirmCache(),
                 new com.skillforge.core.engine.confirm.PendingConfirmationRegistry(),
                 sid -> sid,
-                org.mockito.Mockito.mock(com.skillforge.observability.api.LlmTraceStore.class));
+                org.mockito.Mockito.mock(com.skillforge.observability.api.LlmTraceStore.class),
+                org.mockito.Mockito.mock(org.springframework.context.ApplicationEventPublisher.class));
     }
 
     private SessionEntity sessionWithGap(String id, long gapHours, int msgCount) {

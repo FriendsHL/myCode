@@ -3,11 +3,11 @@
 ---
 id: P12
 mode: full
-status: prd-ready
+status: done
 priority: P1
 risk: Full
 created: 2026-04-28
-updated: 2026-04-28
+updated: 2026-05-07
 ---
 
 ## 摘要

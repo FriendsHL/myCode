@@ -2,14 +2,14 @@
 
 ---
 id: P12
-status: prd-ready
+status: done
 owner: youren
 priority: P1
 risk: Full
 mrd: ./mrd.md
 tech_design: ./tech-design.md
 created: 2026-04-28
-updated: 2026-04-29
+updated: 2026-05-07
 ---
 
 ## 摘要

@@ -64,8 +64,14 @@ import com.skillforge.server.service.ChatService;
 import com.skillforge.server.service.EmbeddingService;
 import com.skillforge.server.service.LifecycleHookViewService;
 import com.skillforge.server.service.MemoryService;
+import com.skillforge.server.service.ScheduledTaskService;
 import com.skillforge.server.service.SessionService;
 import com.skillforge.server.service.UserConfigService;
+import com.skillforge.server.tool.scheduling.CreateScheduledTaskTool;
+import com.skillforge.server.tool.scheduling.DeleteScheduledTaskTool;
+import com.skillforge.server.tool.scheduling.GetScheduledTaskTool;
+import com.skillforge.server.tool.scheduling.ListScheduledTasksTool;
+import com.skillforge.server.tool.scheduling.UpdateScheduledTaskTool;
 import com.skillforge.server.repository.TraceSpanRepository;
 import com.skillforge.server.subagent.AgentRoster;
 import com.skillforge.server.subagent.CollabRunService;
@@ -443,6 +449,59 @@ public class SkillForgeConfig {
         TeamSendTool tool = new TeamSendTool(sessionService, agentRoster, subAgentRegistry, broadcaster, traceCollector);
         skillRegistry.registerTool(tool);
         log.info("Registered TeamSendTool into SkillRegistry");
+        return tool;
+    }
+
+    // ---------- P12 scheduled task tools ----------
+
+    @Bean
+    public CreateScheduledTaskTool createScheduledTaskTool(ScheduledTaskService scheduledTaskService,
+                                                           SessionService sessionService,
+                                                           ObjectMapper objectMapper,
+                                                           SkillRegistry skillRegistry) {
+        CreateScheduledTaskTool tool = new CreateScheduledTaskTool(
+                scheduledTaskService, sessionService, objectMapper);
+        skillRegistry.registerTool(tool);
+        log.info("Registered CreateScheduledTaskTool into SkillRegistry");
+        return tool;
+    }
+
+    @Bean
+    public UpdateScheduledTaskTool updateScheduledTaskTool(ScheduledTaskService scheduledTaskService,
+                                                           ObjectMapper objectMapper,
+                                                           SkillRegistry skillRegistry) {
+        UpdateScheduledTaskTool tool = new UpdateScheduledTaskTool(scheduledTaskService, objectMapper);
+        skillRegistry.registerTool(tool);
+        log.info("Registered UpdateScheduledTaskTool into SkillRegistry");
+        return tool;
+    }
+
+    @Bean
+    public DeleteScheduledTaskTool deleteScheduledTaskTool(ScheduledTaskService scheduledTaskService,
+                                                           SkillRegistry skillRegistry) {
+        DeleteScheduledTaskTool tool = new DeleteScheduledTaskTool(scheduledTaskService);
+        skillRegistry.registerTool(tool);
+        log.info("Registered DeleteScheduledTaskTool into SkillRegistry");
+        return tool;
+    }
+
+    @Bean
+    public ListScheduledTasksTool listScheduledTasksTool(ScheduledTaskService scheduledTaskService,
+                                                         ObjectMapper objectMapper,
+                                                         SkillRegistry skillRegistry) {
+        ListScheduledTasksTool tool = new ListScheduledTasksTool(scheduledTaskService, objectMapper);
+        skillRegistry.registerTool(tool);
+        log.info("Registered ListScheduledTasksTool into SkillRegistry");
+        return tool;
+    }
+
+    @Bean
+    public GetScheduledTaskTool getScheduledTaskTool(ScheduledTaskService scheduledTaskService,
+                                                     ObjectMapper objectMapper,
+                                                     SkillRegistry skillRegistry) {
+        GetScheduledTaskTool tool = new GetScheduledTaskTool(scheduledTaskService, objectMapper);
+        skillRegistry.registerTool(tool);
+        log.info("Registered GetScheduledTaskTool into SkillRegistry");
         return tool;
     }
 
