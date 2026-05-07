@@ -181,6 +181,15 @@ public class SessionEntity {
     @Column(name = "origin", nullable = false, length = 16)
     private String origin = ORIGIN_PRODUCTION;
 
+    /**
+     * P10 §3: session-scoped model override set by {@code /model <modelId>} slash
+     * command. {@code null} = use {@code agent.modelId} (default for all newly
+     * created sessions). ChatService.runLoop / completeConfirmedTool consult this
+     * BEFORE falling back to agent default — INV-4 forbids mutating t_agent.
+     */
+    @Column(name = "runtime_model_override", length = 64)
+    private String runtimeModelOverride;
+
     @CreatedDate
     private LocalDateTime createdAt;
 
@@ -476,5 +485,13 @@ public class SessionEntity {
 
     public void setOrigin(String origin) {
         this.origin = origin;
+    }
+
+    public String getRuntimeModelOverride() {
+        return runtimeModelOverride;
+    }
+
+    public void setRuntimeModelOverride(String runtimeModelOverride) {
+        this.runtimeModelOverride = runtimeModelOverride;
     }
 }

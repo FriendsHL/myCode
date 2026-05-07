@@ -386,6 +386,15 @@ public class ChatService {
             // 解析 agent definition,并把 session 的 executionMode 注入 config
             AgentDefinition agentDef = agentService.toAgentDefinition(agentEntity);
             SessionEntity freshSession = sessionService.getSession(sessionId);
+            // P10 INV-4: session-scoped /model override takes precedence over
+            // agent.modelId. Override the AgentDefinition modelId in-place so all
+            // downstream paths (resolveProvider in AgentLoopEngine, ModelUsage
+            // logging at line 556 / 585, request token estimation) see the
+            // overridden value. NULL on session = no override → keep agent default.
+            String runtimeOverride = freshSession.getRuntimeModelOverride();
+            if (runtimeOverride != null && !runtimeOverride.isBlank()) {
+                agentDef.setModelId(runtimeOverride);
+            }
             String mode = freshSession.getExecutionMode();
             if (mode == null || mode.isBlank()) {
                 mode = agentEntity.getExecutionMode() != null ? agentEntity.getExecutionMode() : "ask";
@@ -848,6 +857,11 @@ public class ChatService {
             SessionEntity session = sessionService.getSession(sessionId);
             AgentEntity agentEntity = agentService.getAgent(session.getAgentId());
             AgentDefinition agentDef = agentService.toAgentDefinition(agentEntity);
+            // P10 INV-4: respect session-scoped /model override on resume path too.
+            String resumeOverride = session.getRuntimeModelOverride();
+            if (resumeOverride != null && !resumeOverride.isBlank()) {
+                agentDef.setModelId(resumeOverride);
+            }
             Message toolResult = agentLoopEngine.completeConfirmedTool(
                     agentDef,
                     sessionId,

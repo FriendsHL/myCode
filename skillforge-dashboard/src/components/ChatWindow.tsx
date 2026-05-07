@@ -1,9 +1,18 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { message } from 'antd';
 import { type ToolCall } from './ToolCallTimeline';
 import MarkdownRenderer from './MarkdownRenderer';
 import PendingAskCard from './PendingAskCard';
 import InstallConfirmationCard from './InstallConfirmationCard';
 import type { ConfirmationDecision, ConfirmationPromptPayload } from '../api';
+import { executeCommand } from '../api/commands';
+import {
+  COMMAND_NAME_REGEX,
+  filterCommands,
+  type CommandResult,
+} from '../types/command';
+import CommandPopup from './chat/CommandPopup';
+import CommandResultModal from './chat/CommandResultModal';
 import { RoleAvatar } from './chat/primitives';
 import {
   IconAttach,
@@ -35,81 +44,287 @@ const ThrottledMarkdown: React.FC<{ content: string }> = ({ content }) => {
   return <MarkdownRenderer content={rendered} />;
 };
 
+/**
+ * P10 — When `slashCommands` is provided, ChatInput intercepts text starting
+ * with `/` and routes it through `POST /api/commands/execute` instead of the
+ * normal chat send path. The popup is purely UX: dispatch always uses the
+ * exact command name typed (or selected), so `/model` and `/models` cannot
+ * collide (INV-15).
+ */
+export interface SlashCommandHandlers {
+  userId: number;
+  sessionId: string;
+  /** Called for `/new` (displayMode='redirect'). */
+  onRedirect: (newSessionId: string) => void;
+  /**
+   * Called for `/model` (displayMode='toast') so the parent can refetch
+   * the session and update header chips. `/compact` does not need this —
+   * the WS compaction event already triggers a refresh.
+   */
+  onModelChanged: (modelId: string | undefined) => void;
+  /**
+   * Called for `/models|/skill|/tool|/context|/help` (displayMode='modal') —
+   * ChatWindow uses this to open `CommandResultModal` with the markdown body.
+   */
+  onShowModal: (title: string, markdownBody: string) => void;
+}
+
 interface ChatInputProps {
   disabled?: boolean;
   onSend: (text: string) => void;
+  /** Optional — when present, enables slash-command interception. */
+  slashCommands?: SlashCommandHandlers;
 }
-const ChatInput: React.FC<ChatInputProps> = React.memo(({ disabled, onSend }) => {
-  const [input, setInput] = useState('');
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const autosize = useCallback(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
-  }, []);
+const ChatInput: React.FC<ChatInputProps> = React.memo(
+  ({ disabled, onSend, slashCommands }) => {
+    const [input, setInput] = useState('');
+    const [popupOpen, setPopupOpen] = useState(false);
+    const [selectedIdx, setSelectedIdx] = useState(0);
+    const [executing, setExecuting] = useState(false);
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  useEffect(() => {
-    autosize();
-  }, [input, autosize]);
+    const autosize = useCallback(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.style.height = 'auto';
+      el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+    }, []);
 
-  const handleSend = () => {
-    const text = input.trim();
-    if (!text) return;
-    setInput('');
-    onSend(text);
-  };
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
+    useEffect(() => {
+      autosize();
+    }, [input, autosize]);
 
-  return (
-    <div className="composer-wrap">
-      <div className="composer">
-        <div className="comp-left-tools">
-          <button type="button" className="comp-btn" title="Attach" aria-label="Attach">
-            <IconAttach s={14} />
+    // INV-Q5 (a): popup is allowed only when (a) we have slash-command
+    // handlers, (b) the input begins with `/`, and (c) no whitespace has
+    // been typed yet (so `/model gpt-4` hides the popup but still routes
+    // to the slash-command path on Enter).
+    const canShowPopup = !!slashCommands && COMMAND_NAME_REGEX.test(input);
+
+    const filtered = useMemo(
+      () => (canShowPopup ? filterCommands(input) : []),
+      [canShowPopup, input],
+    );
+
+    // Keep the popup mounted only while it's eligible AND has rows.
+    const isPopupActive = popupOpen && filtered.length > 0;
+
+    // Re-clamp selection when the filtered list shrinks.
+    useEffect(() => {
+      if (selectedIdx >= filtered.length) {
+        setSelectedIdx(0);
+      }
+    }, [filtered.length, selectedIdx]);
+
+    // Open the popup whenever eligibility flips on; close when it flips off.
+    useEffect(() => {
+      if (canShowPopup) {
+        setPopupOpen(true);
+        setSelectedIdx(0);
+      } else {
+        setPopupOpen(false);
+      }
+    }, [canShowPopup]);
+
+    const handleCommandResult = useCallback(
+      (result: CommandResult) => {
+        if (!slashCommands) return;
+        if (!result.success) {
+          message.error(result.error || result.message || 'Command failed');
+          return;
+        }
+        switch (result.displayMode) {
+          case 'redirect': {
+            if (result.newSessionId) {
+              slashCommands.onRedirect(result.newSessionId);
+              if (result.message) message.success(result.message);
+            } else {
+              message.error('Redirect command returned no newSessionId');
+            }
+            break;
+          }
+          case 'toast': {
+            if (result.message) message.success(result.message);
+            // For `/model`, refresh session so header chip updates. `/compact`
+            // is async and already wired through the WS compaction event;
+            // calling onModelChanged here with undefined modelId is harmless
+            // for `/compact` because parents only react when modelId changes.
+            if (result.modelId !== undefined) {
+              slashCommands.onModelChanged(result.modelId);
+            }
+            break;
+          }
+          case 'modal': {
+            slashCommands.onShowModal(
+              result.message || 'Command result',
+              result.markdownBody ?? '',
+            );
+            break;
+          }
+          default: {
+            // Unknown displayMode — surface the message anyway so users see SOMETHING.
+            message.info(result.message || 'Command executed');
+          }
+        }
+      },
+      [slashCommands],
+    );
+
+    const runSlashCommand = useCallback(
+      async (commandLine: string) => {
+        if (!slashCommands || executing) return;
+        const trimmed = commandLine.trim();
+        if (!trimmed.startsWith('/')) return;
+        setExecuting(true);
+        try {
+          const result = await executeCommand(
+            slashCommands.userId,
+            slashCommands.sessionId,
+            trimmed,
+          );
+          setInput('');
+          setPopupOpen(false);
+          handleCommandResult(result);
+        } catch (e: unknown) {
+          const status = (e as { response?: { status?: number } })?.response?.status;
+          if (status === 403 || status === 404) {
+            message.error('Session not found or access denied');
+          } else {
+            message.error('Command failed');
+          }
+        } finally {
+          setExecuting(false);
+        }
+      },
+      [slashCommands, executing, handleCommandResult],
+    );
+
+    const handleSend = () => {
+      const text = input.trim();
+      if (!text) return;
+      // First-character `/` always routes to slash-command path (INV-Q5 (a)).
+      if (slashCommands && text.startsWith('/')) {
+        void runSlashCommand(text);
+        return;
+      }
+      setInput('');
+      onSend(text);
+    };
+
+    const handlePopupSelect = useCallback(
+      (idx: number) => {
+        const cmd = filtered[idx];
+        if (!cmd) return;
+        // Popup selection sends the EXACT command name — INV-15 prevents
+        // `/model` vs `/models` collision because BE dispatches by exact name.
+        void runSlashCommand(cmd.name);
+      },
+      [filtered, runSlashCommand],
+    );
+
+    const handlePopupTabComplete = (idx: number) => {
+      const cmd = filtered[idx];
+      if (!cmd) return;
+      // Tab completes the name plus a trailing space so the user can keep
+      // typing args (e.g. `/model ` → `gpt-4o`). The trailing space also
+      // breaks COMMAND_NAME_REGEX so the popup auto-closes.
+      setInput(`${cmd.name} `);
+      setPopupOpen(false);
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (isPopupActive) {
+        switch (e.key) {
+          case 'ArrowDown':
+            e.preventDefault();
+            setSelectedIdx((i) => (i + 1) % filtered.length);
+            return;
+          case 'ArrowUp':
+            e.preventDefault();
+            setSelectedIdx((i) => (i - 1 + filtered.length) % filtered.length);
+            return;
+          case 'Enter': {
+            if (e.shiftKey) break; // shift+enter = newline, fall through
+            e.preventDefault();
+            handlePopupSelect(selectedIdx);
+            return;
+          }
+          case 'Tab':
+            e.preventDefault();
+            handlePopupTabComplete(selectedIdx);
+            return;
+          case 'Escape':
+            e.preventDefault();
+            setPopupOpen(false);
+            return;
+          default:
+            break;
+        }
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        handleSend();
+      }
+    };
+
+    return (
+      <div className="composer-wrap" style={{ position: 'relative' }}>
+        {isPopupActive && (
+          <CommandPopup
+            commands={filtered}
+            selectedIndex={selectedIdx}
+            onSelect={handlePopupSelect}
+            onHover={setSelectedIdx}
+          />
+        )}
+        <div className="composer">
+          <div className="comp-left-tools">
+            <button type="button" className="comp-btn" title="Attach" aria-label="Attach">
+              <IconAttach s={14} />
+            </button>
+          </div>
+          <textarea
+            ref={textareaRef}
+            placeholder="Message the agent… (Shift+Enter for newline)"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            disabled={disabled || executing}
+            rows={1}
+            data-testid="chat-input-textarea"
+          />
+          <button type="button" className="comp-btn" title="Voice" aria-label="Voice">
+            <IconMic s={14} />
+          </button>
+          <button
+            type="button"
+            className="send-btn"
+            onClick={handleSend}
+            disabled={disabled || executing || !input.trim()}
+            aria-label="Send"
+          >
+            <IconSend s={15} />
           </button>
         </div>
-        <textarea
-          ref={textareaRef}
-          placeholder="Message the agent… (Shift+Enter for newline)"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          disabled={disabled}
-          rows={1}
-        />
-        <button type="button" className="comp-btn" title="Voice" aria-label="Voice">
-          <IconMic s={14} />
-        </button>
-        <button
-          type="button"
-          className="send-btn"
-          onClick={handleSend}
-          disabled={disabled || !input.trim()}
-          aria-label="Send"
-        >
-          <IconSend s={15} />
-        </button>
-      </div>
-      <div className="comp-foot">
-        <div className="tokens">
-          <span>⌘ SkillForge</span>
-        </div>
-        <div>
-          <span className="kbd">↵</span> send &nbsp;
-          <span className="kbd">⇧↵</span> newline
+        <div className="comp-foot">
+          <div className="tokens">
+            <span>⌘ SkillForge</span>
+          </div>
+          <div>
+            <span className="kbd">↵</span> send &nbsp;
+            <span className="kbd">⇧↵</span> newline &nbsp;
+            <span className="kbd">/</span> commands
+          </div>
         </div>
       </div>
-    </div>
-  );
-});
+    );
+  },
+);
 ChatInput.displayName = 'ChatInput';
+
+// Exported for unit tests — kept inside ChatWindow.tsx to avoid restructuring
+// the existing module layout.
+export { ChatInput };
 
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'summary';
@@ -129,6 +344,20 @@ interface InflightTool {
   startTs: number;
 }
 
+/**
+ * P10 — `slashCommandConfig` is the parent's hook into the slash-command
+ * subsystem. ChatWindow owns the modal state (so the modal lifecycle is
+ * predictable) and forwards the rest into the inner `ChatInput`.
+ */
+export interface ChatWindowSlashCommandConfig {
+  userId: number;
+  sessionId: string;
+  /** Navigate to the new session URL after `/new`. */
+  onRedirect: (newSessionId: string) => void;
+  /** Refetch the session record after `/model` so header chips update. */
+  onModelChanged: (modelId: string | undefined) => void;
+}
+
 interface ChatWindowProps {
   messages: ChatMessage[];
   loading: boolean;
@@ -142,6 +371,8 @@ interface ChatWindowProps {
   agentName?: string;
   onAnswerAsk?: (askId: string, answer: string) => void;
   onConfirmDecision?: (confirmationId: string, decision: ConfirmationDecision) => void;
+  /** Optional — when provided, enables `/`-prefixed slash commands. */
+  slashCommandConfig?: ChatWindowSlashCommandConfig;
 }
 
 interface ToolCallRowProps {
@@ -252,6 +483,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   agentName,
   onAnswerAsk,
   onConfirmDecision,
+  slashCommandConfig,
 }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -259,6 +491,28 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   const onSendRef = useRef(onSend);
   useEffect(() => { onSendRef.current = onSend; }, [onSend]);
   const stableOnSend = useCallback((text: string) => onSendRef.current(text), []);
+
+  // ─── P10 slash-command modal state ───────────────────────────────────────
+  const [commandModalOpen, setCommandModalOpen] = useState(false);
+  const [commandModalTitle, setCommandModalTitle] = useState<string>('');
+  const [commandModalBody, setCommandModalBody] = useState<string>('');
+
+  const handleShowCommandModal = useCallback((title: string, markdownBody: string) => {
+    setCommandModalTitle(title);
+    setCommandModalBody(markdownBody);
+    setCommandModalOpen(true);
+  }, []);
+
+  const slashHandlers: SlashCommandHandlers | undefined = useMemo(() => {
+    if (!slashCommandConfig) return undefined;
+    return {
+      userId: slashCommandConfig.userId,
+      sessionId: slashCommandConfig.sessionId,
+      onRedirect: slashCommandConfig.onRedirect,
+      onModelChanged: slashCommandConfig.onModelChanged,
+      onShowModal: handleShowCommandModal,
+    };
+  }, [slashCommandConfig, handleShowCommandModal]);
 
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -452,7 +706,17 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
           <div ref={bottomRef} />
         </div>
       </div>
-      <ChatInput disabled={inputDisabled} onSend={stableOnSend} />
+      <ChatInput
+        disabled={inputDisabled}
+        onSend={stableOnSend}
+        slashCommands={slashHandlers}
+      />
+      <CommandResultModal
+        open={commandModalOpen}
+        title={commandModalTitle}
+        markdownBody={commandModalBody}
+        onClose={() => setCommandModalOpen(false)}
+      />
     </>
   );
 };

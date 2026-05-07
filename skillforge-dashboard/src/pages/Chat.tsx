@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, message } from 'antd';
 import { useNavigate, useParams } from 'react-router-dom';
 import ChatWindow from '../components/ChatWindow';
@@ -460,7 +460,10 @@ const Chat: React.FC = () => {
     return merged;
   }, [inflightTools, streamingToolInputs]);
 
-  const refreshCompactStats = async () => {
+  // P10 r2 (W1): wrap in useCallback so the slashCommandConfig useMemo
+  // below has a stable dependency. Setters from useState are stable, so the
+  // only real deps are activeSessionId + userId.
+  const refreshCompactStats = useCallback(async () => {
     if (!activeSessionId) return;
     try {
       const res = await getSession(activeSessionId, userId);
@@ -471,7 +474,7 @@ const Chat: React.FC = () => {
     } catch {
       // non-critical
     }
-  };
+  }, [activeSessionId, userId]);
 
   const handleCompactClick = async () => {
     if (!activeSessionId || compacting || runtimeStatus === 'running') return;
@@ -681,6 +684,36 @@ const Chat: React.FC = () => {
     ],
   };
 
+  // P10 r2 (W1): memoise so streaming/WS-driven re-renders of Chat.tsx
+  // don't invalidate ChatInput's React.memo. `navigate` is stable across
+  // renders (React Router 7 invariant); `refreshCompactStats` is wrapped in
+  // useCallback above, so this useMemo only re-fires when activeSessionId
+  // or userId actually change.
+  const slashCommandConfig = useMemo(
+    () =>
+      activeSessionId
+        ? {
+            userId,
+            sessionId: activeSessionId,
+            onRedirect: (newSessionId: string) => {
+              // P10 — `/new` redirect: navigate to the new session URL; the
+              // existing useEffect tracking urlSessionId will sync
+              // activeSessionId.
+              navigate(`/sessions/${newSessionId}`);
+            },
+            onModelChanged: () => {
+              // P10 r2 (W2): no header chip yet. When a model chip is
+              // added, extend refreshCompactStats (or add a separate
+              // getSession call here) to also setState the
+              // session.runtimeModelOverride. The current call only
+              // refreshes compact counts.
+              void refreshCompactStats();
+            },
+          }
+        : undefined,
+    [activeSessionId, userId, navigate, refreshCompactStats],
+  );
+
   return (
     <div className="chat-redesign">
       <ChatSidebar
@@ -839,6 +872,7 @@ const Chat: React.FC = () => {
                   agentName={agentName}
                   onAnswerAsk={handleAnswerAskMessage}
                   onConfirmDecision={handleConfirmDecisionMessage}
+                  slashCommandConfig={slashCommandConfig}
                 />
               </>
             ) : (
