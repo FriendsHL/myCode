@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { getTraces, getTraceSpans, extractList } from '../api';
 import '../components/traces/traces.css';
 import '../components/skills/skills.css';
@@ -112,7 +112,6 @@ function fmtTime(iso: string): string {
 }
 
 const Traces: React.FC = () => {
-  const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const [q, setQ] = useState('');
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
@@ -189,30 +188,6 @@ const Traces: React.FC = () => {
   const selectedSpan = spans.find(s => s.id === selectedSpanId) || spans[0] || null;
 
   const toggleStatus = (v: string) => setStatusFilter(s => s === v ? null : v);
-
-  const handleBatchImport = async () => {
-    if (selectedRootTraceIds.size === 0) return;
-    setIsImporting(true);
-    try {
-      const res = await batchImportTracesToDataset({ rootTraceIds: Array.from(selectedRootTraceIds) });
-      message.success(`Created ${res.data.count} scenario draft(s). Review them in Scenario Drafts.`);
-      setSelectedRootTraceIds(new Set());
-      queryClient.invalidateQueries({ queryKey: ['scenario-drafts'] });
-    } catch (error) {
-      message.error('Failed to create scenario drafts.');
-    } finally {
-      setIsImporting(false);
-    }
-  };
-
-  const toggleTraceSelection = (rootTraceId: string) => {
-    setSelectedRootTraceIds(prev => {
-      const next = new Set(prev);
-      if (next.has(rootTraceId)) next.delete(rootTraceId);
-      else next.add(rootTraceId);
-      return next;
-    });
-  };
 
   return (
     <div className="tr-surface">

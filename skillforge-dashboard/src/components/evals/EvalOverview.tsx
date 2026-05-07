@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import type { EvalRow, ProgressState } from './evalUtils';
-import { scoreColor, PLAY_ICON, TRACE_ICON } from './evalUtils';
+import { scoreColor, PLAY_ICON } from './evalUtils';
 
 interface EvalOverviewProps {
   rows: EvalRow[];
@@ -31,7 +31,6 @@ function KpiCard({ label, value, sub, color, onClick }: {
 export default function EvalOverview({
   rows,
   progressByRun,
-  pendingAnnotations,
   totalDatasets,
   onRunEval,
   onOpenTask,
