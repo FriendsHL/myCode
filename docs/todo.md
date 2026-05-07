@@ -11,7 +11,6 @@
 | 4   | P12       | 定时任务 MVP                          | Full | prd-ready | P1  | Full | [需求包](requirements/active/P12-scheduled-tasks/index.md)           | 进入设计评审（P12-PRE 已闭环）                  |
 | 5   | P9-4/P9-5 | Partial compact + post-compact 恢复 | Full | prd-draft | P2  | Full | [需求包](requirements/active/P9-4-P9-5-compaction-recovery/index.md) | 先决定“最近文件”数据来源                         |
 | 6   | P10       | 聊天斜杠命令                            | Full | prd-ready | P2  | Full | [需求包](requirements/active/P10-slash-commands/index.md)            | 在更高优先级的 context / observability 工作后启动 |
-| 7   | EVAL-V2   | 评测系统改造                            | Full | done | P1  | Full | [需求包](requirements/active/EVAL-V2-overhaul/index.md)              | `a06bd3d` 已推送；待归档 |
 
 ## 阻塞 / 待决策
 
