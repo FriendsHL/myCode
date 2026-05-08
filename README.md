@@ -200,14 +200,29 @@ Automated eval and prompt optimization:
 - **Session→Scenario Extraction** — LLM analyzes completed sessions to generate eval scenarios, with a review UI (Approve/Edit/Discard)
 - **Dashboard** — real-time eval run monitoring, detail drawer with per-scenario results
 
-### Skill Evolution
+### Skill Evolution (Closed Loop, 5-Phase)
 
-The platform can turn repeated session patterns into reusable Skill packages:
+End-to-end skill lifecycle automation — production / evaluation / optimization / promotion / notification:
 
-- **Session→Skill draft extraction** — propose SKILL.md drafts from an agent's completed work, then approve or discard them in the dashboard
-- **Skill versioning** — fork existing skills, inspect version chains, and keep generated variants tied to their parent skill
-- **Skill A/B validation** — compare a candidate skill against the baseline on eval scenarios before promotion
-- **Usage telemetry** — record skill success/failure signals that feed future evolution decisions
+- **① Production** — `SkillDraftScheduledExtractor` cron @ 03:00 daily scans last-24h sessions, LLM-extracts up to 3 reusable skill drafts per agent (max 10 sessions ingested). `hasPendingDrafts` short-circuit + per-agent try/catch + exact-name skip prevents duplicate drafts.
+- **② Evaluation** — `t_skill_eval_history` (V63) stores 5-dimensional scores per skill (composite / quality / efficiency / latency / cost). `POST /api/skills/{id}/evaluate` runs single-skill `runBaselineOnly` synchronously; `SkillScheduledEvaluator` cron @ Mon 04:00 scans all enabled skills with 7-day skip.
+- **③ Optimization** — `SkillEvolutionService.callLlmForImprovement` ingests **last 5 EVAL failures** (`composite_score < 60`) of the target skill, feeding them as concrete examples in the LLM prompt instead of blind rewriting (resolves the original "evolve does nothing useful" gap).
+- **④ Self-Improve Loop** — `SkillSelfImproveLoop` cron @ Tue 05:00: for each skill, if latest history score `< 60` → auto-trigger `createAndTrigger` (fork → improve → A/B → auto-promote on `delta ≥ 15pp + candidate ≥ 40%`). Spring `@TransactionalEventListener(AFTER_COMMIT, REQUIRES_NEW)` decouples from the A/B run thread.
+- **⑤ Notification & Dashboard** — WS event `skill_auto_upgraded` on every promote → notification toast; `Latest Score` Tag + `Trend` sparkline columns in skill table; drawer Eval History 5-dim line chart + Auto-Evolve Runs panel.
+
+**Manual override APIs** (V2.5 polish):
+- `POST /api/skills/abrun/{abRunId}/promote-manual` — promote a candidate that did not pass auto-thresholds, after operator review of A/B results
+- `POST /api/skills/{id}/rollback` — disable a candidate and re-enable its parent (V64-safe ordering)
+- `PUT /api/skills/{id}/skill-md` — manually edit a candidate's SKILL.md content (gated to `parentSkillId != null && !enabled` so active versions can never bypass A/B evaluation)
+
+**Storage invariants**:
+- `t_skill` partial unique on `(owner_id, name) WHERE enabled = TRUE` (V64) — disabled candidates can share name with parent without colliding
+- `forkSkill` allocates an **isolated** skill directory (`evolution-fork/{owner}/{parent}/{uuid}`) and copies parent SKILL.md, so deleting a candidate never wipes the parent's artifact
+- Sibling-aware `deleteSkill` re-registers an enabled sibling into `SkillRegistry` and skips on-disk dir removal when other rows still reference the path
+
+**Skill File Browser** (V2.5) — drawer renders the full package tree (SKILL.md + `references/` + `scripts/` + `assets/` + `hooks/`) instead of only SKILL.md, with click-to-view content. `GET /api/skills/{id}/files` + `/files/content` for both user skills and `system-X` system skills.
+
+**Dashboard skill summary** — `GET /api/dashboard/skill-summary?userId` returns per-user counters (auto-upgraded this week, pending drafts, failed evolutions, total enabled skills, low-score skills) for the "operations at a glance" Dashboard top card.
 
 ### Memory System
 
@@ -223,6 +238,12 @@ Persistent memory across sessions, scoped per user:
 - **Auto-capture** via `ActivityLogHook` — records every tool call
 - **Lifecycle management** — `ACTIVE` / `STALE` / `ARCHIVED` statuses, batch archive/restore/delete, capacity limits, stale/archive/delete windows
 - **Quality controls** — memory snapshots, visibility/attribution fields, rollback and refresh APIs
+- **Dream Consolidation cron** (V2.5) — `MemoryConsolidationScheduler` @ 03:30 daily runs `MemoryConsolidator.consolidate(userId)` for every recently-active user, performing in order:
+  1. **Embedding dedup** — pairwise cosine over ACTIVE memories, archive lower-scored side at `cosine ≥ 0.85` with `archived_reason = dedup_merge_with_<winnerId>` (gracefully skipped if pgvector or embedding API is unavailable)
+  2. **Score & lifecycle transition** — `0.45·importance + 0.35·freshness + 0.20·usage` rescore; ACTIVE→STALE / non-ARCHIVED→ARCHIVED based on age + recall count
+  3. **Capacity enforcement** — demote lowest-scored ACTIVE rows to STALE when user crosses `max-active-per-user` (default 1500)
+- **Per-action tracking** — `archived_reason VARCHAR(128)` (V66): `expired_ttl` / `capacity_demote` / `dedup_merge_with_X`. The admin endpoint returns granular phase counts: `dedupArchived / ttlArchived / staleTransitioned / capacityDemoted / expiredDeleted / activeAfter` so operators verify what actually happened without SQL.
+- **Manual trigger** — Memory list page "Run Consolidation" button + `POST /api/admin/memory/consolidation/run-once?userId=X`
 
 ### Session Message Storage (Row-based, Immutable)
 
@@ -260,6 +281,59 @@ AGENT_LOOP (root)
 **Session Replay** — restructures flat message history into Turns → Iterations → Tool calls with timing.
 
 **Model Usage Dashboard** — daily/by-model/by-agent token consumption and cost tracking.
+
+### MCP Client (Model Context Protocol)
+
+SkillForge as a Model Context Protocol *host* — connect external stdio MCP servers and expose their tools to agents:
+
+- **stdio transport** — NDJSON line-framed JSON-RPC 2.0; `ProcessBuilder` array form (no shell injection); strict `${VAR}` env regex with `Matcher.quoteReplacement` against `$/\` reference attacks
+- **Per-agent server enable** — `t_agent.mcp_server_ids` comma-list (V61); agents only see tools from enabled servers (`LoopContext.allowedMcpServerNames` double guard at `collectTools` + dispatch)
+- **Tool prefixing** — every MCP tool is registered as `mcp_<server>_<tool>` to avoid name collisions with built-in tools; per-server name regex `[a-z0-9_]+ ≤ 32`
+- **Lifecycle reload** — `@TransactionalEventListener(AFTER_COMMIT) + @Transactional(propagation=REQUIRES_NEW)` reloads the registry on `t_mcp_server` upsert without restart
+- **Env masking** — server config edits return `"***"` for sensitive env values; backend preserves originals on `***` round-trip
+- **Default dogfood server** — `time` (Anthropic official `uvx mcp-server-time`) ships pre-installed, providing `mcp_time_get_current_time` + `mcp_time_convert_time`
+- **Dashboard `/mcp-servers`** — full CRUD + connection status + test-connection dry-run + delete reference check (409 when agents still reference)
+
+### Slash Commands
+
+8 chat slash commands with FE popup completion + channel BE interception:
+
+| Command | Action |
+|---------|--------|
+| `/new` | Create new session (rebinds channel conversation atomically) |
+| `/compact` | Trigger async fullCompact (returns toast in 0.008s, runs in `chatLoopExecutor`) |
+| `/model <id>` | Set `t_session.runtime_model_override` (V60), takes effect on next iteration |
+| `/models` | Modal listing all available models from `LlmProperties` |
+| `/skill` | Modal listing this agent's `skill_ids` |
+| `/tool` | Modal listing built-in + agent-bound tools |
+| `/context` | Token breakdown by segment (`TokenEstimator` + `ContextBreakdownService`) |
+| `/help` | Auto-list registry of all commands |
+
+- **Three displayModes** — `redirect` (FE navigates), `toast` (in-line message), `modal` (full markdown render)
+- **Input regex** — only first-character `/` triggers popup (`^/[A-Za-z]*$`); fuzzy match + arrow keys + Enter / Tab / Esc
+- **Channel route** — `ChannelSessionRouter` intercepts `/` prefix earlier than `chatService.chatAsync`, so Feishu / Telegram users get the same commands
+
+### Scheduled Tasks (User Cron + One-shot)
+
+User-defined cron / one-shot triggers that run a saved prompt against an agent on schedule:
+
+- **`t_scheduled_task` + `t_scheduled_task_run`** (V59) — task definition + execution history
+- **Mutual-exclusive cron / one-shot** with conversion support
+- **`UserTaskScheduler`** — `ThreadPoolTaskScheduler` + per-task `ReentrantLock` + skip-if-running guard
+- **`ScheduledTaskExecutor`** — reuses or spins a fresh session, listens for `SessionLoopFinishedEvent` to push a channel reply (`waiting_user` ⇒ absolute dashboard URL)
+- **5 agent tools** — `Create / Update / Delete / List / GetScheduledTask` (silent results, owner-isolated)
+- **Dashboard `/schedules`** — list + edit drawer + cron↔one-shot radio toggle + per-row trigger button + run history drawer
+
+### Prompt Cache (Multi-Provider)
+
+Auto-cached system prompts to save 5-90% input tokens per LLM call:
+
+- **5 LLM provider families** — Anthropic Claude (manual `cache_control` 3-breakpoint markers), DeepSeek (auto cache), DashScope/Qwen (auto), xiaomi-mimo (auto), OpenAI gpt-4o (auto)
+- **Stable system prompt** — `SystemPromptBuilder.buildWithBoundary(claudeMd)` splits into deterministic `stable` (agent.systemPrompt + soulPrompt + toolsPrompt + behaviorRules; **no `Instant.now`**) + `dynamic` (Memory / sessionContext / promptSuffix), with SHA-256 byte-stability tested
+- **Tool list normalization** — sort by name + `ORDER_MAP_ENTRIES_BY_KEYS` + per-tool SHA hash; cached canonical mapper avoids re-copy per call
+- **`UsageNormalizer`** — single point that translates each provider's idiosyncratic cache fields (`cache_read_input_tokens` / `prompt_cache_hit_tokens` / `prompt_tokens_details.cached_tokens`) into uniform `cacheReadInputTokens` + `cacheCreationInputTokens`; OpenAI-family `inputTokens` normalized to "non-cached" semantics across providers
+- **Cache break detection** — `CacheBreakDetector` (5% tolerance + 2K min drop) emits `cache_break` attribute on the LLM_CALL trace, surfaced as a red badge in the dashboard
+- **V62 migration** — `t_llm_span.cache_creation_tokens` (nullable backward-compat); dashboard shows read / write / hit-rate per LLM call
 
 ### Safety & Anti-runaway
 
@@ -552,15 +626,32 @@ clawhub:
 | GET | `/api/skills/builtin` | List built-in system skills |
 | GET | `/api/skills/{id}/detail` | Skill detail |
 | GET | `/api/skills/{id}/versions` | Version chain |
+| GET | `/api/skills/{id}/version-tree` | Tree (`?format=tree` returns root-recursive `{ children }`) |
+| GET | `/api/skills/{id}/skill-md` | Read SKILL.md (with `updatedAt` mtime) |
+| PUT | `/api/skills/{id}/skill-md` | **V2.5** — manually edit SKILL.md (gated to disabled candidate) |
+| GET | `/api/skills/{id}/files` | **V2.5** — recursive file tree of the skill package |
+| GET | `/api/skills/{id}/files/content?path=` | **V2.5** — read a specific file's content (path-traversal guarded) |
 | POST | `/api/skills/upload` | Upload skill zip |
-| POST | `/api/skills/{id}/fork` | Fork a skill |
+| POST | `/api/skills/{id}/fork` | Fork a skill (allocates isolated dir + copies SKILL.md) |
 | POST | `/api/skills/{id}/abtest` | Start skill A/B validation |
-| POST | `/api/skills/{id}/evolve` | Start skill evolution |
+| POST | `/api/skills/{id}/evolve` | Start skill evolution (uses recent EVAL failures) |
+| POST | `/api/skills/abrun/{abRunId}/promote-manual` | **V1 polish** — promote a non-passing candidate manually |
+| POST | `/api/skills/{id}/rollback` | **V1 polish** — disable candidate + re-enable parent |
+| POST | `/api/skills/{id}/evaluate?userId=&agentId=&datasetId=` | **EVOLVE-LOOP** — single-skill EVAL run, writes to `t_skill_eval_history` |
+| GET | `/api/skills/{id}/eval-history?userId=&limit=` | **EVOLVE-LOOP** — paginated eval history (drives 5-dim line chart) |
 | POST | `/api/skills/{id}/usage` | Record skill usage outcome |
 | GET | `/api/skill-drafts` | List generated skill drafts |
-| PATCH | `/api/skill-drafts/{id}` | Approve or discard a skill draft |
-| DELETE | `/api/skills/{id}` | Delete user skill |
+| PATCH | `/api/skill-drafts/{id}` | Approve / discard / rename (`{ action, newName? }`) |
+| POST | `/api/skill-drafts/{id}/merge?targetSkillId=` | **V2** — merge draft content into existing skill (resolves 409 NAME_CONFLICT) |
+| GET | `/api/skills/drafts?userId=&status=&page=&pageSize=` | **V2.5** — paged draft list |
+| GET | `/api/skills/drafts/count?userId=&status=` | **V2.5** — pending count for badge |
+| POST | `/api/skills/drafts/{id}/approve` | **V2.5 alias** — POST style approve |
+| POST | `/api/skills/drafts/{id}/reject` | **V2.5 alias** — POST style reject |
+| DELETE | `/api/skills/{id}` | Delete user skill (sibling-aware: re-registers active sibling, skips shared-dir wipe) |
 | PUT | `/api/skills/{id}/toggle` | Toggle skill |
+| POST | `/api/admin/skill-evolve-loop/extract/run-once` | Admin manual trigger for the daily extract cron |
+| POST | `/api/admin/skill-evolve-loop/evaluate/run-once` | Admin manual trigger for the weekly evaluator cron |
+| POST | `/api/admin/skill-evolve-loop/self-improve/run-once` | Admin manual trigger for the weekly self-improve cron |
 
 ### Observability
 
@@ -590,6 +681,8 @@ clawhub:
 | PATCH | `/api/memories/{id}/status` | Update lifecycle status |
 | DELETE | `/api/memories/{id}` | Delete memory |
 | DELETE | `/api/memories/batch` | Delete selected memories |
+| POST | `/api/admin/memory/consolidation/run-once?userId=` | **Dream Cron** — manual trigger; returns `{ totals: { dedupArchived, ttlArchived, staleTransitioned, capacityDemoted, expiredDeleted, activeAfter } }` |
+| GET | `/api/dashboard/skill-summary?userId=` | **Dashboard** — aggregated counters (auto-upgraded / pending drafts / failed evolve / total enabled / low-score) |
 
 ### Channels (Multi-Platform Gateway)
 
@@ -685,14 +778,19 @@ my-skill.zip
 
 - **Agent Loop engine** with multi-provider LLM streaming (Claude, OpenAI-compatible, DeepSeek, Bailian, vLLM, Ollama)
 - **Tool & Skill system** — Java tools + file-based SKILL.md packages + marketplace (ClawHub / SkillHub)
-- **Dashboard** — login, chat, sessions, agents, tools, skills, traces, replay, memories, usage, teams, eval, channels, hook methods
+- **Dashboard** — login, chat, sessions, agents, tools, skills, traces, replay, memories, usage, teams, eval, channels, hook methods, scheduled tasks, MCP servers, drafts
 - **SubAgent orchestration** — tree topology, persistent across restarts, recovery + sweeper
 - **Multi-Agent Collaboration** — network topology, roster, adjacency policy, cascade cancel, lightContext (~30-50% token save)
 - **Context compaction** — light + full + time-based cold cleanup + session-memory compact + 6 trigger sources (JVM-GC style)
-- **Memory system** — 5 types, **pgvector + FTS hybrid retrieval (RRF)**, idle-window extraction, **LLM semantic extraction mode**, lifecycle status, batch operations, rollback/refresh
+- **Memory system** — 5 types, **pgvector + FTS hybrid retrieval (RRF)**, idle-window extraction, **LLM semantic extraction mode**, lifecycle status, batch operations, rollback/refresh, **Dream Consolidation cron + embedding dedup + per-action archive reason** (V2.5)
 - **Self-Improve Pipeline** — eval runner, LLM judge (2×Haiku + Sonnet meta), 7×5 attribution matrix, prompt A/B auto-promotion (Δ≥15pp + 4-layer Goodhart safeguards), session→scenario extraction
 - **Session message storage** — row-based (`t_session_message`), append-only, checkpoint / branch / restore
-- **Skill self-evolution** — session → skill extraction, version management, A/B validation, auto-promotion/rollback
+- **Skill self-evolve closed loop** (5-phase, SKILL-EVOLVE-LOOP) — daily extract cron, single-skill EVAL endpoint + history table, weekly scheduled evaluator, evolve-with-failures, weekly self-improve cron with A/B + auto-promote, WS push, dashboard sparkline + history curve + auto-evolve runs panel
+- **Skill dashboard polish** (V1+V2+V2.5) — aggregate by name, evolution detail tab (Reasoning / Diff / per-scenario A/B), A/B threshold tooltip, manual promote / rollback, Drafts top-level entry + sidebar badge, exact-name draft skip, dashboard 5-stat summary card, real merge UX (Update existing / Rename / Reject), version tree (default + `?format=tree`), sibling-aware delete, isolated fork path, manual SKILL.md edit, generic file browser (references / scripts / assets / hooks)
+- **MCP Client (P11)** — stdio transport + per-agent tool gating + tool name prefixing + lifecycle reload (V61); default dogfood `time` server + dashboard `/mcp-servers` CRUD
+- **Slash Commands (P10)** — 8 commands (`/new` `/compact` `/model` `/models` `/skill` `/tool` `/context` `/help`) with FE popup + channel intercept (V60)
+- **Scheduled Tasks (P12)** — user-defined cron / one-shot, agent tools (Create/Update/Delete/List/Get), dashboard `/schedules` + run history (V59)
+- **Prompt Cache (P13)** — 5-provider auto-cache, stable-prompt SHA stability, `cache_break` detection, dashboard hit-rate badge (V62)
 - **Multi-channel gateway** — `ChannelAdapter` SPI, Feishu (WebSocket + webhook), Telegram, 3-phase delivery tx, retry/dedup, `/channels` dashboard
 - **Lifecycle Hooks** — SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / SessionEnd with Skill / Script / BuiltInMethod / CompiledMethod handler types, chain execution, discriminated-union editor
 - **Behavior Rules** — 15 built-in rules + preset templates + per-agent custom rules (XML-sandboxed)
@@ -704,11 +802,14 @@ my-skill.zip
 
 ### Planned
 
+- **Embedding cosine activation** — flip `embedding.enabled: true` + install pgvector → activate L2 (write-time `≥0.95 update / ≥0.85 merge`) + L4 (cron 0.85 dedup) memory dedup. **Code is shipped**; only awaits external embedding API key + DB extension.
+- **Stream tool dispatch** — early-dispatch tool_use as soon as `content_block_stop` fires (Claude) or `tool_calls.index` transitions (OpenAI), saving ~1-3s per loop. **Research done** (`/tmp/stream-tool-research.md`); held until SkillForge has Claude API access (current default-provider is bailian/qwen).
+- **Pre-tool-use permission hook** — `PRE_TOOL_USE` event + `Tool.checkPermissions` + 3-tier rules (allow / ask / deny) for unknown-user channel deployment safety
+- **Multimodal MVP** — image / PDF / Word / Excel upload + vision-provider fallback (chat upload entry currently absent)
 - **Memory quality evals (P3)** — broader quality scoring and auto-rollback policy after negative Δ
 - **Tool output fine-grained trimming (P9-2/4/5/7)** — per-message aggregate budget with on-disk archival, partial compaction (head/tail), post-compact context restoration, `jtokkit` local token counter
-- **Slash commands (P10)** — `/new`, `/compact`, `/clear`, `/model`, `/help` in the chat input
-- **Agent discovery + cross-agent calls (P11)** — `AgentDiscoverySkill`, call-by-name, visibility, cycle detection
-- **Scheduled tasks (P12)** — user-defined cron / one-shot triggers, system-job registry, unified `/schedules` UI, run history
+- **MCP Server (reverse)** — expose SkillForge as an MCP server to Claude Desktop / Cursor / VS Code
+- **Skill main-detail refactor** — split `t_skill` into `t_skill_main` (business identity) + `t_skill_version` (version snapshot) when multi-tenant audit pressure arrives
 - **JWT authentication** and Redis-backed multi-instance deployment
 
 ## License
