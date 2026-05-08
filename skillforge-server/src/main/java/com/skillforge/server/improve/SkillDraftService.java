@@ -304,6 +304,28 @@ public class SkillDraftService {
             throw new RuntimeException("Draft is not in 'draft' status: " + draftId);
         }
 
+        // SKILL-DASHBOARD-POLISH-V2 §H — pre-flight exact-name match check.
+        // Run BEFORE the high-sim gate so the FE gets a structured 409 with
+        // existingSkillId and can offer "Update existing" as a merge action
+        // even when similarity scoring (which is fuzzy and language-sensitive)
+        // didn't trip the high gate. Only flags currently-enabled rows because
+        // V64 partial unique index is partial on enabled=true — disabled rows
+        // (forks, archived candidates) should not block a fresh approve.
+        Long ownerForCheck = draft.getOwnerId();
+        if (ownerForCheck != null && draft.getName() != null && !draft.getName().isBlank()) {
+            SkillEntity existing = skillRepository
+                    .findFirstByOwnerIdAndNameAndEnabledTrue(ownerForCheck, draft.getName())
+                    .orElse(null);
+            if (existing != null) {
+                throw new SkillNameConflictException(
+                        "Skill named '" + draft.getName() + "' already exists for this owner. "
+                                + "Use POST /skill-drafts/{id}/merge?targetSkillId="
+                                + existing.getId() + " to update it, or rename the draft.",
+                        draft.getName(),
+                        existing.getId());
+            }
+        }
+
         // STEP 0 (gate): high-similarity drafts require explicit forceCreate=true.
         // This is the BE half of the FE Modal.confirm + forceCreate flow (plan §9).
         Double sim = draft.getSimilarity();
@@ -413,6 +435,190 @@ public class SkillDraftService {
         }
 
         return savedDraft;
+    }
+
+    /**
+     * SKILL-DASHBOARD-POLISH-V2 §H — Rename branch of the merge UX modal.
+     *
+     * <p>When the operator hits a 409 NAME_CONFLICT and chooses "Rename and create new",
+     * the FE re-submits the approve PATCH with {@code newName} populated. The controller
+     * calls this method first, then continues into the normal {@link #approveDraft} path
+     * which re-runs the exact-name + high-sim gates against the new name.
+     *
+     * <p>Why this lives here (not inline in the controller):
+     * <ul>
+     *   <li>Holds the pessimistic write lock so a concurrent approve/discard can't race.</li>
+     *   <li>Validates the draft is still in {@code draft} status before mutating name.</li>
+     *   <li>Empty/blank newName is rejected — the controller already filtered, but defense in depth.</li>
+     * </ul>
+     *
+     * <p>This method does NOT trigger the exact-name precheck itself — that's
+     * deliberate, the subsequent {@link #approveDraft} call does it. If the new
+     * name still collides, the operator gets another 409 and can pick again.
+     *
+     * @param draftId    UUID of the draft row
+     * @param newName    new draft name (non-blank)
+     * @param reviewedBy user id of the operator (for audit; the actual {@code reviewedBy}
+     *                   stamp on the draft row is set by the subsequent approve call)
+     * @return the renamed draft (still {@code status='draft'})
+     */
+    @Transactional
+    public SkillDraftEntity renameDraft(String draftId, String newName, Long reviewedBy) {
+        if (newName == null || newName.isBlank()) {
+            throw new IllegalArgumentException("newName must not be blank");
+        }
+        SkillDraftEntity draft = skillDraftRepository.findByIdForUpdate(draftId)
+                .orElseThrow(() -> new RuntimeException("Skill draft not found: " + draftId));
+        if (!"draft".equals(draft.getStatus())) {
+            throw new RuntimeException("Draft is not in 'draft' status: " + draftId);
+        }
+        draft.setName(newName.trim());
+        SkillDraftEntity saved = skillDraftRepository.save(draft);
+        log.info("Renamed draft id={} to name='{}' by reviewer={}", draftId, draft.getName(), reviewedBy);
+        return saved;
+    }
+
+    /**
+     * SKILL-DASHBOARD-POLISH-V2 §H — merge a draft into an existing user skill.
+     *
+     * <p>Steps:
+     * <ol>
+     *   <li>Lock draft (pessimistic write) + validate {@code status='draft'}.</li>
+     *   <li>Load target skill; ownership check ensures draft.ownerId == target.ownerId.</li>
+     *   <li>Render new SKILL.md to target.skillPath (overwrites existing). The target
+     *       row's {@code skillPath} must be set; we don't allocate a new path because
+     *       merge implies "keep the same skill identity, replace the artifact".</li>
+     *   <li>Update target skill's description / triggers / promptHint / requiredTools
+     *       from draft. <b>Do NOT touch enabled / usageCount / successCount / failureCount /
+     *       version / parentSkillId / semver</b> — those are runtime state, and changing
+     *       enabled would re-trigger the V64 partial unique index check which is exactly
+     *       what merge avoids vs forceCreate.</li>
+     *   <li>Update draft: {@code status='approved'}, {@code skillId=targetSkillId},
+     *       {@code reviewedAt=now}, {@code reviewedBy}.</li>
+     *   <li>Re-register the SkillDefinition afterCommit so the SkillRegistry picks
+     *       up the new prompt body (best effort — UserSkillLoader recovers on restart).</li>
+     * </ol>
+     *
+     * @param draftId        UUID of the draft row
+     * @param targetSkillId  id of an existing user-owned (non-system) skill to update
+     * @param reviewedBy     user id of the operator
+     * @return the updated draft (status now "approved")
+     */
+    @Transactional
+    public SkillDraftEntity mergeIntoExistingSkill(String draftId, Long targetSkillId, Long reviewedBy) {
+        // STEP 1 — lock draft + validate
+        SkillDraftEntity draft = skillDraftRepository.findByIdForUpdate(draftId)
+                .orElseThrow(() -> new RuntimeException("Skill draft not found: " + draftId));
+        if (!"draft".equals(draft.getStatus())) {
+            throw new RuntimeException("Draft is not in 'draft' status: " + draftId);
+        }
+
+        // STEP 2 — load target skill + ownership check
+        SkillEntity target = skillRepository.findById(targetSkillId)
+                .orElseThrow(() -> new RuntimeException("Target skill not found: " + targetSkillId));
+        if (target.isSystem()) {
+            throw new RuntimeException("Cannot merge into a system skill: " + targetSkillId);
+        }
+        // ownership: draft.ownerId must match target.ownerId; system skills (ownerId==null)
+        // are blocked above, and a draft from owner X must not write into owner Y's skill.
+        if (target.getOwnerId() == null
+                || draft.getOwnerId() == null
+                || !target.getOwnerId().equals(draft.getOwnerId())) {
+            throw new RuntimeException("Ownership mismatch: draft owner " + draft.getOwnerId()
+                    + " cannot merge into skill " + targetSkillId
+                    + " (owner " + target.getOwnerId() + ")");
+        }
+
+        // STEP 3 — render new SKILL.md to target.skillPath (overwrite existing).
+        String skillPath = target.getSkillPath();
+        if (skillPath == null || skillPath.isBlank()) {
+            throw new RuntimeException("Target skill has no skillPath; cannot render artifact: "
+                    + targetSkillId);
+        }
+        Path targetDir = Path.of(skillPath).toAbsolutePath().normalize();
+        SkillDefinition validatedDef;
+        try {
+            skillCreatorService.render(draft, targetDir);
+            validatedDef = skillPackageLoader.loadFromDirectory(targetDir);
+        } catch (Exception e) {
+            // Don't cleanup — we overwrote an existing artifact in place; deleting the
+            // dir would leave the target in worse shape than before. SkillCatalogReconciler
+            // will re-mark artifactStatus on next scan.
+            throw new SkillApprovalException(
+                    "Skill artifact write/validate failed during merge: " + e.getMessage(), e);
+        }
+
+        // STEP 4 — update target skill content fields (NOT runtime state).
+        // CRITICAL: do NOT touch enabled. Target is presumably already enabled (V64 partial
+        // unique only fires on enabled=true rows; flipping enabled here could collide with
+        // forks). Leaving runtime counters / parent / semver alone preserves audit trail.
+        target.setDescription(draft.getDescription());
+        target.setTriggers(draft.getTriggers());
+        target.setRequiredTools(draft.getRequiredTools());
+        SkillEntity savedTarget = skillRepository.save(target);
+
+        // STEP 5 — flip draft status
+        draft.setStatus("approved");
+        draft.setSkillId(savedTarget.getId());
+        draft.setReviewedAt(Instant.now());
+        draft.setReviewedBy(reviewedBy);
+        SkillDraftEntity savedDraft = skillDraftRepository.save(draft);
+
+        // STEP 6 — re-register afterCommit so SkillRegistry serves the new body.
+        final SkillDefinition defForRegistry = validatedDef;
+        final Long persistedSkillId = savedTarget.getId();
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    try {
+                        defForRegistry.setSystem(false);
+                        skillRegistry.registerSkillDefinition(defForRegistry);
+                        log.info("Re-registered skill afterCommit (merge): id={}, name={}",
+                                persistedSkillId, defForRegistry.getName());
+                    } catch (Exception e) {
+                        log.error("Registry afterCommit failed after merge for skill id={}, name={} — "
+                                + "UserSkillLoader will recover on next restart.",
+                                persistedSkillId, defForRegistry.getName(), e);
+                    }
+                }
+            });
+        } else {
+            try {
+                defForRegistry.setSystem(false);
+                skillRegistry.registerSkillDefinition(defForRegistry);
+            } catch (Exception e) {
+                log.error("Registry registration (no-tx fallback) failed after merge for skill id={}: {}",
+                        persistedSkillId, e.getMessage(), e);
+            }
+        }
+
+        return savedDraft;
+    }
+
+    /**
+     * SKILL-DASHBOARD-POLISH-V2 §H — Rename branch of the merge UX modal. Used
+     * when the operator picks "Rename and create new" after a 409 NAME_CONFLICT.
+     * Reset similarity / merge candidate caches so the next approve call rescans
+     * against the new name (would otherwise carry stale flags from the original
+     * extract).
+     */
+    @Transactional
+    public SkillDraftEntity renameDraft(String draftId, String newName, Long reviewedBy) {
+        SkillDraftEntity draft = skillDraftRepository.findByIdForUpdate(draftId)
+                .orElseThrow(() -> new RuntimeException("Skill draft not found: " + draftId));
+        if (!"draft".equals(draft.getStatus())) {
+            throw new RuntimeException("Draft is not in 'draft' status: " + draftId);
+        }
+        if (newName == null || newName.isBlank()) {
+            throw new RuntimeException("newName must not be blank");
+        }
+        draft.setName(newName.trim());
+        // Clear stale dedupe metadata so approveDraft rescans the new name.
+        draft.setSimilarity(null);
+        draft.setMergeCandidateId(null);
+        draft.setMergeCandidateName(null);
+        return skillDraftRepository.save(draft);
     }
 
     @Transactional

@@ -2,6 +2,7 @@ package com.skillforge.server.service;
 
 import com.skillforge.core.skill.SkillPackageLoader;
 import com.skillforge.core.skill.SkillRegistry;
+import com.skillforge.server.repository.SkillEvalHistoryRepository;
 import com.skillforge.server.repository.SkillRepository;
 import com.skillforge.server.skill.SkillStorageService;
 import org.junit.jupiter.api.BeforeEach;
@@ -29,12 +30,14 @@ class SkillServiceRecordUsageTest {
     @Mock private SkillRegistry skillRegistry;
     @Mock private SkillPackageLoader packageLoader;
     @Mock private SkillStorageService skillStorageService;
+    @Mock private SkillEvalHistoryRepository skillEvalHistoryRepository;
 
     private SkillService service;
 
     @BeforeEach
     void setUp() {
-        service = new SkillService(skillRepository, skillRegistry, packageLoader, skillStorageService);
+        service = new SkillService(skillRepository, skillRegistry, packageLoader, skillStorageService,
+                skillEvalHistoryRepository);
     }
 
     @Test

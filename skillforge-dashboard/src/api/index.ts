@@ -465,6 +465,44 @@ export interface SkillVersionEntry {
 export const getSkillVersionChain = (id: number | string) =>
   api.get<SkillVersionEntry[]>(`/skills/${id}/versions`);
 
+/**
+ * SKILL-DASHBOARD-POLISH-V2 §I — node in the per-skill version tree. The BE
+ * walks `parentSkillId` upward (capped at depth 10) for ancestors and
+ * `findByParentSkillId` recursively downward for descendants, attaching the
+ * latest `t_skill_eval_history.composite_score` per node so the drawer can
+ * render scores inline.
+ */
+export interface SkillVersionTreeNode {
+  id: number;
+  name: string;
+  semver?: string;
+  enabled: boolean;
+  /** Latest `t_skill_eval_history.composite_score` (0-100); null when never evaluated. */
+  latestScore?: number | null;
+  /** ISO-8601 createdAt for the per-line "when created" caption. */
+  createdAt?: string;
+  parentSkillId?: number | null;
+  /** BE flags the rooted-at node so the FE can mark "← current" in the tree. */
+  isCurrent?: boolean;
+}
+
+/**
+ * Tree response — `ancestors` runs root→parent (excluding `current`),
+ * `descendants` is the recursive children list (each entry's
+ * `parentSkillId` lets the FE re-build nesting). `current` is always
+ * present and `isCurrent === true`.
+ */
+export interface SkillVersionTreeResponse {
+  ancestors: SkillVersionTreeNode[];
+  current: SkillVersionTreeNode;
+  descendants: SkillVersionTreeNode[];
+}
+
+export const getSkillVersionTree = (skillId: number | string, userId: number) =>
+  api.get<SkillVersionTreeResponse>(`/skills/${skillId}/version-tree`, {
+    params: { userId },
+  });
+
 export const forkSkill = (id: number | string, userId: number) =>
   api.post<SkillVersionEntry>(`/skills/${id}/fork`, null, { params: { userId } });
 
@@ -714,6 +752,30 @@ export const getDashboardOverview = () => api.get('/dashboard/overview');
 export const getDailyUsage = (days = 30) => api.get(`/dashboard/usage/daily?days=${days}`);
 export const getUsageByModel = () => api.get('/dashboard/usage/by-model');
 export const getUsageByAgent = () => api.get('/dashboard/usage/by-agent');
+
+/**
+ * SKILL-DASHBOARD-POLISH-V2 §G — aggregated skill-area stats for the Dashboard
+ * SkillSummaryCard. Computed BE-side from the existing repos so the FE renders
+ * 5 numbers in one round-trip instead of N. All fields are non-negative ints;
+ * absent counts arrive as `0` (BE coerces nulls so the card's "—" empty state
+ * is reserved purely for the load-failure path).
+ */
+export interface SkillDashboardSummary {
+  /** A/B promoted runs created in the last 7d via the system path
+   *  (triggeredByUserId == 0 = scheduled cron). */
+  autoUpgradedThisWeek: number;
+  /** Drafts in `status='draft'` that still need operator review. */
+  pendingDraftsCount: number;
+  /** SkillEvolutionRun rows with `status='FAILED'` created in the last 7d. */
+  failedEvolveThisWeek: number;
+  /** All skills with `enabled=true` (system + custom). */
+  totalEnabledSkills: number;
+  /** Skills whose latest `t_skill_eval_history.composite_score` < 60. */
+  lowScoreSkillsCount: number;
+}
+
+export const getDashboardSkillSummary = (userId: number) =>
+  api.get<SkillDashboardSummary>('/dashboard/skill-summary', { params: { userId } });
 
 // ─── Behavior Rules ─────────────────────────────────────────────────────────
 
@@ -1557,17 +1619,60 @@ export const getSkillDrafts = (userId: number) =>
  * `reviewedBy` even though semantically it is the acting user id. Renaming
  * to `userId` here would 400 every approve/discard until BE catches up
  * (Code Judge r1 B-FE-1).
+ *
+ * SKILL-DASHBOARD-POLISH-V2 §H — `newName` is the optional rename hint sent
+ * by the merge UX modal's "Rename and create new" branch. When BE supports
+ * the field, it persists `draft.name = newName` before re-running the
+ * approve flow (which then no longer collides). Older BE builds ignore the
+ * extra field; in that case the second approve still throws name_conflict
+ * and the FE surfaces the error.
  */
 export const reviewSkillDraft = (
   id: string,
   action: 'approve' | 'discard',
   userId: number,
-  options?: { forceCreate?: boolean },
+  options?: { forceCreate?: boolean; newName?: string },
 ) =>
   api.patch<SkillDraft>(`/skill-drafts/${id}`, {
     action,
     reviewedBy: userId,
     forceCreate: options?.forceCreate ?? false,
+    ...(options?.newName ? { newName: options.newName } : {}),
   });
+
+/**
+ * SKILL-DASHBOARD-POLISH-V2 §H — merge an approved draft into an existing
+ * skill instead of creating a new one. The BE rewrites the target skill's
+ * SKILL.md with the draft's content, updates description/triggers/promptHint,
+ * and marks the draft `status='approved'` with `skillId=targetSkillId`.
+ *
+ * Wire shape (per task brief):
+ *   POST /api/skill-drafts/{id}/merge?targetSkillId=X&reviewedBy=Y
+ */
+export const mergeDraftIntoSkill = (
+  draftId: string,
+  targetSkillId: number,
+  userId: number,
+) =>
+  api.post<SkillDraft>(`/skill-drafts/${draftId}/merge`, null, {
+    params: { targetSkillId, reviewedBy: userId },
+  });
+
+/**
+ * SKILL-DASHBOARD-POLISH-V2 §H — error body shape returned by the BE on
+ * approve when the candidate's name exact-matches an existing skill (case
+ * insensitive). The drawer's merge modal reads `existingSkillId` to drive
+ * the "Update existing" branch; `name` is the conflict name (normalised by
+ * BE so the Modal can show what the user is about to overwrite).
+ */
+export interface DraftNameConflictError {
+  error: 'name_conflict';
+  existingSkillId: number;
+  /** BE-normalised conflict name (matches the existing skill's display name). */
+  name: string;
+  /** Optional: existing skill enabled state — lets the FE distinguish
+   *  "merge into active skill" vs. "merge into disabled skill" copy. */
+  existingSkillEnabled?: boolean;
+}
 
 export default api;

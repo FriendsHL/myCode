@@ -295,6 +295,30 @@ public class SkillController {
         }
     }
 
+    /**
+     * SKILL-DASHBOARD-POLISH-V2 §I — version tree (ancestors + current + descendants)
+     * for the drawer's "Version Tree" tab. Bounded depth (max 10 each direction)
+     * for cycle safety. {@code userId} is required to enforce ownership; system
+     * skills are not exposed via this endpoint.
+     */
+    @GetMapping("/{id}/version-tree")
+    public ResponseEntity<?> getVersionTree(@PathVariable Long id,
+                                            @RequestParam(value = "userId", required = true) Long userId) {
+        try {
+            return ResponseEntity.ok(skillService.getVersionTree(id, userId));
+        } catch (RuntimeException e) {
+            String msg = e.getMessage() != null ? e.getMessage() : "";
+            if (msg.contains("not found")) {
+                return ResponseEntity.notFound().build();
+            }
+            if (msg.contains("does not own") || msg.contains("system skill")) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                        .body(Map.of("error", msg));
+            }
+            return ResponseEntity.badRequest().body(Map.of("error", msg));
+        }
+    }
+
     /** Version chain: returns the current skill + its ancestors + direct children. */
     @GetMapping("/{id}/versions")
     public ResponseEntity<?> getVersionChain(@PathVariable Long id) {

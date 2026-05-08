@@ -9,6 +9,7 @@ import { SkillEvolutionPanel } from './SkillEvolutionPanel';
 import { EvalHistoryPanel } from './EvalHistoryPanel';
 import { AutoEvolveRunsList } from './AutoEvolveRunsList';
 import { EvolutionDetailPanel } from './EvolutionDetailPanel';
+import { VersionTreeView } from './VersionTreeView';
 import { timeAgo } from './utils';
 
 interface SkillDrawerProps {
@@ -24,10 +25,19 @@ interface SkillDrawerProps {
    * Evolution panel renders a hint instead of starting a run.
    */
   sourceAgentId: number | null;
+  /**
+   * SKILL-DASHBOARD-POLISH-V2 §I — page-level callback to swap the drawer's
+   * skill (used by the Version Tree tab's "Open" link). Optional: when
+   * unset, VersionTreeView falls back to showing the skill id without a
+   * clickable handle. The page owner (SkillList) re-uses its `open` state
+   * setter; child sessions / non-owner pages can leave it undefined.
+   */
+  onOpenSkill?: (skillId: number) => void;
 }
 
 export const SkillDrawer: React.FC<SkillDrawerProps> = ({
   skill, tab, setTab, onClose, onToggle, onDelete, currentUserId, sourceAgentId,
+  onOpenSkill,
 }) => {
   const { data: detail, isLoading } = useQuery<SkillDetailData>({
     queryKey: ['skill-detail', skill.id],
@@ -58,6 +68,7 @@ export const SkillDrawer: React.FC<SkillDrawerProps> = ({
           { id: 'eval-history', label: 'Eval History' },
           { id: 'auto-evolve', label: 'Auto-Evolve' },
           { id: 'evolution-detail', label: 'Evolution Detail' },
+          { id: 'version-tree', label: 'Version Tree' },
         ]
       : []),
   ];
@@ -320,6 +331,14 @@ export const SkillDrawer: React.FC<SkillDrawerProps> = ({
 
           {tab === 'evolution-detail' && numericSkillId != null && (
             <EvolutionDetailPanel skillId={numericSkillId} currentUserId={currentUserId} />
+          )}
+
+          {tab === 'version-tree' && numericSkillId != null && currentUserId != null && (
+            <VersionTreeView
+              skillId={numericSkillId}
+              userId={currentUserId}
+              onOpenSkill={onOpenSkill}
+            />
           )}
         </div>
       </aside>

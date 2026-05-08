@@ -5,6 +5,7 @@ import {
   getSkills, uploadSkill, deleteSkill,
   toggleSkill, extractList,
   getSkillDrafts, triggerSkillExtraction, reviewSkillDraft,
+  mergeDraftIntoSkill,
   getAgents,
   rescanSkills,
   getSkillEvalHistory,
@@ -12,6 +13,7 @@ import {
   type RescanReport,
   type EvalHistoryEntry,
 } from '../api';
+import { extractNameConflict, openNameConflictModal } from '../components/skills/draftApproveHelpers';
 import { useAuth } from '../contexts/AuthContext';
 import '../components/agents/agents.css';
 import '../components/skills/skills.css';
@@ -80,24 +82,67 @@ const SkillList: React.FC = () => {
   const drafts: SkillDraft[] = draftsData ?? [];
   const pendingDrafts = useMemo(() => drafts.filter(d => d.status === 'draft'), [drafts]);
 
-  const approveMutation = useMutation({
-    mutationFn: (vars: { id: string; forceCreate?: boolean }) =>
-      reviewSkillDraft(vars.id, 'approve', currentUserId, { forceCreate: vars.forceCreate }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['skill-drafts'] });
-      queryClient.invalidateQueries({ queryKey: ['skills'] });
+  /**
+   * Invalidate the standard set of caches after any draft mutation. Pulled
+   * out so the merge-UX path (which doesn't go through the mutation
+   * onSuccess callback) stays consistent.
+   */
+  const invalidateAfterDraftMutation = () => {
+    queryClient.invalidateQueries({ queryKey: ['skill-drafts'] });
+    queryClient.invalidateQueries({ queryKey: ['skills'] });
+    queryClient.invalidateQueries({ queryKey: ['dashboard-skill-summary'] });
+  };
+
+  /**
+   * Approve flow has two error branches that need different UX:
+   *   - 409 `name_conflict` → open merge UX modal (V2 §H)
+   *   - anything else → red toast
+   * So we hand-roll the catch instead of using the mutation's `onError`.
+   */
+  const approveDraftCore = async (id: string, opts?: { forceCreate?: boolean }) => {
+    const draft = drafts.find((d) => d.id === id);
+    try {
+      await reviewSkillDraft(id, 'approve', currentUserId, opts);
+      invalidateAfterDraftMutation();
       message.success('Skill approved');
-    },
-    onError: (err: unknown) => {
+    } catch (err: unknown) {
+      const conflict = draft ? extractNameConflict(err) : null;
+      if (conflict && draft) {
+        openNameConflictModal({
+          draft,
+          conflict,
+          onMerge: async (targetSkillId) => {
+            await mergeDraftIntoSkill(id, targetSkillId, currentUserId);
+            invalidateAfterDraftMutation();
+            message.success(`Merged into skill #${targetSkillId}`);
+          },
+          onRename: async (newName) => {
+            await reviewSkillDraft(id, 'approve', currentUserId, { newName });
+            invalidateAfterDraftMutation();
+            message.success(`Approved as "${newName}"`);
+          },
+          onReject: async () => {
+            await reviewSkillDraft(id, 'discard', currentUserId);
+            invalidateAfterDraftMutation();
+            message.success('Draft rejected');
+          },
+        });
+        return;
+      }
       const e = err as { response?: { data?: { error?: string } } };
       message.error(e.response?.data?.error || 'Failed to approve draft');
-    },
+    }
+  };
+
+  const approveMutation = useMutation({
+    mutationFn: (vars: { id: string; forceCreate?: boolean }) =>
+      approveDraftCore(vars.id, { forceCreate: vars.forceCreate }),
   });
 
   const discardMutation = useMutation({
     mutationFn: (id: string) => reviewSkillDraft(id, 'discard', currentUserId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['skill-drafts'] });
+      invalidateAfterDraftMutation();
       message.success('Draft discarded');
     },
     onError: () => message.error('Failed to discard draft'),
@@ -106,6 +151,8 @@ const SkillList: React.FC = () => {
   /**
    * Approve handler: when the BE flags a near-duplicate (similarity ≥ 0.85),
    * confirm with the operator and only then send `forceCreate=true` (P1-C-8).
+   * After force-create the BE may still 409 on exact-name match; that's
+   * handled inside `approveDraftCore` (merge UX).
    */
   const handleApproveDraft = (id: string) => {
     const draft = drafts.find(d => d.id === id);
@@ -341,6 +388,22 @@ const SkillList: React.FC = () => {
 
   const openDetail = (s: SkillRow) => { setOpen(s); setDrawerTab('readme'); };
 
+  /**
+   * SKILL-DASHBOARD-POLISH-V2 §I — Version Tree "Open" handler. Looks up
+   * the target skill in the already-loaded list (no extra fetch) and swaps
+   * the drawer's currentSkill. Falls through silently when the id isn't
+   * in `all` (e.g. cross-owner version that the operator can't see).
+   */
+  const openSkillById = (id: number) => {
+    const target = all.find((s) => s.id === id);
+    if (!target) {
+      message.warning(`Skill #${id} not in your list (different owner?)`);
+      return;
+    }
+    setOpen(target);
+    setDrawerTab('version-tree');
+  };
+
   const noAgentTooltip = 'Pick a source agent first';
 
   return (
@@ -463,6 +526,7 @@ const SkillList: React.FC = () => {
           onDelete={(id) => { deleteMutation.mutate(id as number); setOpen(null); }}
           currentUserId={currentUserId}
           sourceAgentId={selectedAgentId}
+          onOpenSkill={openSkillById}
         />
       )}
 

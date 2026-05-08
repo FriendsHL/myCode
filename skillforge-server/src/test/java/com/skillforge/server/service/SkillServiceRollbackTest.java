@@ -3,6 +3,7 @@ package com.skillforge.server.service;
 import com.skillforge.core.skill.SkillPackageLoader;
 import com.skillforge.core.skill.SkillRegistry;
 import com.skillforge.server.entity.SkillEntity;
+import com.skillforge.server.repository.SkillEvalHistoryRepository;
 import com.skillforge.server.repository.SkillRepository;
 import com.skillforge.server.skill.SkillStorageService;
 import org.junit.jupiter.api.BeforeEach;
@@ -40,13 +41,14 @@ class SkillServiceRollbackTest {
     @Mock private SkillRegistry skillRegistry;
     @Mock private SkillPackageLoader skillPackageLoader;
     @Mock private SkillStorageService skillStorageService;
+    @Mock private SkillEvalHistoryRepository skillEvalHistoryRepository;
 
     private SkillService service;
 
     @BeforeEach
     void setUp() {
         service = new SkillService(skillRepository, skillRegistry, skillPackageLoader,
-                skillStorageService);
+                skillStorageService, skillEvalHistoryRepository);
     }
 
     private SkillEntity newSkill(Long id, Long parentSkillId, boolean enabled, String semver) {

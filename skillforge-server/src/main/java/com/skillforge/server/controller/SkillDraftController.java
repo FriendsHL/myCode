@@ -98,9 +98,20 @@ public class SkillDraftController {
         boolean forceCreate = body.containsKey("forceCreate")
                 && Boolean.parseBoolean(String.valueOf(body.get("forceCreate")));
 
+        // SKILL-DASHBOARD-POLISH-V2 §H — Rename branch of the merge UX modal.
+        // When approving with `newName` set, rename the draft first then continue
+        // the normal approve path (re-runs exact-name + high-similarity checks
+        // against the new name).
+        String newName = body.containsKey("newName") && body.get("newName") != null
+                ? body.get("newName").toString().trim()
+                : null;
+
         try {
             SkillDraftEntity result;
             if ("approve".equals(action)) {
+                if (newName != null && !newName.isEmpty()) {
+                    skillDraftService.renameDraft(id, newName, reviewedBy);
+                }
                 result = skillDraftService.approveDraft(id, reviewedBy, forceCreate);
             } else if ("discard".equals(action)) {
                 result = skillDraftService.discardDraft(id, reviewedBy);
@@ -119,12 +130,40 @@ public class SkillDraftController {
             errBody.put("mergeCandidateName", e.getCandidateName());
             return ResponseEntity.status(HttpStatus.CONFLICT).body(errBody);
         } catch (SkillNameConflictException e) {
-            // 409 Conflict — exact-name collision that similarity-based dedupe missed.
+            // 409 Conflict — exact-name collision. SKILL-DASHBOARD-POLISH-V2 §H exposes
+            // existingSkillId so the FE can offer "Update existing" (merge endpoint
+            // below) alongside "Rename and create new" / "Reject draft".
             Map<String, Object> errBody = new LinkedHashMap<>();
             errBody.put("error", e.getMessage());
             errBody.put("code", "NAME_CONFLICT");
             errBody.put("existingSkillName", e.getExistingSkillName());
+            errBody.put("existingSkillId", e.getExistingSkillId());
             return ResponseEntity.status(HttpStatus.CONFLICT).body(errBody);
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    /**
+     * SKILL-DASHBOARD-POLISH-V2 §H — merge a draft into an existing user skill.
+     * Triggered by the FE Modal's "Update existing" branch after a 409 NAME_CONFLICT
+     * exposes {@code existingSkillId}. See {@link SkillDraftService#mergeIntoExistingSkill}.
+     */
+    @PostMapping("/skill-drafts/{id}/merge")
+    public ResponseEntity<Map<String, Object>> mergeDraft(
+            @PathVariable String id,
+            @RequestParam("targetSkillId") Long targetSkillId,
+            @RequestParam("reviewedBy") Long reviewedBy) {
+        if (reviewedBy == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "reviewedBy is required"));
+        }
+        if (targetSkillId == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "targetSkillId is required"));
+        }
+        try {
+            SkillDraftEntity result = skillDraftService.mergeIntoExistingSkill(
+                    id, targetSkillId, reviewedBy);
+            return ResponseEntity.ok(toMap(result));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }

@@ -13,6 +13,8 @@ import ReactECharts from 'echarts-for-react';
 import { useNavigate } from 'react-router-dom';
 import { getDashboardOverview, getDailyUsage, getSessions } from '../api';
 import { useTheme } from '../contexts/ThemeContext';
+import { useAuth } from '../contexts/AuthContext';
+import { SkillSummaryCard } from '../components/skills/SkillSummaryCard';
 
 const { Text } = Typography;
 
@@ -53,6 +55,7 @@ const Dashboard: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
   const { tokens } = useTheme();
+  const { userId: currentUserId } = useAuth();
 
   useEffect(() => {
     const load = async () => {
@@ -150,6 +153,23 @@ const Dashboard: React.FC = () => {
 
   return (
     <div>
+      {/* SKILL-DASHBOARD-POLISH-V2 §G — skill-area summary lives above the
+          token-usage hero so it reads first on the Dashboard. */}
+      <div style={{ marginBottom: 16 }}>
+        <div
+          style={{
+            fontSize: 12,
+            fontWeight: 600,
+            letterSpacing: 0.4,
+            textTransform: 'uppercase',
+            color: 'var(--text-muted)',
+            marginBottom: 8,
+          }}
+        >
+          Skills
+        </div>
+        <SkillSummaryCard userId={currentUserId} />
+      </div>
       <Row gutter={[16, 16]}>
         {kpis.map((k) => (
           <Col xs={24} sm={12} lg={6} key={k.title}>

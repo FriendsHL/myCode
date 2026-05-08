@@ -4,6 +4,8 @@ import com.skillforge.core.model.SkillDefinition;
 import com.skillforge.core.skill.SkillPackageLoader;
 import com.skillforge.core.skill.SkillRegistry;
 import com.skillforge.server.entity.SkillEntity;
+import com.skillforge.server.entity.SkillEvalHistoryEntity;
+import com.skillforge.server.repository.SkillEvalHistoryRepository;
 import com.skillforge.server.repository.SkillRepository;
 import com.skillforge.server.skill.AllocationContext;
 import com.skillforge.server.skill.SkillSource;
@@ -36,15 +38,18 @@ public class SkillService {
     private final SkillRegistry skillRegistry;
     private final SkillPackageLoader skillPackageLoader;
     private final SkillStorageService skillStorageService;
+    private final SkillEvalHistoryRepository skillEvalHistoryRepository;
 
     public SkillService(SkillRepository skillRepository,
                         SkillRegistry skillRegistry,
                         SkillPackageLoader skillPackageLoader,
-                        SkillStorageService skillStorageService) {
+                        SkillStorageService skillStorageService,
+                        SkillEvalHistoryRepository skillEvalHistoryRepository) {
         this.skillRepository = skillRepository;
         this.skillRegistry = skillRegistry;
         this.skillPackageLoader = skillPackageLoader;
         this.skillStorageService = skillStorageService;
+        this.skillEvalHistoryRepository = skillEvalHistoryRepository;
     }
 
     /**
@@ -488,6 +493,118 @@ public class SkillService {
                 candidate.getId(), candidate.getSemver(),
                 parent.getId(), parent.getSemver(), userId);
         return savedParent;
+    }
+
+    /**
+     * SKILL-DASHBOARD-POLISH-V2 §I — build a version tree (ancestors + current +
+     * descendants) for the drawer's "Version Tree" tab.
+     *
+     * <p>Tree limits: max 10 ancestor levels and 10 descendant levels (cycle-safety
+     * + perf cap). Ownership: only the current skill's owner (or null for system rows)
+     * may walk the tree; pass {@code userId=null} to skip the auth check (used by tests
+     * and admin paths).
+     *
+     * <p>Each node is a {@link Map} with: {@code id, name, semver, enabled, source,
+     * createdAt, latestScore, children?} (children present only on descendants).
+     *
+     * @param skillId the focal skill id
+     * @param userId  caller user id; required for ownership check unless null (admin)
+     * @return a map with {@code ancestors}, {@code current}, {@code descendants}
+     * @throws RuntimeException if the skill is not found OR userId mismatches the owner
+     */
+    @Transactional(readOnly = true)
+    public Map<String, Object> getVersionTree(Long skillId, Long userId) {
+        SkillEntity current = skillRepository.findById(skillId)
+                .orElseThrow(() -> new RuntimeException("Skill not found: " + skillId));
+
+        // Ownership: V2 §I says system skill 不暴露 (system has ownerId=null).
+        // For non-system rows, require caller userId == current.ownerId. userId=null
+        // skips the check (admin / internal callers).
+        if (current.isSystem()) {
+            throw new RuntimeException("Cannot expose version tree for system skill: " + skillId);
+        }
+        if (userId != null && current.getOwnerId() != null
+                && !current.getOwnerId().equals(userId)) {
+            throw new RuntimeException("Caller userId=" + userId
+                    + " does not own skill id=" + skillId);
+        }
+
+        final int MAX_DEPTH = 10;
+
+        // Walk ancestors: root → parent (oldest first).
+        List<Map<String, Object>> ancestors = new ArrayList<>();
+        java.util.Set<Long> visited = new java.util.HashSet<>();
+        visited.add(current.getId());
+        SkillEntity cursor = current;
+        for (int i = 0; i < MAX_DEPTH; i++) {
+            Long parentId = cursor.getParentSkillId();
+            if (parentId == null || !visited.add(parentId)) {
+                break;
+            }
+            SkillEntity parent = skillRepository.findById(parentId).orElse(null);
+            if (parent == null) {
+                break;
+            }
+            ancestors.add(0, toVersionNode(parent, false));
+            cursor = parent;
+        }
+
+        // Recursive descendants — depth-bounded.
+        List<Map<String, Object>> descendants = collectDescendants(skillId, visited, 1, MAX_DEPTH);
+
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("ancestors", ancestors);
+        result.put("current", toVersionNode(current, false));
+        result.put("descendants", descendants);
+        return result;
+    }
+
+    private List<Map<String, Object>> collectDescendants(Long parentId,
+                                                         java.util.Set<Long> visited,
+                                                         int depth,
+                                                         int maxDepth) {
+        if (depth > maxDepth) {
+            return List.of();
+        }
+        List<SkillEntity> children = skillRepository.findByParentSkillId(parentId);
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (SkillEntity child : children) {
+            if (child.getId() == null || !visited.add(child.getId())) {
+                continue;  // cycle guard
+            }
+            Map<String, Object> node = toVersionNode(child, true);
+            node.put("children", collectDescendants(child.getId(), visited, depth + 1, maxDepth));
+            result.add(node);
+        }
+        return result;
+    }
+
+    private Map<String, Object> toVersionNode(SkillEntity entity, boolean withChildren) {
+        Map<String, Object> node = new java.util.LinkedHashMap<>();
+        node.put("id", entity.getId());
+        node.put("name", entity.getName());
+        node.put("semver", entity.getSemver());
+        node.put("enabled", entity.isEnabled());
+        node.put("source", entity.getSource());
+        node.put("createdAt", entity.getCreatedAt());
+        node.put("parentSkillId", entity.getParentSkillId());
+        // Latest composite score (nullable). Best-effort lookup; failures degrade
+        // gracefully to null so a transient eval-history outage doesn't break the
+        // version tree drawer.
+        Double latestScore = null;
+        try {
+            SkillEvalHistoryEntity latest = skillEvalHistoryRepository
+                    .findFirstBySkillIdOrderByCreatedAtDesc(entity.getId())
+                    .orElse(null);
+            if (latest != null) {
+                latestScore = latest.getCompositeScore();
+            }
+        } catch (Exception e) {
+            log.warn("getVersionTree: latestScore lookup failed for skillId={}: {}",
+                    entity.getId(), e.getMessage());
+        }
+        node.put("latestScore", latestScore);
+        return node;
     }
 
     /**

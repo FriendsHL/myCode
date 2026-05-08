@@ -18,6 +18,15 @@ public interface SkillRepository extends JpaRepository<SkillEntity, Long> {
 
     Optional<SkillEntity> findByName(String name);
 
+    /**
+     * SKILL-DASHBOARD-POLISH-V2 §H — pre-flight exact-name lookup for approveDraft.
+     * Returns the currently enabled skill row whose (ownerId, name) matches; aligns
+     * with the V64 partial unique index {@code uq_t_skill_owner_name_enabled}.
+     * <p>{@code findFirst} avoids implying a unique constraint at the JPA layer
+     * (ownerId can be null on system rows; partial index only fires when enabled).
+     */
+    Optional<SkillEntity> findFirstByOwnerIdAndNameAndEnabledTrue(Long ownerId, String name);
+
     List<SkillEntity> findBySource(String source);
 
     List<SkillEntity> findByParentSkillId(Long parentSkillId);

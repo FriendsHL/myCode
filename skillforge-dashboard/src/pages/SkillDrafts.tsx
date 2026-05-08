@@ -3,11 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import { Modal, message } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  getSkillDrafts, reviewSkillDraft,
+  getSkillDrafts, reviewSkillDraft, mergeDraftIntoSkill,
   type SkillDraft,
 } from '../api';
 import { useAuth } from '../contexts/AuthContext';
 import { SkillDraftsSection } from '../components/skills/SkillDraftPanel';
+import { extractNameConflict, openNameConflictModal } from '../components/skills/draftApproveHelpers';
 import '../components/agents/agents.css';
 import '../components/skills/skills.css';
 
@@ -36,24 +37,57 @@ const SkillDraftsPage: React.FC = () => {
   const drafts: SkillDraft[] = useMemo(() => draftsData ?? [], [draftsData]);
   const pendingDrafts = useMemo(() => drafts.filter(d => d.status === 'draft'), [drafts]);
 
-  const approveMutation = useMutation({
-    mutationFn: (vars: { id: string; forceCreate?: boolean }) =>
-      reviewSkillDraft(vars.id, 'approve', currentUserId, { forceCreate: vars.forceCreate }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['skill-drafts'] });
-      queryClient.invalidateQueries({ queryKey: ['skills'] });
+  /** Same shape as SkillList's helper — see SkillList.tsx for rationale. */
+  const invalidateAfterDraftMutation = () => {
+    queryClient.invalidateQueries({ queryKey: ['skill-drafts'] });
+    queryClient.invalidateQueries({ queryKey: ['skills'] });
+    queryClient.invalidateQueries({ queryKey: ['dashboard-skill-summary'] });
+  };
+
+  const approveDraftCore = async (id: string, opts?: { forceCreate?: boolean }) => {
+    const draft = drafts.find((d) => d.id === id);
+    try {
+      await reviewSkillDraft(id, 'approve', currentUserId, opts);
+      invalidateAfterDraftMutation();
       message.success('Skill approved');
-    },
-    onError: (err: unknown) => {
+    } catch (err: unknown) {
+      const conflict = draft ? extractNameConflict(err) : null;
+      if (conflict && draft) {
+        openNameConflictModal({
+          draft,
+          conflict,
+          onMerge: async (targetSkillId) => {
+            await mergeDraftIntoSkill(id, targetSkillId, currentUserId);
+            invalidateAfterDraftMutation();
+            message.success(`Merged into skill #${targetSkillId}`);
+          },
+          onRename: async (newName) => {
+            await reviewSkillDraft(id, 'approve', currentUserId, { newName });
+            invalidateAfterDraftMutation();
+            message.success(`Approved as "${newName}"`);
+          },
+          onReject: async () => {
+            await reviewSkillDraft(id, 'discard', currentUserId);
+            invalidateAfterDraftMutation();
+            message.success('Draft rejected');
+          },
+        });
+        return;
+      }
       const e = err as { response?: { data?: { error?: string } } };
       message.error(e.response?.data?.error || 'Failed to approve draft');
-    },
+    }
+  };
+
+  const approveMutation = useMutation({
+    mutationFn: (vars: { id: string; forceCreate?: boolean }) =>
+      approveDraftCore(vars.id, { forceCreate: vars.forceCreate }),
   });
 
   const discardMutation = useMutation({
     mutationFn: (id: string) => reviewSkillDraft(id, 'discard', currentUserId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['skill-drafts'] });
+      invalidateAfterDraftMutation();
       message.success('Draft discarded');
     },
     onError: () => message.error('Failed to discard draft'),
