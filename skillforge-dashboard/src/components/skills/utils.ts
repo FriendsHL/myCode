@@ -66,6 +66,7 @@ export function normalizeSkill(raw: Record<string, unknown>): SkillRow {
     toolSchema: raw.toolSchema,
     semver: raw.semver ? String(raw.semver) : undefined,
     parentSkillId: raw.parentSkillId != null ? Number(raw.parentSkillId) : undefined,
+    ownerId: raw.ownerId != null ? Number(raw.ownerId) : undefined,
     usageCount: raw.usageCount != null ? Number(raw.usageCount) : undefined,
     successCount: raw.successCount != null ? Number(raw.successCount) : undefined,
     failureCount: raw.failureCount != null ? Number(raw.failureCount) : undefined,

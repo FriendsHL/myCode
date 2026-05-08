@@ -7,6 +7,7 @@ import com.skillforge.server.entity.SkillEntity;
 import com.skillforge.server.entity.SkillEvolutionRunEntity;
 import com.skillforge.server.improve.SkillAbEvalService;
 import com.skillforge.server.improve.SkillEvolutionService;
+import com.skillforge.server.repository.SkillRepository;
 import com.skillforge.server.service.SkillService;
 import com.skillforge.server.skill.BatchImportResult;
 import com.skillforge.server.skill.RescanReport;
@@ -27,6 +28,9 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -60,13 +64,15 @@ public class SkillController {
     private final SkillCatalogReconciler reconciler;
     private final UserSkillLoader userSkillLoader;
     private final SkillBatchImporter skillBatchImporter;
+    private final SkillRepository skillRepository;
 
     public SkillController(SkillService skillService, SkillRegistry skillRegistry,
                            SkillAbEvalService skillAbEvalService,
                            SkillEvolutionService skillEvolutionService,
                            SkillCatalogReconciler reconciler,
                            UserSkillLoader userSkillLoader,
-                           SkillBatchImporter skillBatchImporter) {
+                           SkillBatchImporter skillBatchImporter,
+                           SkillRepository skillRepository) {
         this.skillService = skillService;
         this.skillRegistry = skillRegistry;
         this.skillAbEvalService = skillAbEvalService;
@@ -74,6 +80,7 @@ public class SkillController {
         this.reconciler = reconciler;
         this.userSkillLoader = userSkillLoader;
         this.skillBatchImporter = skillBatchImporter;
+        this.skillRepository = skillRepository;
     }
 
     /**
@@ -148,6 +155,10 @@ public class SkillController {
         item.put("requiredTools", entity.getRequiredTools());
         item.put("enabled", entity.isEnabled());
         item.put("system", entity.isSystem());
+        // SKILL-DASHBOARD-POLISH §A — needed by FE SkillTable to bucket rows by
+        // (ownerId, name) for version aggregation. Without this, multi-tenant
+        // instances would collapse different users' same-name skills into one row.
+        item.put("ownerId", entity.getOwnerId());
         // Plan r2 §8 W-1 — alias for FE that prefers `isSystem` (matches DTO field name).
         item.put("isSystem", entity.isSystem());
         item.put("source", entity.getSource());
@@ -392,6 +403,13 @@ public class SkillController {
         m.put("deltaPassRate", r.getDeltaPassRate());
         m.put("promoted", r.isPromoted());
         m.put("skipReason", r.getSkipReason());
+        m.put("failureReason", r.getFailureReason());
+        m.put("abScenarioResultsJson", r.getAbScenarioResultsJson());
+        // SKILL-DASHBOARD-POLISH §C — derived from skipReason prefix; BE doesn't
+        // store a dedicated column. FE renders distinct "Promoted (manual)" tag.
+        boolean manuallyPromoted = r.getSkipReason() != null
+                && r.getSkipReason().startsWith("manual override");
+        m.put("manuallyPromoted", manuallyPromoted);
         m.put("startedAt", r.getStartedAt());
         m.put("completedAt", r.getCompletedAt());
         return m;
@@ -563,6 +581,95 @@ public class SkillController {
      * @return 200 with {@link BatchImportResult} JSON; 400 if {@code source}
      *         is not a recognised {@link SkillSource} wire name
      */
+    /**
+     * SKILL-DASHBOARD-POLISH B — return the raw SKILL.md content for a user skill.
+     * Used by the Evolution Diff tab to show "before" (parent) and "after" (improved)
+     * SKILL.md side-by-side. Returns:
+     * <ul>
+     *   <li>200 + {@code {content, path}} when SKILL.md exists</li>
+     *   <li>200 + {@code {content:"", path}} (with optional {@code error}) when path is missing
+     *       or the file is not on disk — FE renders "no SKILL.md" rather than crashing.</li>
+     *   <li>403 when caller is not the owner and the skill is not public</li>
+     *   <li>500 on transient I/O failure</li>
+     * </ul>
+     */
+    @GetMapping("/{id}/skill-md")
+    public ResponseEntity<?> getSkillMd(@PathVariable Long id,
+                                        @RequestParam(value = "userId", required = false) Long userId) {
+        SkillEntity entity = skillRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Skill not found: " + id));
+        // Owner-or-public visibility check. ownerId==null on system skills, in which case
+        // anyone can read; system skill SKILL.md is loaded via SystemSkillLoader and the
+        // path is part of the artifact bundle.
+        if (entity.getOwnerId() != null && userId != null
+                && !entity.getOwnerId().equals(userId) && !entity.isPublic()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("error", "forbidden"));
+        }
+        String skillPath = entity.getSkillPath();
+        if (skillPath == null || skillPath.isBlank()) {
+            Map<String, Object> body = new HashMap<>();
+            body.put("content", "");
+            body.put("path", null);
+            return ResponseEntity.ok(body);
+        }
+        Path md = Path.of(skillPath, "SKILL.md");
+        if (!Files.exists(md)) {
+            Map<String, Object> body = new HashMap<>();
+            body.put("content", "");
+            body.put("path", md.toString());
+            body.put("error", "SKILL.md not found");
+            return ResponseEntity.ok(body);
+        }
+        try {
+            String content = Files.readString(md);
+            Map<String, Object> body = new HashMap<>();
+            body.put("content", content);
+            body.put("path", md.toString());
+            return ResponseEntity.ok(body);
+        } catch (IOException e) {
+            return ResponseEntity.internalServerError()
+                    .body(Map.of("error", "Failed to read SKILL.md: " + e.getMessage()));
+        }
+    }
+
+    /**
+     * SKILL-DASHBOARD-POLISH D — manual promote override. The auto-promote thresholds
+     * (delta ≥ 15pp + candidate ≥ 40pp, see {@link SkillAbEvalService}) sometimes
+     * reject candidates the operator wants to ship anyway; this endpoint reuses the
+     * same {@code promoteCandidate} path but is gated on {@code status==COMPLETED}
+     * and not-already-promoted.
+     */
+    @PostMapping("/abrun/{abRunId}/promote-manual")
+    public ResponseEntity<?> manualPromote(@PathVariable String abRunId,
+                                           @RequestBody(required = false) Map<String, Object> body) {
+        Long triggeredByUserId = body != null && body.get("triggeredByUserId") != null
+                ? Long.parseLong(body.get("triggeredByUserId").toString()) : null;
+        try {
+            SkillAbRunEntity result = skillAbEvalService.manualPromote(abRunId, triggeredByUserId);
+            return ResponseEntity.ok(toAbRunMap(result));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    /**
+     * SKILL-DASHBOARD-POLISH D — rollback a promoted candidate (v2) back to its parent (v1).
+     * Reuses {@link SkillService#rollbackToParent}, which honors the V64 partial unique
+     * order (disable candidate first + flush, then enable parent).
+     */
+    @PostMapping("/{id}/rollback")
+    public ResponseEntity<?> rollbackSkill(@PathVariable Long id,
+                                           @RequestBody(required = false) Map<String, Object> body) {
+        Long triggeredByUserId = body != null && body.get("triggeredByUserId") != null
+                ? Long.parseLong(body.get("triggeredByUserId").toString()) : null;
+        try {
+            SkillEntity result = skillService.rollbackToParent(id, triggeredByUserId);
+            return ResponseEntity.ok(toMapForUserRow(result));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
     @PostMapping("/rescan-marketplace")
     public ResponseEntity<?> rescanMarketplace(
             @RequestParam("source") String sourceWire,

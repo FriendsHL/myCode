@@ -496,6 +496,67 @@ public class SkillAbEvalService {
         }
     }
 
+    /**
+     * SKILL-DASHBOARD-POLISH D — manual promote override. When the auto-promote
+     * thresholds (delta ≥ {@value #PROMOTION_DELTA_THRESHOLD_PP}pp AND candidate
+     * rate ≥ {@value #PROMOTION_MIN_CANDIDATE_RATE_PP}pp) reject a candidate but
+     * the operator wants to promote anyway, this endpoint reuses the same
+     * V64-safe {@link #promoteCandidate} path and stamps the abRun with
+     * {@code promoted=true}.
+     *
+     * <p>Pre-conditions: abRun must exist and be in {@code COMPLETED} status (we
+     * never manually promote a still-RUNNING run, since {@link #promoteCandidate}
+     * would race with the async coordinator).
+     *
+     * <p>Idempotency: if the abRun already has {@code promoted=true} we throw —
+     * the caller should not be trying to promote twice; if the candidate has
+     * already been disabled (rolled back) this surfaces a clear error.
+     *
+     * <p>Side-effects: this path deliberately does NOT publish
+     * {@link SkillAbCompletedEvent}. INV-9 is "auto-promote pushes a WS toast";
+     * manual promote is initiated by the user themselves so a toast is duplicate UI noise.
+     *
+     * @param abRunId id of a {@code COMPLETED} A/B run whose candidate should be promoted
+     * @param userId  caller user id (logged for audit only)
+     * @return the updated {@link SkillAbRunEntity} with {@code promoted=true}
+     */
+    @Transactional
+    public SkillAbRunEntity manualPromote(String abRunId, Long userId) {
+        SkillAbRunEntity abRun = skillAbRunRepository.findById(abRunId)
+                .orElseThrow(() -> new RuntimeException("A/B run not found: " + abRunId));
+        if (!"COMPLETED".equals(abRun.getStatus())) {
+            throw new RuntimeException("A/B run is not in COMPLETED status (current: "
+                    + abRun.getStatus() + "): " + abRunId);
+        }
+        if (abRun.isPromoted()) {
+            throw new RuntimeException("A/B run is already promoted: " + abRunId);
+        }
+        SkillEntity candidate = skillRepository.findById(abRun.getCandidateSkillId())
+                .orElseThrow(() -> new RuntimeException(
+                        "Candidate skill vanished: " + abRun.getCandidateSkillId()));
+        if (candidate.isEnabled()) {
+            throw new RuntimeException("Candidate skill is already enabled: "
+                    + abRun.getCandidateSkillId());
+        }
+        // Reuse promoteCandidate — it owns the V64 partial-unique-safe ordering
+        // (disable parent + flush, then enable candidate) and registry re-registration.
+        promoteCandidate(candidate);
+
+        abRun.setPromoted(true);
+        // Append a marker to skipReason so the UI can distinguish manual vs auto promote
+        // without adding a new column. INV: only call existing setter (no schema change).
+        String prefix = abRun.getSkipReason() == null ? "" : abRun.getSkipReason() + " | ";
+        abRun.setSkipReason(prefix + "manual override (userId=" + userId + ")");
+        SkillAbRunEntity saved = skillAbRunRepository.save(abRun);
+
+        log.info("Manually promoted abRun={} candidateSkillId={} parentSkillId={} by userId={}",
+                abRunId, abRun.getCandidateSkillId(), abRun.getParentSkillId(), userId);
+        // Note: deliberately NOT calling tryPublishAbCompleted here — the user
+        // initiated this action so a "promoted!" WS toast would be duplicate UI noise
+        // (INV-9: auto-promote pushes a toast; manual promote does not).
+        return saved;
+    }
+
     @Transactional
     public void promoteCandidate(SkillEntity candidateSkill) {
         SkillEntity parentSkill = skillRepository.findById(candidateSkill.getParentSkillId())

@@ -30,6 +30,10 @@ export interface SkillRow {
   toolSchema?: unknown;
   semver?: string;
   parentSkillId?: number;
+  /** SKILL-DASHBOARD-POLISH §A — needed to group same-name versions per
+   *  owner (a skill name uniqueness scope is per ownerId). System skills
+   *  don't expose ownerId; we never aggregate them. */
+  ownerId?: number;
   usageCount?: number;
   successCount?: number;
   /** P1-C-6 telemetry: counted via SkillEntity.failureCount; absent for older rows. */

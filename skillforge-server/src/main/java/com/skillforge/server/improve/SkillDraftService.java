@@ -207,6 +207,23 @@ public class SkillDraftService {
                 if (name == null || name.isBlank() || description == null || description.isBlank()) {
                     continue;
                 }
+                // SKILL-DASHBOARD-POLISH F: skip drafts whose name already collides with an
+                // existing enabled/disabled skill row for this owner — case-insensitive.
+                // Without this skip, the cron extractor would produce a "dead" draft that
+                // approveDraft() can never satisfy: V64's partial unique index on
+                // (owner_id, name) WHERE enabled=true would fire as soon as a forceCreate
+                // approval flips the new row to enabled, producing a 409 SkillNameConflict
+                // error in the UI. Skipping at extraction time is friendlier than rejecting
+                // at approval time. Logged at DEBUG so INFO logs stay clean.
+                final String draftName = name;
+                boolean exactNameExists = existingSkills.stream()
+                        .anyMatch(s -> s.getName() != null
+                                && s.getName().equalsIgnoreCase(draftName));
+                if (exactNameExists) {
+                    log.debug("Skipping draft '{}' for ownerId={}: exact-name match with existing skill",
+                            draftName, resolvedOwnerId);
+                    continue;
+                }
                 SkillDraftEntity entity = new SkillDraftEntity();
                 entity.setId(UUID.randomUUID().toString());
                 entity.setOwnerId(resolvedOwnerId);

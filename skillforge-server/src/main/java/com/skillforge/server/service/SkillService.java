@@ -417,6 +417,80 @@ public class SkillService {
     }
 
     /**
+     * SKILL-DASHBOARD-POLISH D — manual rollback from a promoted candidate back to its parent.
+     * Reverses {@link com.skillforge.server.improve.SkillAbEvalService#promoteCandidate} so the
+     * parent (v1) becomes the active skill again and the candidate (v2) returns to disabled.
+     *
+     * <p><b>Order matters (V64 partial unique index):</b> {@code uq_t_skill_owner_name_enabled}
+     * enforces uniqueness of {@code (owner_id, name)} only WHERE {@code enabled=true}. The
+     * candidate is currently the enabled row, so we must DISABLE it (and {@code flush})
+     * before we ENABLE the parent — otherwise both rows would briefly be enabled at the
+     * same time and the partial unique constraint would fire mid-transaction. This mirrors
+     * {@link com.skillforge.server.improve.SkillAbEvalService#promoteCandidate}, which
+     * disables the parent first and flushes before enabling the candidate.
+     *
+     * <p>Note: the original task brief described the order as "enable parent first, flush,
+     * then disable candidate" — that order is incorrect under V64 and would always
+     * trip the unique index. The implementation here uses the correct order.
+     *
+     * <p>Registry side-effects: parent is re-registered, candidate is unregistered. Failures
+     * here are logged at WARN — DB+disk state is the source of truth, registry is rebuilt
+     * on next startup / rescan if drift occurs.
+     *
+     * @param candidateSkillId id of the currently-enabled candidate (a fork of {@code parent})
+     * @param userId           caller user id (logged for audit; no auth check here, controller decides)
+     * @return the now-enabled parent {@link SkillEntity}
+     */
+    @Transactional
+    public SkillEntity rollbackToParent(Long candidateSkillId, Long userId) {
+        SkillEntity candidate = skillRepository.findById(candidateSkillId)
+                .orElseThrow(() -> new RuntimeException("Skill not found: " + candidateSkillId));
+        if (!candidate.isEnabled()) {
+            throw new RuntimeException("Candidate skill is not currently enabled (already rolled back?): "
+                    + candidateSkillId);
+        }
+        if (candidate.getParentSkillId() == null) {
+            throw new RuntimeException("Candidate skill has no parent — cannot rollback: "
+                    + candidateSkillId);
+        }
+        SkillEntity parent = skillRepository.findById(candidate.getParentSkillId())
+                .orElseThrow(() -> new RuntimeException(
+                        "Parent skill not found: " + candidate.getParentSkillId()));
+
+        // V64: disable candidate FIRST + flush (so candidate.enabled=false hits the index
+        // before parent.enabled=true). Reversing this order would create a moment where
+        // both rows have enabled=true with identical (owner_id, name), violating
+        // uq_t_skill_owner_name_enabled mid-transaction.
+        candidate.setEnabled(false);
+        skillRepository.saveAndFlush(candidate);
+
+        parent.setEnabled(true);
+        SkillEntity savedParent = skillRepository.save(parent);
+
+        // Registry sync — best effort, drift is recoverable on next reconcile.
+        try {
+            skillRegistry.unregisterSkillDefinition(candidate.getName());
+        } catch (RuntimeException unregEx) {
+            log.warn("Rollback: failed to unregister candidate id={} from SkillRegistry: {}",
+                    candidate.getId(), unregEx.getMessage());
+        }
+        if (parent.getSkillPath() != null) {
+            try {
+                SkillDefinition def = skillPackageLoader.loadFromDirectory(Path.of(parent.getSkillPath()));
+                skillRegistry.registerSkillDefinition(def);
+            } catch (Exception regEx) {
+                log.warn("Rollback: failed to re-register parent id={} (path={}) in SkillRegistry: {}",
+                        parent.getId(), parent.getSkillPath(), regEx.getMessage());
+            }
+        }
+
+        log.info("Rolled back skill candidate={} ({}) back to parent={} ({}) by userId={}",
+                candidate.getId(), candidate.getSemver(),
+                parent.getId(), parent.getSemver(), userId);
+        return savedParent;
+    }
+
+    /**
      * Bootstrap semver to "v1" for skills that were created before versioning existed.
      */
     @Transactional

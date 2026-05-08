@@ -1,7 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { Badge } from 'antd';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
+import { getSkillDrafts } from '../api';
 import CmdKPalette, { type PaletteItem } from './CmdKPalette';
 import TweaksPanel from './chat/TweaksPanel';
 import { IconChat, IconSun, IconMoon, IconSettings, IconSparkle } from './chat/ChatIcons';
@@ -16,6 +19,9 @@ const primaryNav: NavItem[] = [
   { key: 'chat', path: '/chat', label: 'Chat' },
   { key: 'agents', path: '/agents', label: 'Agents' },
   { key: 'skills', path: '/skills', label: 'Skills' },
+  // SKILL-DASHBOARD-POLISH §E — Drafts top-level entry. Sits next to Skills
+  // since the draft → skill approve flow is mostly a Skills-page sibling.
+  { key: 'skill-drafts', path: '/skill-drafts', label: 'Drafts' },
   { key: 'tools', path: '/tools', label: 'Tools' },
   { key: 'teams', path: '/teams', label: 'Teams' },
   { key: 'sessions', path: '/sessions', label: 'Sessions' },
@@ -46,8 +52,46 @@ const AppLayout: React.FC = () => {
   const location = useLocation();
   const { theme, toggleTheme } = useTheme();
   const { userId } = useAuth();
+  const queryClient = useQueryClient();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [tweaksOpen, setTweaksOpen] = useState(false);
+
+  // SKILL-DASHBOARD-POLISH §E — pending draft count for the sidebar Badge.
+  // Shares the cache key with the SkillDrafts page so navigating between
+  // them is free; WS pushes invalidate the same key (self-check #3).
+  const { data: draftsData } = useQuery({
+    queryKey: ['skill-drafts', userId],
+    queryFn: () => getSkillDrafts(userId).then(r => r.data),
+    enabled: !!userId,
+    // Don't hammer the BE — drafts only change via cron / explicit extract +
+    // the WS subscription below already invalidates on push.
+    staleTime: 30_000,
+  });
+  const pendingDraftCount = useMemo(
+    () => (draftsData ?? []).filter(d => d.status === 'draft').length,
+    [draftsData],
+  );
+
+  // Layout-level WS subscription for `skill_draft_extracted` so the badge
+  // refreshes even when the user is not on the Skills / Drafts page.
+  // Cleanup must close the socket (frontend.md footgun #2).
+  useEffect(() => {
+    if (!userId) return;
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const token = localStorage.getItem('sf_token') ?? '';
+    const ws = new WebSocket(
+      `${proto}://${window.location.host}/ws/users/${userId}?token=${encodeURIComponent(token)}`,
+    );
+    ws.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data) as { type?: string };
+        if (msg.type === 'skill_draft_extracted') {
+          queryClient.invalidateQueries({ queryKey: ['skill-drafts'] });
+        }
+      } catch { /* ignore */ }
+    };
+    return () => { try { ws.close(); } catch { /* ignore */ } };
+  }, [userId, queryClient]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -94,6 +138,7 @@ const AppLayout: React.FC = () => {
         <nav className="topbar-nav" aria-label="Primary">
           {primaryNav.map((item) => {
             const active = navItemActive(item, location.pathname);
+            const showBadge = item.key === 'skill-drafts' && pendingDraftCount > 0;
             return (
               <Link
                 key={item.key}
@@ -102,7 +147,19 @@ const AppLayout: React.FC = () => {
                 aria-current={active ? 'page' : undefined}
               >
                 {item.key === 'chat' && <IconChat />}
-                {item.label}
+                {showBadge ? (
+                  <Badge
+                    count={pendingDraftCount}
+                    size="small"
+                    offset={[8, -2]}
+                    overflowCount={99}
+                    data-testid="drafts-badge"
+                  >
+                    <span style={{ paddingRight: 2 }}>{item.label}</span>
+                  </Badge>
+                ) : (
+                  item.label
+                )}
               </Link>
             );
           })}

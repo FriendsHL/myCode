@@ -1,17 +1,34 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { message } from 'antd';
+import { message, Modal, Tooltip } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   forkSkill, startSkillAbTest, getSkillAbTests,
+  manualPromoteAbRun, rollbackSkill,
   type SkillAbRun, type SkillVersionEntry,
 } from '../../api';
 import { useAuth } from '../../contexts/AuthContext';
+import type { SkillRow } from './types';
 
 interface SkillAbPanelProps {
   skillId: number;
   /** Source agent id selected in the SkillList header. Required for /abtest BE call. */
   agentId: number | null;
+  /**
+   * SKILL-DASHBOARD-POLISH §D — full SkillRow for the **currently open** skill.
+   * Needed so the panel can decide whether to surface the Rollback button
+   * (only visible when this skill is itself a candidate, i.e. parentSkillId
+   *  != null && enabled). Optional for backwards compat with legacy callers.
+   */
+  skill?: SkillRow;
 }
+
+/**
+ * SKILL-DASHBOARD-POLISH §C/§D — auto-promote thresholds. Mirrors the BE
+ * constants in `SkillAbTestService` so the FE can render the threshold
+ * tooltip and confirm-modal copy without an extra round-trip.
+ */
+const PROMOTE_DELTA_THRESHOLD = 15; // pp
+const PROMOTE_CANDIDATE_FLOOR = 40; // %
 
 function formatPct(v: number | undefined): string {
   if (v == null || !Number.isFinite(v)) return '—';
@@ -43,12 +60,54 @@ function abBadgeStyle(run: SkillAbRun): AbStatusBadgeStyle {
   }
   // COMPLETED
   if (run.promoted) {
-    return { background: 'rgba(54,179,126,0.14)', color: '#36b37e', dotColor: '#36b37e', label: 'Promoted' };
+    return {
+      background: 'rgba(54,179,126,0.14)',
+      color: '#36b37e',
+      dotColor: '#36b37e',
+      label: run.manuallyPromoted ? 'Promoted (manual)' : 'Promoted',
+    };
   }
   return { background: 'rgba(255,159,67,0.14)', color: '#ff9f43', dotColor: '#ff9f43', label: 'Not promoted' };
 }
 
-export const SkillAbPanel: React.FC<SkillAbPanelProps> = ({ skillId, agentId }) => {
+/**
+ * Render the threshold-reasoning tooltip body for the badge. Uses ✓/✗
+ * glyphs against each axis so the operator can see at a glance which
+ * threshold drove the decision.
+ */
+function badgeTooltipBody(run: SkillAbRun): React.ReactNode {
+  if (run.status === 'FAILED') {
+    return run.failureReason || 'A/B run failed without a recorded reason.';
+  }
+  if (run.status === 'PENDING' || run.status === 'RUNNING') {
+    return 'A/B run is still in progress.';
+  }
+  if (run.skipReason) {
+    return `Skipped: ${run.skipReason}`;
+  }
+  // COMPLETED branch — show threshold pass / fail breakdown.
+  const delta = run.deltaPassRate;
+  const cand = run.candidatePassRate;
+  const deltaPass = delta != null && delta >= PROMOTE_DELTA_THRESHOLD;
+  const candPass = cand != null && cand >= PROMOTE_CANDIDATE_FLOOR;
+  return (
+    <div style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 11.5, lineHeight: 1.55 }}>
+      <div>
+        delta = {formatDeltaPp(delta)}{' '}
+        {deltaPass ? '≥ 15 ✓' : `< ${PROMOTE_DELTA_THRESHOLD} ✗`}
+      </div>
+      <div>
+        candidate = {formatPct(cand)}{' '}
+        {candPass ? `≥ ${PROMOTE_CANDIDATE_FLOOR}% ✓` : `< ${PROMOTE_CANDIDATE_FLOOR}% ✗`}
+      </div>
+      {run.manuallyPromoted && (
+        <div style={{ marginTop: 4, color: '#ff9f43' }}>Manually promoted (override).</div>
+      )}
+    </div>
+  );
+}
+
+export const SkillAbPanel: React.FC<SkillAbPanelProps> = ({ skillId, agentId, skill }) => {
   const queryClient = useQueryClient();
   const { userId: currentUserId } = useAuth();
   const [flash, setFlash] = useState<string | null>(null);
@@ -108,7 +167,91 @@ export const SkillAbPanel: React.FC<SkillAbPanelProps> = ({ skillId, agentId }) 
     },
   });
 
+  /**
+   * SKILL-DASHBOARD-POLISH §D — manual promote override. Confirmable so the
+   * operator acknowledges the candidate did NOT pass auto-thresholds.
+   */
+  const promoteMutation = useMutation({
+    mutationFn: (abRunId: string) => manualPromoteAbRun(abRunId, currentUserId),
+    onSuccess: () => {
+      message.success('Candidate promoted manually');
+      queryClient.invalidateQueries({ queryKey: ['skill-ab-tests', skillId] });
+      queryClient.invalidateQueries({ queryKey: ['skills'] });
+    },
+    onError: (err: unknown) => {
+      const e = err as { response?: { data?: { error?: string } }; message?: string };
+      message.error(e.response?.data?.error || e.message || 'Manual promote failed');
+    },
+  });
+
+  /**
+   * SKILL-DASHBOARD-POLISH §D — rollback. Disables the candidate and
+   * re-enables the parent. Only surfaced when the open skill is itself
+   * a candidate (parentSkillId != null && enabled).
+   */
+  const rollbackMutation = useMutation({
+    mutationFn: (candidateSkillId: number) => rollbackSkill(candidateSkillId, currentUserId),
+    onSuccess: () => {
+      message.success('Rolled back to parent version');
+      queryClient.invalidateQueries({ queryKey: ['skills'] });
+      queryClient.invalidateQueries({ queryKey: ['skill-ab-tests', skillId] });
+    },
+    onError: (err: unknown) => {
+      const e = err as { response?: { data?: { error?: string } }; message?: string };
+      message.error(e.response?.data?.error || e.message || 'Rollback failed');
+    },
+  });
+
+  const handleManualPromote = () => {
+    if (!latest) return;
+    const delta = formatDeltaPp(latest.deltaPassRate);
+    const candRate = formatPct(latest.candidatePassRate);
+    Modal.confirm({
+      title: 'Promote anyway?',
+      content: (
+        <div style={{ fontSize: 12.5, lineHeight: 1.55 }}>
+          <p>
+            Candidate did not pass auto-promote thresholds (delta = {delta},{' '}
+            candidate = {candRate}).
+          </p>
+          <p>This will mark the candidate as the active version, disabling the parent.</p>
+        </div>
+      ),
+      okText: 'Promote anyway',
+      cancelText: 'Cancel',
+      okButtonProps: { danger: true },
+      onOk: () => promoteMutation.mutate(latest.id),
+    });
+  };
+
+  const handleRollback = () => {
+    if (!skill || typeof skill.id !== 'number') return;
+    Modal.confirm({
+      title: 'Roll back to parent?',
+      content: (
+        <div style={{ fontSize: 12.5, lineHeight: 1.55 }}>
+          <p>
+            Current candidate version{skill.semver ? ` (${skill.semver})` : ''} will be
+            disabled and the parent skill re-enabled.
+          </p>
+        </div>
+      ),
+      okText: 'Roll back',
+      cancelText: 'Cancel',
+      okButtonProps: { danger: true },
+      onOk: () => rollbackMutation.mutate(skill.id as number),
+    });
+  };
+
   const busy = abMutation.isPending;
+
+  const showManualPromote =
+    !!latest &&
+    latest.status === 'COMPLETED' &&
+    !latest.promoted &&
+    !latest.skipReason;
+  const showRollback =
+    !!skill && skill.parentSkillId != null && skill.enabled === true;
 
   return (
     <div
@@ -133,13 +276,15 @@ export const SkillAbPanel: React.FC<SkillAbPanelProps> = ({ skillId, agentId }) 
         {!isLoading && !isError && !latest && <span>No runs yet</span>}
         {latest && (() => {
           const s = abBadgeStyle(latest);
-          return (
+          const badgeEl = (
             <span
+              data-testid="ab-status-badge"
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: 5,
                 fontSize: 10, padding: '1px 7px', borderRadius: 10,
                 background: s.background, color: s.color,
                 fontFamily: 'var(--font-mono, monospace)',
+                cursor: 'help',
               }}
             >
               <span
@@ -150,6 +295,11 @@ export const SkillAbPanel: React.FC<SkillAbPanelProps> = ({ skillId, agentId }) 
               />
               {s.label}
             </span>
+          );
+          return (
+            <Tooltip title={badgeTooltipBody(latest)} mouseEnterDelay={0.1}>
+              {badgeEl}
+            </Tooltip>
           );
         })()}
       </div>
@@ -171,7 +321,7 @@ export const SkillAbPanel: React.FC<SkillAbPanelProps> = ({ skillId, agentId }) 
         </div>
       )}
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2, flexWrap: 'wrap' }}>
         <button
           className="btn-ghost-sf"
           disabled={busy || agentId == null}
@@ -185,6 +335,33 @@ export const SkillAbPanel: React.FC<SkillAbPanelProps> = ({ skillId, agentId }) 
         >
           {busy ? 'Starting…' : 'Fork & A/B Test'}
         </button>
+
+        {showManualPromote && (
+          <button
+            className="btn-ghost-sf"
+            disabled={promoteMutation.isPending}
+            onClick={handleManualPromote}
+            style={{ fontSize: 11, padding: '3px 10px', color: 'var(--accent, #6366f1)' }}
+            data-testid="manual-promote-btn"
+            title="Promote the candidate anyway, ignoring auto thresholds"
+          >
+            {promoteMutation.isPending ? 'Promoting…' : 'Promote anyway'}
+          </button>
+        )}
+
+        {showRollback && (
+          <button
+            className="btn-ghost-sf"
+            disabled={rollbackMutation.isPending}
+            onClick={handleRollback}
+            style={{ fontSize: 11, padding: '3px 10px', color: 'var(--color-err, #f0616d)' }}
+            data-testid="rollback-btn"
+            title="Disable this candidate and re-enable the parent skill"
+          >
+            {rollbackMutation.isPending ? 'Rolling back…' : 'Rollback to parent'}
+          </button>
+        )}
+
         {flash && (
           <span style={{ fontSize: 11, color: 'var(--accent, #6366f1)' }}>
             {flash}

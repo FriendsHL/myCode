@@ -3,6 +3,7 @@ import AppLayout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import AgentList from './pages/AgentList';
 import SkillList from './pages/SkillList';
+import SkillDrafts from './pages/SkillDrafts';
 import ToolList from './pages/ToolList';
 import SessionList from './pages/SessionList';
 import SessionDetail from './pages/SessionDetail';
@@ -38,6 +39,7 @@ function App() {
             <Route index element={<ErrorBoundary context="Dashboard"><Dashboard /></ErrorBoundary>} />
             <Route path="agents" element={<ErrorBoundary context="Agents"><AgentList /></ErrorBoundary>} />
             <Route path="skills" element={<ErrorBoundary context="Skills"><SkillList /></ErrorBoundary>} />
+            <Route path="skill-drafts" element={<ErrorBoundary context="Skill Drafts"><SkillDrafts /></ErrorBoundary>} />
             <Route path="tools" element={<ErrorBoundary context="Tools"><ToolList /></ErrorBoundary>} />
             <Route path="sessions" element={<ErrorBoundary context="Sessions"><SessionList /></ErrorBoundary>} />
             <Route path="sessions/:id" element={<ErrorBoundary context="SessionDetail"><SessionDetail /></ErrorBoundary>} />

@@ -8,6 +8,7 @@ import { SkillAbPanel } from './SkillAbPanel';
 import { SkillEvolutionPanel } from './SkillEvolutionPanel';
 import { EvalHistoryPanel } from './EvalHistoryPanel';
 import { AutoEvolveRunsList } from './AutoEvolveRunsList';
+import { EvolutionDetailPanel } from './EvolutionDetailPanel';
 import { timeAgo } from './utils';
 
 interface SkillDrawerProps {
@@ -56,6 +57,7 @@ export const SkillDrawer: React.FC<SkillDrawerProps> = ({
       ? [
           { id: 'eval-history', label: 'Eval History' },
           { id: 'auto-evolve', label: 'Auto-Evolve' },
+          { id: 'evolution-detail', label: 'Evolution Detail' },
         ]
       : []),
   ];
@@ -106,7 +108,7 @@ export const SkillDrawer: React.FC<SkillDrawerProps> = ({
               )}
               {showAbPanel && typeof skill.id === 'number' && (
                 <>
-                  <SkillAbPanel skillId={skill.id} agentId={sourceAgentId} />
+                  <SkillAbPanel skillId={skill.id} agentId={sourceAgentId} skill={skill} />
                   {sourceAgentId != null ? (
                     <SkillEvolutionPanel
                       skillId={skill.id}
@@ -314,6 +316,10 @@ export const SkillDrawer: React.FC<SkillDrawerProps> = ({
 
           {tab === 'auto-evolve' && numericSkillId != null && (
             <AutoEvolveRunsList skillId={numericSkillId} />
+          )}
+
+          {tab === 'evolution-detail' && numericSkillId != null && (
+            <EvolutionDetailPanel skillId={numericSkillId} currentUserId={currentUserId} />
           )}
         </div>
       </aside>

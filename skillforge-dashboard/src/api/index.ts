@@ -482,7 +482,19 @@ export interface SkillAbRun {
   candidatePassRate?: number;
   deltaPassRate?: number;
   promoted: boolean;
+  /** SKILL-DASHBOARD-POLISH §D — set true when promoted via manual override
+   *  (BE `promote-manual` endpoint). Lets the FE label the row distinct from
+   *  auto-promote driven by threshold pass.
+   */
+  manuallyPromoted?: boolean;
   skipReason?: string;
+  failureReason?: string;
+  /** Raw JSON column from `t_skill_ab_run.ab_scenario_results_json` —
+   *  serialized List<AbScenarioResult>. EvolutionDetailPanel parses + renders
+   *  the per-scenario baseline-vs-candidate delta table from this. Absent
+   *  while RUNNING/PENDING.
+   */
+  abScenarioResultsJson?: string;
   startedAt?: string;
   completedAt?: string;
 }
@@ -502,6 +514,37 @@ export const getSkillAbTests = (skillId: number | string) =>
 
 export const getSkillAbTest = (abRunId: string) =>
   api.get<SkillAbRun>(`/skills/abtest/${abRunId}`);
+
+/**
+ * SKILL-DASHBOARD-POLISH §D — manual override for an A/B run that did not
+ * auto-promote (delta < 15pp or candidate < 40%). BE writes `manuallyPromoted=true`
+ * and runs the same promotion side-effects as the auto path (parent disable +
+ * candidate enable). 4xx if the run is not COMPLETED or already promoted.
+ */
+export const manualPromoteAbRun = (abRunId: string, triggeredByUserId: number) =>
+  api.post<SkillAbRun>(`/skills/abrun/${abRunId}/promote-manual`, { triggeredByUserId });
+
+/**
+ * SKILL-DASHBOARD-POLISH §D — reverse promote. Disables the candidate and
+ * re-enables the parent skill. BE returns the updated candidate `SkillEntity`
+ * (semver / parentSkillId / enabled mutated). 4xx when the skill has no parent.
+ */
+export const rollbackSkill = (candidateSkillId: number, triggeredByUserId: number) =>
+  api.post<SkillVersionEntry>(`/skills/${candidateSkillId}/rollback`, { triggeredByUserId });
+
+/**
+ * SKILL-DASHBOARD-POLISH §B — fetches the on-disk SKILL.md for the given
+ * skill so the Evolution Detail tab can render a left-vs-right diff against
+ * the candidate's `improvedSkillMd`. `path` is the backing file path and may
+ * be null when the skill has no artifact directory yet.
+ */
+export interface SkillMdResponse {
+  content: string;
+  path: string | null;
+}
+
+export const getSkillMd = (skillId: number, userId: number) =>
+  api.get<SkillMdResponse>(`/skills/${skillId}/skill-md`, { params: { userId } });
 
 // ─── Skill Evolution (P1-4) ─────────────────────────────────────────────────
 
