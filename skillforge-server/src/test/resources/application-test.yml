@@ -1,3 +1,17 @@
 skillforge:
   embedded-postgres:
     enabled: false
+
+# CI fix — `@DataJpaTest` slice 不加载 ObservabilityFlywayConfig
+# (@Configuration 在 slice 之外)，导致它注册的 FlywayConfigurationCustomizer
+# 不在 IT context 里，R__migrate_legacy_{llm_call,trace_span}.sql 引用的
+# `${etl_mode}` / `${etl_trace_span_mode}` placeholder 无值 → flywayInitializer
+# bean creation throws "No value provided for placeholder".
+#
+# 用 Spring Boot 原生 spring.flyway.placeholders 直接喂值，绕开自定义
+# customizer bean 加载与否。Test 环境 ETL 都 off（不跑 legacy 回填）。
+spring:
+  flyway:
+    placeholders:
+      etl_mode: off
+      etl_trace_span_mode: off
