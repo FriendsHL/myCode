@@ -9,6 +9,8 @@ import { useAuth } from '../../contexts/AuthContext';
 
 interface SkillAbPanelProps {
   skillId: number;
+  /** Source agent id selected in the SkillList header. Required for /abtest BE call. */
+  agentId: number | null;
 }
 
 function formatPct(v: number | undefined): string {
@@ -46,7 +48,7 @@ function abBadgeStyle(run: SkillAbRun): AbStatusBadgeStyle {
   return { background: 'rgba(255,159,67,0.14)', color: '#ff9f43', dotColor: '#ff9f43', label: 'Not promoted' };
 }
 
-export const SkillAbPanel: React.FC<SkillAbPanelProps> = ({ skillId }) => {
+export const SkillAbPanel: React.FC<SkillAbPanelProps> = ({ skillId, agentId }) => {
   const queryClient = useQueryClient();
   const { userId: currentUserId } = useAuth();
   const [flash, setFlash] = useState<string | null>(null);
@@ -78,10 +80,16 @@ export const SkillAbPanel: React.FC<SkillAbPanelProps> = ({ skillId }) => {
 
   const abMutation = useMutation({
     mutationFn: async () => {
+      if (agentId == null) {
+        // Defensive: button is disabled when agentId is null, but guard anyway
+        // so the BE 400 ('agentId is required') doesn't surface as an opaque error.
+        return Promise.reject(new Error('Pick a source agent in the Skills header first'));
+      }
       const forkRes = await forkSkill(skillId, currentUserId);
       const forked: SkillVersionEntry = forkRes.data;
       const startRes = await startSkillAbTest(skillId, {
         candidateSkillId: forked.id,
+        agentId: String(agentId),
         triggeredByUserId: currentUserId,
       });
       return startRes.data;
@@ -166,10 +174,14 @@ export const SkillAbPanel: React.FC<SkillAbPanelProps> = ({ skillId }) => {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
         <button
           className="btn-ghost-sf"
-          disabled={busy}
+          disabled={busy || agentId == null}
           onClick={() => abMutation.mutate()}
           style={{ fontSize: 11, padding: '3px 10px' }}
-          title="Fork this skill and launch an A/B test against the parent"
+          title={
+            agentId == null
+              ? 'Pick a source agent in the Skills header first'
+              : 'Fork this skill and launch an A/B test against the parent'
+          }
         >
           {busy ? 'Starting…' : 'Fork & A/B Test'}
         </button>

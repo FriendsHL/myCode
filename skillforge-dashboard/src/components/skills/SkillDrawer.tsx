@@ -6,6 +6,8 @@ import type { SkillRow, SkillDetailData } from './types';
 import { CLOSE_ICON, COPY_ICON } from './icons';
 import { SkillAbPanel } from './SkillAbPanel';
 import { SkillEvolutionPanel } from './SkillEvolutionPanel';
+import { EvalHistoryPanel } from './EvalHistoryPanel';
+import { AutoEvolveRunsList } from './AutoEvolveRunsList';
 import { timeAgo } from './utils';
 
 interface SkillDrawerProps {
@@ -40,11 +42,22 @@ export const SkillDrawer: React.FC<SkillDrawerProps> = ({
     return () => window.removeEventListener('keydown', h);
   }, [onClose]);
 
+  const numericSkillId = typeof skill.id === 'number' ? skill.id : null;
+
   const tabs = [
     { id: 'readme', label: 'SKILL.md' },
     { id: 'files', label: 'Files', count: detail?.references ? Object.keys(detail.references).length : 0 },
     { id: 'source', label: 'Source' },
     ...(skill.toolSchema ? [{ id: 'schema', label: 'Schema' }] : []),
+    // SKILL-EVOLVE-LOOP Phase 6 — eval history + auto-evolve audit, only
+    // for persisted skills (numeric id). Synthesized rows (string id from
+    // the legacy code path in `normalizeSkill`) can't be evaluated yet.
+    ...(numericSkillId != null
+      ? [
+          { id: 'eval-history', label: 'Eval History' },
+          { id: 'auto-evolve', label: 'Auto-Evolve' },
+        ]
+      : []),
   ];
 
   return (
@@ -93,7 +106,7 @@ export const SkillDrawer: React.FC<SkillDrawerProps> = ({
               )}
               {showAbPanel && typeof skill.id === 'number' && (
                 <>
-                  <SkillAbPanel skillId={skill.id} />
+                  <SkillAbPanel skillId={skill.id} agentId={sourceAgentId} />
                   {sourceAgentId != null ? (
                     <SkillEvolutionPanel
                       skillId={skill.id}
@@ -289,6 +302,18 @@ export const SkillDrawer: React.FC<SkillDrawerProps> = ({
               <div className="sf-section-h">Input schema</div>
               <pre className="sf-code-block">{JSON.stringify(skill.toolSchema, null, 2)}</pre>
             </div>
+          )}
+
+          {tab === 'eval-history' && numericSkillId != null && (
+            <EvalHistoryPanel
+              skillId={numericSkillId}
+              currentUserId={currentUserId}
+              agentId={sourceAgentId}
+            />
+          )}
+
+          {tab === 'auto-evolve' && numericSkillId != null && (
+            <AutoEvolveRunsList skillId={numericSkillId} />
           )}
         </div>
       </aside>

@@ -1,14 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Button, Modal, Select, Tooltip, message } from 'antd';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Button, Modal, Select, Tooltip, message, notification } from 'antd';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   getSkills, uploadSkill, deleteSkill,
   toggleSkill, extractList,
   getSkillDrafts, triggerSkillExtraction, reviewSkillDraft,
   getAgents,
   rescanSkills,
+  getSkillEvalHistory,
   type SkillDraft,
   type RescanReport,
+  type EvalHistoryEntry,
 } from '../api';
 import { useAuth } from '../contexts/AuthContext';
 import '../components/agents/agents.css';
@@ -189,7 +191,12 @@ const SkillList: React.FC = () => {
     }
   };
 
-  // WS: auto-refresh drafts when backend finishes extraction
+  // WS: auto-refresh drafts when backend finishes extraction +
+  //     surface SKILL-EVOLVE-LOOP `skill_auto_upgraded` event (Phase 5
+  //     self-improve cron). The same socket carries multiple event
+  //     types — we discriminate on `msg.type` and only react to the
+  //     two we care about. Cleanup must close the socket (frontend.md
+  //     footgun #2: an unclosed WS keeps setState'ing after unmount).
   useEffect(() => {
     if (!currentUserId) return;
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -199,10 +206,42 @@ const SkillList: React.FC = () => {
     );
     ws.onmessage = (ev) => {
       try {
-        const msg = JSON.parse(ev.data) as { type?: string };
+        const msg = JSON.parse(ev.data) as {
+          type?: string;
+          skillId?: number;
+          oldVersion?: string | number;
+          newVersion?: string | number;
+          baselineScore?: number;
+          candidateScore?: number;
+          skillName?: string;
+        };
         if (msg.type === 'skill_draft_extracted') {
           queryClient.invalidateQueries({ queryKey: ['skill-drafts'] });
           setDraftsOpen(true);
+          return;
+        }
+        if (msg.type === 'skill_auto_upgraded') {
+          const baseline = typeof msg.baselineScore === 'number' ? Math.round(msg.baselineScore) : '—';
+          const candidate = typeof msg.candidateScore === 'number' ? Math.round(msg.candidateScore) : '—';
+          const versionPart =
+            msg.oldVersion != null && msg.newVersion != null
+              ? ` ${msg.oldVersion} → ${msg.newVersion}`
+              : '';
+          const skillLabel = msg.skillName ?? (msg.skillId != null ? `#${msg.skillId}` : 'unknown');
+          notification.success({
+            message: 'Skill auto-upgraded',
+            description: `Skill ${skillLabel}${versionPart} promoted via A/B (baseline ${baseline} → candidate ${candidate}).`,
+            duration: 6,
+          });
+          // Refresh both the list (latest score column) and per-skill
+          // history / evolution panels.
+          queryClient.invalidateQueries({ queryKey: ['skills'] });
+          queryClient.invalidateQueries({ queryKey: ['skill-eval-history-list'] });
+          if (msg.skillId != null) {
+            queryClient.invalidateQueries({ queryKey: ['skill-eval-history', msg.skillId] });
+            queryClient.invalidateQueries({ queryKey: ['skill-evolution-runs', msg.skillId] });
+          }
+          return;
         }
       } catch { /* ignore non-JSON */ }
     };
@@ -210,6 +249,46 @@ const SkillList: React.FC = () => {
   }, [currentUserId, queryClient]);
 
   const all = useMemo<SkillRow[]>(() => rawSkills.map(normalizeSkill), [rawSkills]);
+
+  // SKILL-EVOLVE-LOOP Phase 6 — batch-fetch eval history for every skill row
+  // so the table can render Latest Score + Trend without N round-trips on
+  // open. We use one `useQueries` call instead of one query per `<tr>` so
+  // tanstack does the parallelism (one HTTP per skill, dedup'd cache).
+  //
+  // Performance note: at ~100 skills this fires 100 GET /eval-history
+  // requests on mount. Acceptable for V1 (system has fewer than that
+  // today); when skill count grows we'll add a batch endpoint or
+  // server-side aggregate cached in `t_skill`. Marked V2 in tech-design.
+  const numericSkillIds = useMemo<number[]>(
+    () =>
+      all
+        .map((s) => (typeof s.id === 'number' ? s.id : null))
+        .filter((id): id is number => id !== null),
+    [all],
+  );
+
+  const historyQueries = useQueries({
+    queries: numericSkillIds.map((id) => ({
+      queryKey: ['skill-eval-history-list', id, 10] as const,
+      queryFn: () =>
+        getSkillEvalHistory(id, currentUserId, 10).then((r) => r.data),
+      enabled: !!currentUserId,
+      staleTime: 60_000,
+      // Don't retry hard — a missing eval-history is not an error path.
+      retry: 1,
+    })),
+  });
+
+  const skillHistories = useMemo<Map<number, EvalHistoryEntry[]>>(() => {
+    const m = new Map<number, EvalHistoryEntry[]>();
+    numericSkillIds.forEach((id, idx) => {
+      const data = historyQueries[idx]?.data;
+      if (Array.isArray(data) && data.length > 0) {
+        m.set(id, data);
+      }
+    });
+    return m;
+  }, [historyQueries, numericSkillIds]);
 
   const rows = useMemo(() => {
     return all.filter(s => {
@@ -368,7 +447,7 @@ const SkillList: React.FC = () => {
               ))}
             </div>
           ) : (
-            <SkillTable rows={rows} onOpenDetail={openDetail} />
+            <SkillTable rows={rows} onOpenDetail={openDetail} histories={skillHistories} />
           )}
         </div>
       </section>

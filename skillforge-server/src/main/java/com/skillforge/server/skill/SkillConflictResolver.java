@@ -58,7 +58,7 @@ public class SkillConflictResolver {
                 + "VALUES (NULL, :name, :description, :triggers, :requiredTools, :skillPath, "
                 + "        false, true, true, 'system', 0, 0, 0, "
                 + "        :contentHash, 'active', :lastScannedAt) "
-                + "ON CONFLICT (COALESCE(owner_id, -1), name) DO UPDATE SET "
+                + "ON CONFLICT (COALESCE(owner_id, -1), name) WHERE enabled DO UPDATE SET "
                 + "  description     = EXCLUDED.description, "
                 + "  triggers        = EXCLUDED.triggers, "
                 + "  required_tools  = EXCLUDED.required_tools, "

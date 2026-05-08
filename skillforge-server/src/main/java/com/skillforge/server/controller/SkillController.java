@@ -456,6 +456,51 @@ public class SkillController {
         return m;
     }
 
+    /**
+     * SKILL-EVOLVE-LOOP Phase 2 — single-skill direct evaluation. Runs held_out
+     * scenarios against the current skill (no fork, no candidate, no delta) and
+     * persists a row in {@code t_skill_eval_history}. Synchronous: caller waits
+     * for composite_score (~30s/scenario × N scenarios — typical = 1-3 minutes).
+     *
+     * <p>{@code agentId} is required because runBaselineOnly drives the eval
+     * via AgentLoopEngine which needs an AgentDefinition. Pick any agent that
+     * uses this skill (the FE picks the first owner agent by default).
+     */
+    @PostMapping("/{id}/evaluate")
+    public ResponseEntity<?> evaluateSkill(@PathVariable Long id,
+                                           @RequestParam(value = "userId", required = true) Long userId,
+                                           @RequestParam(value = "agentId", required = true) String agentId,
+                                           @RequestParam(value = "datasetId", required = false) String datasetId) {
+        if (agentId == null || agentId.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "agentId is required"));
+        }
+        try {
+            // W1 r1 — Service owns the run + DTO mapping, controller stays thin
+            // (delegates to runBaselineOnly + getEvalHistoryForSkill once persisted).
+            skillAbEvalService.runBaselineOnly(id, agentId, userId, datasetId, "manual");
+            List<Map<String, Object>> latest = skillAbEvalService.getEvalHistoryForSkill(id, 1);
+            return ResponseEntity.ok(latest.isEmpty() ? Map.of() : latest.get(0));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    /**
+     * SKILL-EVOLVE-LOOP Phase 2 — eval history curve for a skill. Returns the
+     * most recent {@code limit} rows (default 20, capped at 100) ordered newest first.
+     *
+     * <p>W1 r1 — query + DTO mapping live in {@link SkillAbEvalService} so the
+     * controller has no Repository dependency.
+     */
+    @GetMapping("/{id}/eval-history")
+    public ResponseEntity<List<Map<String, Object>>> getEvalHistory(
+            @PathVariable Long id,
+            @RequestParam(value = "userId", required = true) Long userId,
+            @RequestParam(value = "limit", required = false, defaultValue = "20") Integer limit) {
+        int requested = limit == null ? 20 : limit;
+        return ResponseEntity.ok(skillAbEvalService.getEvalHistoryForSkill(id, requested));
+    }
+
     /** Record a usage event — called after skill execution completes. */
     @PostMapping("/{id}/usage")
     public ResponseEntity<?> recordUsage(@PathVariable Long id,

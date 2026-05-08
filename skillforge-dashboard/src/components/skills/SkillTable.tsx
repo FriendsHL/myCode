@@ -1,10 +1,21 @@
 import { Tag, Tooltip } from 'antd';
 import type { SkillRow, SkillArtifactStatus } from './types';
+import type { EvalHistoryEntry } from '../../api';
 import { timeAgo } from './utils';
+import { SparklineCell } from './SparklineCell';
+import { formatScore, visualForScore } from './evalScore';
 
 interface SkillTableProps {
   rows: SkillRow[];
   onOpenDetail: (s: SkillRow) => void;
+  /**
+   * SKILL-EVOLVE-LOOP Phase 6 — per-skill recent eval history rows.
+   * Keyed by `SkillRow.id`. Map is empty until the parent's batch
+   * useQueries resolves; cells render the "n/a" state in the meantime
+   * (no skeletons — skeletons would create more visual churn on a
+   * page where most skills genuinely have no history yet).
+   */
+  histories?: Map<number, EvalHistoryEntry[]>;
 }
 
 /**
@@ -42,7 +53,7 @@ function ArtifactStatusBadge({ status, shadowedBy }: ArtifactStatusBadgeProps) {
   return tag;
 }
 
-export function SkillTable({ rows, onOpenDetail }: SkillTableProps) {
+export function SkillTable({ rows, onOpenDetail, histories }: SkillTableProps) {
   return (
     <table className="skills-table-sf">
       <thead>
@@ -51,6 +62,8 @@ export function SkillTable({ rows, onOpenDetail }: SkillTableProps) {
           <th>Description</th>
           <th>Source</th>
           <th>Status</th>
+          <th>Score</th>
+          <th>Trend</th>
           <th>Updated</th>
           <th>Last scanned</th>
         </tr>
@@ -69,6 +82,10 @@ export function SkillTable({ rows, onOpenDetail }: SkillTableProps) {
           // (upload / skill-creator / skillhub / …); fall back to the legacy
           // system/custom UI category for older rows.
           const sourceLabel = s.originSource ?? s.source;
+          const skillIdNum = typeof s.id === 'number' ? s.id : undefined;
+          const history = skillIdNum != null ? histories?.get(skillIdNum) : undefined;
+          const latestScore = history && history.length > 0 ? history[0].compositeScore : undefined;
+          const latestVisual = visualForScore(latestScore);
           return (
             <tr key={s.id} onClick={() => onOpenDetail(s)} style={rowStyle}>
               <td>
@@ -116,6 +133,24 @@ export function SkillTable({ rows, onOpenDetail }: SkillTableProps) {
                     </span>
                   )}
                 </div>
+              </td>
+              <td>
+                <Tag
+                  color={latestVisual.tagColor}
+                  style={{
+                    marginInlineEnd: 0,
+                    fontFamily: 'var(--font-mono, monospace)',
+                    fontSize: 11,
+                    minWidth: 32,
+                    textAlign: 'center',
+                  }}
+                  data-testid="latest-score-tag"
+                >
+                  {formatScore(latestScore)}
+                </Tag>
+              </td>
+              <td>
+                <SparklineCell history={history} />
               </td>
               <td style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-4)' }}>{timeAgo(s.createdAt)}</td>
               <td style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-4)' }}>{timeAgo(s.lastScannedAt)}</td>

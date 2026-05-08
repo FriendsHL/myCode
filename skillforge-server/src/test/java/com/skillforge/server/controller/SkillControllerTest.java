@@ -144,4 +144,84 @@ class SkillControllerTest {
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         verify(skillService, never()).deleteSkill(anyLong());
     }
+
+    // ----------------------------------------------------------------------
+    // SKILL-EVOLVE-LOOP Phase 2: /evaluate + /eval-history
+    // ----------------------------------------------------------------------
+
+    @Test
+    @DisplayName("POST /api/skills/{id}/evaluate: delegates to runBaselineOnly + returns latest history map")
+    void evaluate_delegatesToService() {
+        com.skillforge.server.entity.SkillEvalHistoryEntity history =
+                new com.skillforge.server.entity.SkillEvalHistoryEntity();
+        history.setId(1L);
+        history.setSkillId(11L);
+        history.setCompositeScore(75.5);
+        history.setTriggeredBy("manual");
+
+        when(skillAbEvalService.runBaselineOnly(11L, "99", 7L, null, "manual"))
+                .thenReturn(history);
+        when(skillAbEvalService.getEvalHistoryForSkill(11L, 1))
+                .thenReturn(java.util.List.of(java.util.Map.of(
+                        "id", 1L,
+                        "skillId", 11L,
+                        "compositeScore", 75.5,
+                        "triggeredBy", "manual")));
+
+        ResponseEntity<?> resp = controller.evaluateSkill(11L, 7L, "99", null);
+
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
+        Object body = resp.getBody();
+        assertThat(body).isInstanceOf(Map.class);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> bodyMap = (Map<String, Object>) body;
+        assertThat(bodyMap).containsEntry("compositeScore", 75.5);
+        assertThat(bodyMap).containsEntry("triggeredBy", "manual");
+        verify(skillAbEvalService).runBaselineOnly(11L, "99", 7L, null, "manual");
+        verify(skillAbEvalService).getEvalHistoryForSkill(11L, 1);
+    }
+
+    @Test
+    @DisplayName("POST /api/skills/{id}/evaluate: blank agentId → 400")
+    void evaluate_blankAgent_returns400() {
+        ResponseEntity<?> resp = controller.evaluateSkill(11L, 7L, "  ", null);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        verify(skillAbEvalService, never()).runBaselineOnly(
+                anyLong(), org.mockito.ArgumentMatchers.anyString(), anyLong(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
+    @DisplayName("GET /api/skills/{id}/eval-history: passes through service rows")
+    void evalHistory_returnsRows() {
+        when(skillAbEvalService.getEvalHistoryForSkill(11L, 20))
+                .thenReturn(java.util.List.of(
+                        java.util.Map.of("compositeScore", 80.0, "triggeredBy", "manual"),
+                        java.util.Map.of("compositeScore", 60.0, "triggeredBy", "scheduled")));
+
+        ResponseEntity<java.util.List<Map<String, Object>>> resp =
+                controller.getEvalHistory(11L, 7L, 20);
+
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(resp.getBody()).hasSize(2);
+        assertThat(resp.getBody().get(0)).containsEntry("compositeScore", 80.0);
+        assertThat(resp.getBody().get(1)).containsEntry("triggeredBy", "scheduled");
+        verify(skillAbEvalService).getEvalHistoryForSkill(11L, 20);
+    }
+
+    @Test
+    @DisplayName("GET /api/skills/{id}/eval-history: forwards raw limit to service (service clamps)")
+    void evalHistory_forwardsLimit() {
+        when(skillAbEvalService.getEvalHistoryForSkill(org.mockito.ArgumentMatchers.eq(11L), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(java.util.List.of());
+
+        ResponseEntity<?> over = controller.getEvalHistory(11L, 7L, 9999);
+        ResponseEntity<?> under = controller.getEvalHistory(11L, 7L, -5);
+
+        assertThat(over.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(under.getStatusCode()).isEqualTo(HttpStatus.OK);
+        // Service receives raw values; clamping is its responsibility (verified via direct service tests).
+        verify(skillAbEvalService).getEvalHistoryForSkill(11L, 9999);
+        verify(skillAbEvalService).getEvalHistoryForSkill(11L, -5);
+    }
 }

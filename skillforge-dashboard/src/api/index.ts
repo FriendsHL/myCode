@@ -539,6 +539,79 @@ export const getSkillEvolutions = (skillId: number) =>
 export const getSkillEvolution = (evolutionRunId: string) =>
   api.get<SkillEvolutionRun>(`/skills/evolution/${evolutionRunId}`);
 
+// ─── SKILL-EVOLVE-LOOP Phase 6: per-skill eval history & manual evaluate ─────
+
+/**
+ * SKILL-EVOLVE-LOOP — one row in `t_skill_eval_history`.
+ *
+ * Wire shape mirrors the BE projection (5-dim score + triggered source).
+ * BE returns rows ordered by `createdAt DESC`; the dashboard reverses to
+ * ASC when feeding the time-series chart so the curve reads left → right.
+ *
+ * `triggeredBy` is constrained on the BE to `'manual'` (POST /evaluate)
+ * or `'scheduled'` (Phase 3 cron).
+ */
+export interface EvalHistoryEntry {
+  id: number;
+  skillId: number;
+  evalRunId: string | null;
+  compositeScore: number;
+  qualityScore: number | null;
+  efficiencyScore: number | null;
+  latencyScore: number | null;
+  costScore: number | null;
+  triggeredBy: 'manual' | 'scheduled';
+  createdAt: string;
+}
+
+/**
+ * Result of a single-skill manual evaluation. Mirrors the BE response
+ * (5-dim score + the `t_skill_eval_history` row id when persisted).
+ */
+export interface SkillEvaluateResult {
+  historyId?: number;
+  evalRunId?: string | null;
+  compositeScore: number;
+  qualityScore: number | null;
+  efficiencyScore: number | null;
+  latencyScore: number | null;
+  costScore: number | null;
+}
+
+/**
+ * SKILL-EVOLVE-LOOP — Phase 2 single-skill direct evaluate.
+ * Lands a row in `t_skill_eval_history` with `triggered_by='manual'`,
+ * returns the resulting 5-dim score so the caller can flash it inline.
+ *
+ * Wire contract (per BE-1 finalized 2026-05-08):
+ *   POST /api/skills/{id}/evaluate?userId=X&agentId=Y&datasetId=Z
+ *   - `agentId` is **required** — blank yields 400 from the BE.
+ *   - `datasetId` is optional in V1 (BE accepts null); reserved for V2
+ *     when per-agent dataset selection ships.
+ */
+export const evaluateSkill = (
+  skillId: number,
+  userId: number,
+  agentId: number | string,
+  datasetId?: string,
+) =>
+  api.post<SkillEvaluateResult>(`/skills/${skillId}/evaluate`, null, {
+    // Spread datasetId only when set so we don't send an empty string the
+    // BE then has to special-case. `agentId` is always present.
+    params: {
+      userId,
+      agentId,
+      ...(datasetId ? { datasetId } : {}),
+    },
+  });
+
+/**
+ * Fetch the most-recent N eval history rows for a skill (BE returns
+ * `createdAt DESC`). The dashboard reverses for charts.
+ */
+export const getSkillEvalHistory = (skillId: number, userId: number, limit = 20) =>
+  api.get<EvalHistoryEntry[]>(`/skills/${skillId}/eval-history`, { params: { userId, limit } });
+
 // Memory API
 export type MemoryLifecycleStatus = 'ACTIVE' | 'STALE' | 'ARCHIVED';
 

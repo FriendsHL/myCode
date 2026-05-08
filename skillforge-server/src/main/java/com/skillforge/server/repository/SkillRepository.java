@@ -50,10 +50,14 @@ public interface SkillRepository extends JpaRepository<SkillEntity, Long> {
      * NOTHING} silently no-ops on conflict and does not abort the transaction
      * — caller does a re-lookup to fetch the winner row.
      *
-     * <p>The {@code ON CONFLICT (COALESCE(owner_id, -1), name)} expression list
-     * MUST stay in sync with the {@code uq_t_skill_owner_name} expression
-     * index defined in {@code V31__skill_control_plane.sql}; PostgreSQL
-     * resolves the conflict target by exact expression match.
+     * <p>The {@code ON CONFLICT (COALESCE(owner_id, -1), name) WHERE enabled}
+     * inference clause MUST stay in sync with the partial
+     * {@code uq_t_skill_owner_name_enabled} index defined in
+     * {@code V64__skill_owner_name_unique_when_enabled.sql}; PostgreSQL
+     * resolves the conflict target by exact expression + predicate match.
+     * The {@code WHERE enabled} predicate is required since V64 because the
+     * unique index is partial; without it Postgres reports "no unique or
+     * exclusion constraint matching the ON CONFLICT specification".
      *
      * @return rows actually inserted: {@code 1} if this caller won the race,
      *     {@code 0} if a concurrent caller's row already satisfies the unique
@@ -70,7 +74,7 @@ public interface SkillRepository extends JpaRepository<SkillEntity, Long> {
                     :skillPath, false, true, :source, :version,
                     0, 0, 0,
                     :contentHash, 'active', :lastScannedAt, :createdAt)
-            ON CONFLICT (COALESCE(owner_id, -1), name) DO NOTHING
+            ON CONFLICT (COALESCE(owner_id, -1), name) WHERE enabled DO NOTHING
             """, nativeQuery = true)
     int insertImportedSkillIgnoreConflict(@Param("ownerId") Long ownerId,
                                           @Param("name") String name,

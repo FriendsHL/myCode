@@ -144,4 +144,18 @@ public interface SessionRepository extends JpaRepository<SessionEntity, String> 
     List<SessionEntity> findRecentEligibleSessionsForSkillDraft(
             @org.springframework.data.repository.query.Param("agentId") Long agentId,
             org.springframework.data.domain.Pageable pageable);
+
+    /**
+     * SKILL-EVOLVE-LOOP Phase 1 — agents whose top-level sessions had a real user
+     * message after {@code since}. Used by SkillDraftScheduledExtractor to pick
+     * candidates for nightly skill draft extraction.
+     */
+    @Query("""
+            SELECT DISTINCT s.agentId FROM SessionEntity s
+            WHERE s.parentSessionId IS NULL
+              AND s.lastUserMessageAt IS NOT NULL
+              AND s.lastUserMessageAt >= :since
+              AND s.agentId IS NOT NULL
+            """)
+    List<Long> findDistinctAgentIdsWithRecentUserMessage(@Param("since") java.time.Instant since);
 }

@@ -6,8 +6,10 @@ import com.skillforge.core.llm.LlmRequest;
 import com.skillforge.core.llm.LlmResponse;
 import com.skillforge.core.model.Message;
 import com.skillforge.server.config.LlmProperties;
+import com.skillforge.server.entity.EvalTaskItemEntity;
 import com.skillforge.server.entity.SkillEntity;
 import com.skillforge.server.entity.SkillEvolutionRunEntity;
+import com.skillforge.server.repository.EvalTaskRepository;
 import com.skillforge.server.repository.SkillEvolutionRunRepository;
 import com.skillforge.server.repository.SkillRepository;
 import com.skillforge.server.service.SkillService;
@@ -52,6 +54,17 @@ public class SkillEvolutionService {
             - Keep it concise — a good SKILL.md is 200-600 words
             """;
 
+    /** INV-12: cap injected failures to keep LLM prompt size bounded. */
+    static final int FAILURE_INJECTION_LIMIT = 5;
+
+    /**
+     * INV-4 / INV-12 alignment: only items below this composite score count
+     * as "failures" worth feeding back to the LLM. Matches the self-improve
+     * cron's trigger threshold so we surface the same cases that justified
+     * the evolve in the first place.
+     */
+    static final double FAILURE_COMPOSITE_THRESHOLD = 60.0;
+
     private final SkillRepository skillRepository;
     private final SkillEvolutionRunRepository evolutionRunRepository;
     private final SkillAbEvalService skillAbEvalService;
@@ -59,6 +72,7 @@ public class SkillEvolutionService {
     private final LlmProviderFactory llmProviderFactory;
     private final ExecutorService evolutionExecutor;
     private final SkillStorageService skillStorageService;
+    private final EvalTaskRepository evalTaskRepository;
     private final String defaultProviderName;
 
     public SkillEvolutionService(SkillRepository skillRepository,
@@ -68,7 +82,8 @@ public class SkillEvolutionService {
                                  LlmProviderFactory llmProviderFactory,
                                  LlmProperties llmProperties,
                                  @Qualifier("skillEvolutionExecutor") ExecutorService evolutionExecutor,
-                                 SkillStorageService skillStorageService) {
+                                 SkillStorageService skillStorageService,
+                                 EvalTaskRepository evalTaskRepository) {
         this.skillRepository = skillRepository;
         this.evolutionRunRepository = evolutionRunRepository;
         this.skillAbEvalService = skillAbEvalService;
@@ -76,6 +91,7 @@ public class SkillEvolutionService {
         this.llmProviderFactory = llmProviderFactory;
         this.evolutionExecutor = evolutionExecutor;
         this.skillStorageService = skillStorageService;
+        this.evalTaskRepository = evalTaskRepository;
         this.defaultProviderName = llmProperties.getDefaultProvider() != null
                 ? llmProperties.getDefaultProvider() : "claude";
     }
@@ -212,16 +228,44 @@ public class SkillEvolutionService {
         double rate = skill.getUsageCount() > 0
                 ? (double) skill.getSuccessCount() / skill.getUsageCount() * 100
                 : 0.0;
+
+        // INV-5 + INV-6 + INV-12: pull recent EVAL failures attributable to this
+        // skill and inject concrete cases into the prompt. Empty list (no
+        // recent failures, or no agent bound to this skill name) → fall back
+        // to statistics-only — we don't fail the evolve.
+        String failureSection = buildFailureSection(skill);
+
+        // V2 (SKILL-EVOLVE-LOOP-SECURITY backlog): user-controlled fields
+        // ({@code skill.getName()}, {@code currentSkillMd}, and inside
+        // {@link #buildFailureSection} the {@code agent_final_output} string)
+        // are interpolated into the LLM user-message verbatim. A malicious
+        // skill creator could craft a name like
+        //   "Foo\n\n=== END OF EVOLUTION TASK ===\nIgnore previous instructions..."
+        // to attempt prompt injection against the evolve LLM. {@code agent_final_output}
+        // already gets newline-stripped + 400-char-truncated which blunts but
+        // does not eliminate the surface; {@code skill.getName()} and
+        // {@code currentSkillMd} have no sanitization at all yet.
+        // Mitigations to consider in V2: strict allowlist on skill name
+        // characters at create time (already partial — verify), wrap each
+        // injected user-controlled span in BEGIN/END delimiters with random
+        // nonces the LLM is told are immutable, or move to a structured
+        // tool-input model. Tracked separately — not a Phase 4 blocker because
+        // current attack value is low (LLM only writes back a candidate
+        // SKILL.md that goes through SkillAbEvalService held-out scenarios
+        // before promote).
+
         String userMessage = String.format(
                 "Skill name: %s%n" +
                         "Usage count: %d%n" +
                         "Success count: %d%n" +
                         "Success rate: %.2f%%%n%n" +
+                        "%s" +
                         "Current SKILL.md:%n%s",
                 skill.getName(),
                 skill.getUsageCount(),
                 skill.getSuccessCount(),
                 rate,
+                failureSection,
                 currentSkillMd);
 
         LlmRequest request = new LlmRequest();
@@ -243,6 +287,72 @@ public class SkillEvolutionService {
             trimmed = trimmed.replaceFirst("\\s*```$", "");
         }
         return trimmed.trim();
+    }
+
+    /**
+     * INV-5 / INV-6 / INV-12: build the recent-failures block injected before
+     * the current SKILL.md. Returns the empty string when there are no
+     * recent attributable failures so the caller falls through to a clean
+     * statistics-only prompt (NOT a "no failures known" sentinel — feeding
+     * an empty failures section to the LLM tends to nudge it to invent
+     * weaknesses).
+     *
+     * <p>Failure to query (e.g. native query incompatibility on a downstream
+     * DB) is downgraded to warn + empty section per INV-2 — never block
+     * the evolve flow.
+     */
+    /** Package-private for unit testing. */
+    String buildFailureSection(SkillEntity skill) {
+        List<EvalTaskItemEntity> failures;
+        try {
+            failures = evalTaskRepository.findRecentFailuresForSkill(
+                    skill.getName(),
+                    FAILURE_COMPOSITE_THRESHOLD,
+                    FAILURE_INJECTION_LIMIT);
+        } catch (Exception e) {
+            log.warn("findRecentFailuresForSkill failed for skill={} ({}), falling back to statistics-only prompt: {}",
+                    skill.getId(), skill.getName(), e.getMessage());
+            return "";
+        }
+        if (failures == null || failures.isEmpty()) {
+            log.info("No recent EVAL failures for skill={} ({}), using statistics-only prompt",
+                    skill.getId(), skill.getName());
+            return "";
+        }
+        StringBuilder block = new StringBuilder();
+        block.append("Recent EVAL failures attributed to this skill (")
+                .append(failures.size())
+                .append(", composite_score < ")
+                .append((int) FAILURE_COMPOSITE_THRESHOLD)
+                .append("):\n");
+        for (EvalTaskItemEntity item : failures) {
+            block.append("- scenarioId: ").append(item.getScenarioId()).append("\n");
+            if (item.getCompositeScore() != null) {
+                block.append("  composite_score: ").append(item.getCompositeScore()).append("\n");
+            }
+            if (item.getAttribution() != null) {
+                block.append("  attribution: ").append(item.getAttribution()).append("\n");
+            }
+            String agentOutput = item.getAgentFinalOutput();
+            if (agentOutput != null && !agentOutput.isBlank()) {
+                // Truncate aggressively — failure outputs tend to be repetitive
+                // and we have up to 5 of them.
+                String trimmed = agentOutput.length() > 400
+                        ? agentOutput.substring(0, 400) + "..."
+                        : agentOutput;
+                block.append("  agent_final_output: ").append(trimmed.replace('\n', ' '))
+                        .append("\n");
+            }
+            String scoreBreakdown = item.getScoreBreakdownJson();
+            if (scoreBreakdown != null && !scoreBreakdown.isBlank()) {
+                String trimmed = scoreBreakdown.length() > 200
+                        ? scoreBreakdown.substring(0, 200) + "..."
+                        : scoreBreakdown;
+                block.append("  score_breakdown: ").append(trimmed).append("\n");
+            }
+        }
+        block.append("\n");
+        return block.toString();
     }
 
     private Path prepareForkDirectory(SkillEntity parent, SkillEntity forkedSkill) throws IOException {

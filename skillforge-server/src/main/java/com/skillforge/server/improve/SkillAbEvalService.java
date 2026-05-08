@@ -14,15 +14,20 @@ import com.skillforge.server.entity.AgentEntity;
 import com.skillforge.server.entity.EvalTaskEntity;
 import com.skillforge.server.entity.SkillAbRunEntity;
 import com.skillforge.server.entity.SkillEntity;
+import com.skillforge.server.entity.SkillEvalHistoryEntity;
+import com.skillforge.server.event.SkillAbCompletedEvent;
+import com.skillforge.server.event.SkillAbCompletedEventPublisher;
 import com.skillforge.server.eval.EvalEngineFactory;
 import com.skillforge.server.eval.EvalJudgeOutput;
 import com.skillforge.server.eval.EvalJudgeTool;
+import com.skillforge.server.eval.EvalScoreFormula;
 import com.skillforge.server.eval.ScenarioRunResult;
 import com.skillforge.server.eval.sandbox.SandboxSkillRegistryFactory;
 import com.skillforge.server.eval.scenario.EvalScenario;
 import com.skillforge.server.eval.scenario.ScenarioLoader;
 import com.skillforge.server.repository.EvalTaskRepository;
 import com.skillforge.server.repository.SkillAbRunRepository;
+import com.skillforge.server.repository.SkillEvalHistoryRepository;
 import com.skillforge.server.repository.SkillRepository;
 import com.skillforge.server.service.AgentService;
 import org.slf4j.Logger;
@@ -30,6 +35,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import org.springframework.data.domain.PageRequest;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -48,6 +55,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.stream.Collectors;
 
 @Service
 public class SkillAbEvalService {
@@ -59,6 +67,7 @@ public class SkillAbEvalService {
     private final SkillRepository skillRepository;
     private final SkillAbRunRepository skillAbRunRepository;
     private final EvalTaskRepository evalRunRepository;
+    private final SkillEvalHistoryRepository skillEvalHistoryRepository;
     private final AgentService agentService;
     private final ScenarioLoader scenarioLoader;
     private final SandboxSkillRegistryFactory sandboxFactory;
@@ -70,10 +79,12 @@ public class SkillAbEvalService {
     private final ExecutorService coordinatorExecutor;
     private final ExecutorService loopExecutor;
     private final SkillRegistry skillRegistry;
+    private final SkillAbCompletedEventPublisher abCompletedEventPublisher;
 
     public SkillAbEvalService(SkillRepository skillRepository,
                               SkillAbRunRepository skillAbRunRepository,
                               EvalTaskRepository evalRunRepository,
+                              SkillEvalHistoryRepository skillEvalHistoryRepository,
                               AgentService agentService,
                               ScenarioLoader scenarioLoader,
                               SandboxSkillRegistryFactory sandboxFactory,
@@ -84,10 +95,12 @@ public class SkillAbEvalService {
                               ChatEventBroadcaster broadcaster,
                               @Qualifier("abEvalCoordinatorExecutor") ExecutorService coordinatorExecutor,
                               @Qualifier("abEvalLoopExecutor") ExecutorService loopExecutor,
-                              SkillRegistry skillRegistry) {
+                              SkillRegistry skillRegistry,
+                              SkillAbCompletedEventPublisher abCompletedEventPublisher) {
         this.skillRepository = skillRepository;
         this.skillAbRunRepository = skillAbRunRepository;
         this.evalRunRepository = evalRunRepository;
+        this.skillEvalHistoryRepository = skillEvalHistoryRepository;
         this.agentService = agentService;
         this.scenarioLoader = scenarioLoader;
         this.sandboxFactory = sandboxFactory;
@@ -99,6 +112,7 @@ public class SkillAbEvalService {
         this.coordinatorExecutor = coordinatorExecutor;
         this.loopExecutor = loopExecutor;
         this.skillRegistry = skillRegistry;
+        this.abCompletedEventPublisher = abCompletedEventPublisher;
     }
 
     public SkillAbRunEntity createAndTrigger(Long parentSkillId, Long candidateSkillId,
@@ -144,6 +158,154 @@ public class SkillAbEvalService {
         log.info("Created skill AB run: id={} parentSkillId={} candidateSkillId={}",
                 saved.getId(), parentSkillId, candidateSkillId);
         return saved;
+    }
+
+    /**
+     * SKILL-EVOLVE-LOOP Phase 2: run held-out scenarios against the current skill (no fork,
+     * no candidate, no delta) and persist a row in {@code t_skill_eval_history}.
+     *
+     * <p>Synchronous on purpose — caller is either the Phase 2 manual REST endpoint
+     * (FE waits for composite_score) or {@link SkillScheduledEvaluator} (cron iterates
+     * skills serially with per-skill try/catch INV-2). Each scenario is timeboxed by
+     * {@link #runSingleScenario}, so one slow LLM call can't hang the whole task.
+     *
+     * <p>{@code datasetId} is reserved for V2 multi-dataset support (PRD §V2 pipeline)
+     * and currently ignored — the held_out split of {@link ScenarioLoader#loadAll()}
+     * is always used. Logged at INFO when a non-null datasetId is supplied so the
+     * deferral is visible in operator logs.
+     *
+     * @param triggeredBy {@code "manual"} (REST endpoint) or {@code "scheduled"}
+     *                    (cron); enforced by DB CHECK chk_seh_triggered_by.
+     */
+    public SkillEvalHistoryEntity runBaselineOnly(Long skillId, String agentId, Long userId,
+                                                  String datasetId, String triggeredBy) {
+        if (triggeredBy == null
+                || !("manual".equals(triggeredBy) || "scheduled".equals(triggeredBy))) {
+            throw new IllegalArgumentException("triggeredBy must be 'manual' or 'scheduled'");
+        }
+        if (datasetId != null && !datasetId.isBlank()) {
+            log.info("runBaselineOnly: datasetId='{}' ignored — V1 always uses scenarioLoader held_out",
+                    datasetId);
+        }
+
+        SkillEntity skill = skillRepository.findById(skillId)
+                .orElseThrow(() -> new RuntimeException("Skill not found: " + skillId));
+        SkillDefinition skillDef = buildSkillDefinition(skill);
+
+        long agentIdLong;
+        try {
+            agentIdLong = Long.parseLong(agentId);
+        } catch (NumberFormatException e) {
+            // W5 r1 fix: don't echo NumberFormatException.getMessage() (which contains the
+            // raw input "For input string: \"...\"") back to clients via the controller's
+            // 400 response — return a structured, input-free message instead.
+            throw new IllegalArgumentException("agentId must be numeric");
+        }
+        AgentEntity agentEntity = agentService.getAgent(agentIdLong);
+        AgentDefinition agentDef = agentService.toAgentDefinition(agentEntity);
+
+        List<EvalScenario> scenarios = scenarioLoader.loadAll().stream()
+                .filter(s -> "held_out".equals(s.getSplit()))
+                .toList();
+        if (scenarios.isEmpty()) {
+            log.warn("No held_out scenarios found for runBaselineOnly skill={}, falling back to all", skillId);
+            scenarios = scenarioLoader.loadAll();
+        }
+
+        String runId = "baseline-" + UUID.randomUUID();
+
+        double sumComposite = 0.0;
+        double sumQuality = 0.0;
+        double sumEfficiency = 0.0;
+        double sumLatency = 0.0;
+        double sumCost = 0.0;
+        int counted = 0;
+        int errors = 0;
+
+        for (EvalScenario scenario : scenarios) {
+            log.info("runBaselineOnly skill={} scenario={} ({})", skillId, scenario.getId(), scenario.getName());
+            try {
+                ScenarioRunResult runResult = runSingleScenario(runId, scenario, agentDef, skillDef);
+                EvalJudgeOutput judgeOutput = evalJudgeTool.judge(scenario, runResult);
+
+                EvalScoreFormula.Result scoreResult = EvalScoreFormula.calculate(
+                        judgeOutput.getOutcomeScore(),
+                        judgeOutput.getEfficiencyScore(),
+                        runResult.getExecutionTimeMs(),
+                        scenario.getPerformanceThresholdMs(),
+                        runResult.getCostUsd(),
+                        null,
+                        runResult.getLoopCount(),
+                        runResult.getToolCallCount());
+
+                sumComposite += scoreResult.compositeScore();
+                sumQuality += scoreResult.qualityScore();
+                sumEfficiency += scoreResult.efficiencyScore();
+                sumLatency += scoreResult.latencyScore();
+                sumCost += scoreResult.costScore();
+                counted++;
+            } catch (Exception e) {
+                errors++;
+                log.warn("runBaselineOnly scenario {} failed: {}", scenario.getId(), e.getMessage());
+            }
+        }
+
+        SkillEvalHistoryEntity history = new SkillEvalHistoryEntity();
+        history.setSkillId(skillId);
+        history.setEvalRunId(runId);
+        if (counted == 0) {
+            // No scenarios succeeded — record 0 composite, leave dim scores null.
+            // INV-4 callers see a 0 score and (intentionally) trigger evolve next cron.
+            history.setCompositeScore(0.0);
+        } else {
+            double divisor = counted;
+            history.setCompositeScore(sumComposite / divisor);
+            history.setQualityScore(sumQuality / divisor);
+            history.setEfficiencyScore(sumEfficiency / divisor);
+            history.setLatencyScore(sumLatency / divisor);
+            history.setCostScore(sumCost / divisor);
+        }
+        history.setTriggeredBy(triggeredBy);
+        // createdAt set via @PrePersist on save (W4 r1).
+        SkillEvalHistoryEntity saved = skillEvalHistoryRepository.save(history);
+
+        log.info("runBaselineOnly persisted history skill={} composite={} counted={} errors={} triggeredBy={} userId={}",
+                skillId, saved.getCompositeScore(), counted, errors, triggeredBy, userId);
+        return saved;
+    }
+
+    /**
+     * W1 r1 fix — service-layer surface for {@code GET /api/skills/{id}/eval-history}.
+     * Owns both the repo query and the wire-format projection so the controller stays
+     * thin (no Repository injection, no presentation logic mixed with HTTP routing).
+     *
+     * @param limit FE-supplied page size; clamped to {@code [1, 100]} here so the
+     *              controller cannot accidentally pass through unbounded values.
+     * @return rows newest-first, each as a flat map matching the FE payload shape
+     *         (skillId / compositeScore / 4 dim scores / triggeredBy / createdAt).
+     */
+    public List<Map<String, Object>> getEvalHistoryForSkill(Long skillId, int limit) {
+        int safeLimit = Math.max(1, Math.min(limit, 100));
+        return skillEvalHistoryRepository
+                .findBySkillIdOrderByCreatedAtDesc(skillId, PageRequest.of(0, safeLimit))
+                .stream()
+                .map(SkillAbEvalService::toEvalHistoryMap)
+                .collect(Collectors.toList());
+    }
+
+    private static Map<String, Object> toEvalHistoryMap(SkillEvalHistoryEntity h) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", h.getId());
+        m.put("skillId", h.getSkillId());
+        m.put("evalRunId", h.getEvalRunId());
+        m.put("compositeScore", h.getCompositeScore());
+        m.put("qualityScore", h.getQualityScore());
+        m.put("efficiencyScore", h.getEfficiencyScore());
+        m.put("latencyScore", h.getLatencyScore());
+        m.put("costScore", h.getCostScore());
+        m.put("triggeredBy", h.getTriggeredBy());
+        m.put("createdAt", h.getCreatedAt());
+        return m;
     }
 
     private void runAbTestAsync(String abRunId) {
@@ -268,6 +430,12 @@ public class SkillAbEvalService {
 
             log.info("Skill AB eval completed: abRunId={}, candidateRate={}, baselineRate={}, delta={}, promoted={}",
                     abRun.getId(), candidatePassRate, baselineRate, delta, abRun.isPromoted());
+
+            // INV-10: publish AFTER all DB writes so listeners (WS push, future hooks)
+            // observe the final state. Wrapped publisher opens a TX so the
+            // @TransactionalEventListener(AFTER_COMMIT) on the listener side fires.
+            // Best-effort — never let a publish/listener failure poison the A/B run.
+            tryPublishAbCompleted(abRun);
         } catch (Exception e) {
             log.error("Skill AB eval failed: abRunId={}", abRunId, e);
             try {
@@ -283,9 +451,48 @@ public class SkillAbEvalService {
                     event.put("failureReason", e.getMessage());
                     broadcaster.userEvent(abRun.getTriggeredByUserId(), event);
                 }
+                // INV-10: still publish so SelfImproveLoop knows this candidate
+                // didn't promote (won't push WS toast — INV-9 — but logs visible).
+                tryPublishAbCompleted(abRun);
             } catch (Exception saveErr) {
                 log.error("Failed to persist FAILED status for abRunId={}", abRunId, saveErr);
             }
+        }
+    }
+
+    /**
+     * Best-effort wrapper around {@link SkillAbCompletedEventPublisher#publish}
+     * — looks up parent + candidate semvers, computes the score deltas the
+     * listener WS payload needs, and never throws (a failed publish must not
+     * mark a successful A/B run as failed).
+     */
+    private void tryPublishAbCompleted(SkillAbRunEntity abRun) {
+        try {
+            String oldVersion = null;
+            String newVersion = null;
+            try {
+                SkillEntity parent = skillRepository.findById(abRun.getParentSkillId()).orElse(null);
+                if (parent != null) oldVersion = parent.getSemver();
+                SkillEntity candidate = skillRepository.findById(abRun.getCandidateSkillId()).orElse(null);
+                if (candidate != null) newVersion = candidate.getSemver();
+            } catch (Exception lookupErr) {
+                log.warn("tryPublishAbCompleted: semver lookup failed for abRunId={}: {}",
+                        abRun.getId(), lookupErr.getMessage());
+            }
+            double baselineScore = abRun.getBaselinePassRate() != null ? abRun.getBaselinePassRate() : 0.0;
+            double candidateScore = abRun.getCandidatePassRate() != null ? abRun.getCandidatePassRate() : 0.0;
+            SkillAbCompletedEvent event = new SkillAbCompletedEvent(
+                    abRun.getParentSkillId(),
+                    abRun.getId(),
+                    abRun.isPromoted(),
+                    baselineScore,
+                    candidateScore,
+                    oldVersion,
+                    newVersion);
+            abCompletedEventPublisher.publish(event);
+        } catch (Exception e) {
+            log.warn("Failed to publish SkillAbCompletedEvent for abRunId={}: {}",
+                    abRun.getId(), e.getMessage());
         }
     }
 
@@ -293,12 +500,16 @@ public class SkillAbEvalService {
     public void promoteCandidate(SkillEntity candidateSkill) {
         SkillEntity parentSkill = skillRepository.findById(candidateSkill.getParentSkillId())
                 .orElse(null);
-        candidateSkill.setEnabled(true);
-        skillRepository.save(candidateSkill);
+        // V64: unique index on (owner_id, name) is partial WHERE enabled=true.
+        // Disable parent FIRST, flush, then enable candidate — otherwise both
+        // rows would be enabled at the same time and the partial unique
+        // constraint would fire mid-transaction.
         if (parentSkill != null) {
             parentSkill.setEnabled(false);
-            skillRepository.save(parentSkill);
+            skillRepository.saveAndFlush(parentSkill);
         }
+        candidateSkill.setEnabled(true);
+        skillRepository.save(candidateSkill);
         try {
             SkillDefinition promotedDef = buildSkillDefinition(candidateSkill);
             skillRegistry.registerSkillDefinition(promotedDef);

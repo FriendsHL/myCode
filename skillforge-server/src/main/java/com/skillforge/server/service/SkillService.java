@@ -356,6 +356,11 @@ public class SkillService {
             parent = skillRepository.save(parent);
         }
 
+        // Same name as parent — safe since V64 relaxed uq_t_skill_owner_name to
+        // a partial unique on (owner_id, name) WHERE enabled=true. Forks are
+        // created with enabled=false; promote disables the parent (saveAndFlush)
+        // before enabling the candidate, so at most one row is enabled at any
+        // time per (owner_id, name).
         SkillEntity child = new SkillEntity();
         child.setName(parent.getName());
         child.setDescription(parent.getDescription());
