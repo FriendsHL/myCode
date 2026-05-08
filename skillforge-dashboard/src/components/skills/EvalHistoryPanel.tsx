@@ -1,5 +1,5 @@
-import React, { useMemo } from 'react';
-import { Tag, Tooltip, message } from 'antd';
+import React, { useMemo, useState } from 'react';
+import { Tag, Tooltip, message, Drawer, Table, Button } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   evaluateSkill,
@@ -8,6 +8,7 @@ import {
 } from '../../api';
 import { EvalHistoryChart } from './EvalHistoryChart';
 import { formatScore, visualForScore } from './evalScore';
+import { EyeOutlined } from '@ant-design/icons';
 
 interface EvalHistoryPanelProps {
   skillId: number;
@@ -51,9 +52,18 @@ export const EvalHistoryPanel: React.FC<EvalHistoryPanelProps> = ({
 
   const latest = useMemo(() => {
     if (!history || history.length === 0) return undefined;
-    // BE returns DESC; the latest is index 0.
     return history[0];
   }, [history]);
+
+  // Check if an evaluation was triggered very recently (within last 30s)
+  const [recentlyTriggered, setRecentlyTriggered] = useState(false);
+  useEffect(() => {
+    if (evaluateMutation.isSuccess) {
+      setRecentlyTriggered(true);
+      const timer = setTimeout(() => setRecentlyTriggered(false), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [evaluateMutation.isSuccess]);
   const latestVisual = visualForScore(latest?.compositeScore);
 
   const evaluateMutation = useMutation({
@@ -148,12 +158,72 @@ export const EvalHistoryPanel: React.FC<EvalHistoryPanelProps> = ({
               style={{ fontSize: 11, padding: '4px 12px' }}
               data-testid="evaluate-now-btn"
             >
-              {evaluateMutation.isPending ? 'Evaluating…' : 'Evaluate Now'}
+              {evaluateMutation.isPending ? 'Evaluating…' : recentlyTriggered ? 'Processing...' : 'Evaluate Now'}
             </button>
           </span>
         </Tooltip>
       </div>
+
+      {/* Running Status Indicator */}
+      {(evaluateMutation.isPending || recentlyTriggered) && (
+        <div style={{ 
+          background: 'rgba(99, 102, 241, 0.1)', 
+          border: '1px solid rgba(99, 102, 241, 0.3)', 
+          borderRadius: 8, 
+          padding: 12, 
+          marginBottom: 16,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12
+        }}>
+          <div style={{ width: 16, height: 16, border: '2px solid #6366f1', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: '#6366f1' }}>Evaluation in Progress</div>
+            <div style={{ fontSize: 11, color: 'var(--fg-3)' }}>Running scenarios against the skill. This may take a moment...</div>
+          </div>
+        </div>
+      )}
+
       <EvalHistoryChart history={history} loading={isLoading} />
+      
+      {/* Eval History List with Details */}
+      <div style={{ marginTop: 16 }}>
+        <h4 style={{ fontSize: 12, color: 'var(--fg-3)', marginBottom: 8 }}>Evaluation History</h4>
+        {isLoading ? (
+          <div style={{ padding: 16, textAlign: 'center', color: 'var(--fg-3)' }}>Loading...</div>
+        ) : (
+          <Table 
+            dataSource={history} 
+            rowKey="id" 
+            pagination={false} 
+            size="small"
+            columns={[
+              { title: 'Date', dataIndex: 'createdAt', key: 'date', render: (d) => new Date(d).toLocaleString(), width: 160 },
+              { title: 'Trigger', dataIndex: 'triggeredBy', key: 'trigger', width: 80, render: (t) => <Tag color={t === 'manual' ? 'blue' : 'default'}>{t}</Tag> },
+              { 
+                title: 'Score', 
+                dataIndex: 'compositeScore', 
+                key: 'score', 
+                render: (s) => <span style={{ fontWeight: 700, color: visualForScore(s).color }}>{formatScore(s)}</span> 
+              },
+              {
+                title: 'Action',
+                key: 'action',
+                render: (_, record) => (
+                  <Button 
+                    type="link" 
+                    size="small" 
+                    icon={<EyeOutlined />} 
+                    onClick={() => { /* TODO: Open detail drawer for record.evalRunId */ message.info('Detail view coming soon'); }}
+                  >
+                    Details
+                  </Button>
+                )
+              }
+            ]}
+          />
+        )}
+      </div>
     </div>
   );
 };

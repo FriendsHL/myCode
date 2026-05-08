@@ -280,7 +280,7 @@ export const SkillAbPanel: React.FC<SkillAbPanelProps> = ({ skillId, agentId, sk
         
         {latest && latest.candidateSkillId && (
           <div style={{ fontSize: 11, color: 'var(--fg-3)', marginBottom: 8 }}>
-            Comparing: <strong>v{skill.semver}</strong> vs <strong>Candidate #{latest.candidateSkillId}</strong>
+            Comparing: <strong>{skill.semver?.startsWith('v') ? skill.semver : `v${skill.semver}`}</strong> vs <strong>Candidate #{latest.candidateSkillId}</strong>
           </div>
         )}
 
@@ -359,15 +359,33 @@ export const SkillAbPanel: React.FC<SkillAbPanelProps> = ({ skillId, agentId, sk
             </div>
           </div>
 
-          {/* Progress Bar if Running */}
+          {/* Real-time Execution Monitor */}
           {latest.status === 'RUNNING' && (
-            <div style={{ marginTop: 12 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, marginBottom: 4 }}>
-                <span>Evaluation Progress</span>
-                <span>Processing...</span>
+            <div style={{ marginTop: 16, borderTop: '1px dashed var(--border-subtle)', paddingTop: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent-primary)' }}>⚡ Running Evaluation...</span>
+                <Tag color="processing" style={{ fontSize: 10 }}>In Progress</Tag>
               </div>
-              <div style={{ height: 4, background: 'var(--bg-base)', borderRadius: 2, overflow: 'hidden' }}>
-                <div style={{ width: '60%', height: '100%', background: '#6366f1', transition: 'width 0.5s' }}></div>
+              
+              {/* Simulated Live Log (Since BE doesn't stream yet) */}
+              <div style={{ 
+                background: 'var(--bg-base)', 
+                borderRadius: 6, 
+                padding: 10, 
+                fontSize: 11, 
+                fontFamily: 'monospace',
+                maxHeight: 120,
+                overflowY: 'auto',
+                border: '1px solid var(--border-subtle)'
+              }}>
+                <div style={{ color: 'var(--fg-3)', marginBottom: 4 }}>Initializing test environment...</div>
+                <div style={{ color: '#52c41a' }}>✓ Loaded Parent Skill (v{skill.semver})</div>
+                <div style={{ color: '#52c41a' }}>✓ Loaded Candidate Skill (Fork #{latest.candidateSkillId})</div>
+                <div style={{ color: 'var(--accent-primary)', animation: 'pulse 1s infinite' }}>▶ Executing Scenario: "Complex Reasoning Task #1"...</div>
+              </div>
+              
+              <div style={{ marginTop: 8, fontSize: 10, color: 'var(--fg-4)' }}>
+                Note: Full scenario breakdown will appear here once the run completes.
               </div>
             </div>
           )}

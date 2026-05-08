@@ -156,7 +156,10 @@ const Row: React.FC<{
           whiteSpace: 'nowrap',
           color: isCurrent ? 'var(--accent-primary, #6366f1)' : 'inherit'
         }}>
-          {node.semver?.startsWith('v') ? node.semver : `v${node.semver ?? node.id}`}
+          {(() => {
+            const ver = node.semver ?? String(node.id);
+            return ver.startsWith('v') ? ver : `v${ver}`;
+          })()}
         </span>
 
         {/* Live Badge - The only indicator needed for "Agent is using this" */}
