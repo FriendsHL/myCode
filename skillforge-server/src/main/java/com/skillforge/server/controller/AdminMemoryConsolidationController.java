@@ -54,6 +54,19 @@ public class AdminMemoryConsolidationController {
             body.put("eligible", summary.eligible());
             body.put("succeeded", summary.succeeded());
             body.put("failed", summary.failed());
+            // V2.5 — surface detailed phase counts so operators see exactly what happened
+            // (dedup-archived / TTL-archived / stale-transitioned / capacity-demoted /
+            // expired-deleted / active-after) without resorting to SQL on t_memory.
+            if (summary.totals() != null) {
+                Map<String, Object> totals = new LinkedHashMap<>();
+                totals.put("dedupArchived", summary.totals().dedupArchived());
+                totals.put("ttlArchived", summary.totals().ttlArchived());
+                totals.put("staleTransitioned", summary.totals().staleTransitioned());
+                totals.put("capacityDemoted", summary.totals().capacityDemoted());
+                totals.put("expiredDeleted", summary.totals().expiredDeleted());
+                totals.put("activeAfter", summary.totals().activeAfter());
+                body.put("totals", totals);
+            }
             return ResponseEntity.ok(body);
         } catch (Exception e) {
             log.error("Admin trigger memory-consolidation failed: {}", e.getMessage(), e);

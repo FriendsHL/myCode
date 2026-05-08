@@ -110,7 +110,7 @@ public interface MemoryRepository extends JpaRepository<MemoryEntity, Long> {
      * gracefully skips dedup in that case.
      */
     @Query(value = """
-        SELECT id, embedding::text AS embedding_text
+        SELECT id, CAST(embedding AS text) AS embedding_text
         FROM t_memory
         WHERE user_id = :userId
           AND status = 'ACTIVE'

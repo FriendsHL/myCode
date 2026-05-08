@@ -119,8 +119,9 @@ class SessionDigestExtractorTest {
 
         MemoryConsolidator memoryConsolidator = new MemoryConsolidator(null) {
             @Override
-            public void consolidate(Long userId) {
+            public ConsolidationResult consolidate(Long userId) {
                 consolidatedUserId = userId;
+                return ConsolidationResult.empty();
             }
         };
 

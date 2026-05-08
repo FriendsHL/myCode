@@ -2,6 +2,7 @@ package com.skillforge.server.controller;
 
 import com.skillforge.server.memory.MemoryConsolidationScheduler;
 import com.skillforge.server.memory.MemoryConsolidationScheduler.ConsolidationSummary;
+import com.skillforge.server.memory.MemoryConsolidator;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -28,7 +29,7 @@ class AdminMemoryConsolidationControllerTest {
     @Test
     @DisplayName("triggerConsolidation without userId scans all active users")
     void triggerConsolidation_noFilter_scansAll() {
-        when(scheduler.runOnce((Long) null)).thenReturn(new ConsolidationSummary(3, 3, 0));
+        when(scheduler.runOnce((Long) null)).thenReturn(new ConsolidationSummary(3, 3, 0, MemoryConsolidator.ConsolidationResult.empty()));
 
         ResponseEntity<?> response = controller.triggerConsolidation(null);
 
@@ -47,7 +48,7 @@ class AdminMemoryConsolidationControllerTest {
     @Test
     @DisplayName("triggerConsolidation with userId targets that single user")
     void triggerConsolidation_withFilter_targetsOne() {
-        when(scheduler.runOnce(99L)).thenReturn(new ConsolidationSummary(1, 1, 0));
+        when(scheduler.runOnce(99L)).thenReturn(new ConsolidationSummary(1, 1, 0, MemoryConsolidator.ConsolidationResult.empty()));
 
         ResponseEntity<?> response = controller.triggerConsolidation(99L);
 

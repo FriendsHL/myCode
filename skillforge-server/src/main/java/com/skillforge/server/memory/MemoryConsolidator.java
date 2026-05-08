@@ -28,6 +28,34 @@ public class MemoryConsolidator {
     static final String REASON_CAPACITY_DEMOTE = "capacity_demote";
     static final String REASON_DEDUP_MERGE_PREFIX = "dedup_merge_with_";
 
+    /**
+     * MEMORY-DREAM-CONSOLIDATION-V2.5 — per-user consolidation result with detailed
+     * action counts. Surfaced via the admin endpoint so operators can see what
+     * actually happened (vs. just "succeeded:1") without SQL.
+     */
+    public record ConsolidationResult(
+            int dedupArchived,        // Phase 0: cosine-similarity dedup losers archived
+            int ttlArchived,          // Phase 1: ACTIVE/STALE → ARCHIVED via age threshold
+            int staleTransitioned,    // Phase 1: ACTIVE → STALE via age threshold
+            int capacityDemoted,      // Phase 2: ACTIVE → STALE via capacity overflow
+            int expiredDeleted,       // Phase 1: ARCHIVED rows past delete-after-days dropped
+            int activeAfter           // ACTIVE count after all phases
+    ) {
+        public static ConsolidationResult empty() {
+            return new ConsolidationResult(0, 0, 0, 0, 0, 0);
+        }
+        public ConsolidationResult plus(ConsolidationResult o) {
+            return new ConsolidationResult(
+                    dedupArchived + o.dedupArchived,
+                    ttlArchived + o.ttlArchived,
+                    staleTransitioned + o.staleTransitioned,
+                    capacityDemoted + o.capacityDemoted,
+                    expiredDeleted + o.expiredDeleted,
+                    activeAfter + o.activeAfter
+            );
+        }
+    }
+
     private final MemoryRepository memoryRepository;
     private MemoryProperties memoryProperties = new MemoryProperties();
 
@@ -55,33 +83,52 @@ public class MemoryConsolidator {
      *   <li>Enforce capacity by demoting lowest-scored overflow to STALE.</li>
      * </ol>
      */
-    public void consolidate(Long userId) {
+    public ConsolidationResult consolidate(Long userId) {
         if (memoryRepository == null || userId == null) {
-            return;
+            return ConsolidationResult.empty();
         }
 
         // Phase 0 — embedding dedup BEFORE scoring/transition. Demote-as-archive happens
         // here so subsequent capacity / status work sees the post-dedup ACTIVE set.
-        deduplicateByEmbedding(userId);
+        int dedupArchived = deduplicateByEmbedding(userId);
 
         List<MemoryEntity> all = memoryRepository.findByUserIdOrderByUpdatedAtDesc(userId);
         if (all.isEmpty()) {
-            return;
+            return new ConsolidationResult(dedupArchived, 0, 0, 0, 0, 0);
         }
         Instant now = Instant.now();
+        int ttlArchived = 0;
+        int staleTransitioned = 0;
+        int expiredDeleted = 0;
         for (MemoryEntity memory : all) {
             if (isExpiredArchived(memory, now)) {
                 memoryRepository.delete(memory);
+                expiredDeleted++;
                 log.info("Deleted expired archived memory: id={}, title={}, reason={}",
                         memory.getId(), memory.getTitle(), memory.getArchivedReason());
                 continue;
             }
             memory.setLastScore(scoreMemory(memory, now));
             memory.setLastScoredAt(now);
+            String beforeStatus = memory.getStatus();
             transitionStatus(memory, now);
+            String afterStatus = memory.getStatus();
+            if (!beforeStatus.equals(afterStatus)) {
+                if ("ARCHIVED".equals(afterStatus)) {
+                    ttlArchived++;
+                } else if ("STALE".equals(afterStatus)) {
+                    staleTransitioned++;
+                }
+            }
             memoryRepository.save(memory);
         }
-        enforceCapacity(all);
+        int capacityDemoted = enforceCapacity(all);
+        long activeAfter = all.stream()
+                .filter(m -> "ACTIVE".equals(m.getStatus()))
+                .count();
+        return new ConsolidationResult(
+                dedupArchived, ttlArchived, staleTransitioned,
+                capacityDemoted, expiredDeleted, (int) activeAfter);
     }
 
     /**
@@ -97,10 +144,10 @@ public class MemoryConsolidator {
      *   <li>Embedding text fails to parse → that row is skipped (won't participate in dedup).</li>
      * </ul>
      */
-    private void deduplicateByEmbedding(Long userId) {
+    private int deduplicateByEmbedding(Long userId) {
         double threshold = memoryProperties.getDedup().getCosineMergeThreshold();
         if (threshold <= 0.0 || threshold >= 1.0) {
-            return; // disabled / nonsensical config
+            return 0; // disabled / nonsensical config
         }
 
         List<Object[]> rows;
@@ -110,10 +157,10 @@ public class MemoryConsolidator {
             // pgvector unavailable, transient DB issue, etc. — degrade gracefully.
             log.warn("Memory dedup: embedding fetch failed for userId={}, skipping dedup: {}",
                     userId, e.getMessage());
-            return;
+            return 0;
         }
         if (rows == null || rows.size() < 2) {
-            return;
+            return 0;
         }
 
         // Parse embeddings + load entities in one pass.
@@ -133,7 +180,7 @@ public class MemoryConsolidator {
             candidates.add(new EmbeddedMemory(entity, embedding));
         }
         if (candidates.size() < 2) {
-            return;
+            return 0;
         }
 
         // Score everyone once up-front; dedup decisions need a stable ordering so the
@@ -186,6 +233,7 @@ public class MemoryConsolidator {
             log.info("Memory dedup: userId={} archived {} duplicate(s) (threshold={})",
                     userId, archivedCount, threshold);
         }
+        return archivedCount;
     }
 
     private void archiveAsDuplicate(MemoryEntity loser, MemoryEntity winner, double similarity) {
@@ -200,7 +248,7 @@ public class MemoryConsolidator {
                 String.format(java.util.Locale.ROOT, "%.4f", similarity));
     }
 
-    private void enforceCapacity(List<MemoryEntity> all) {
+    private int enforceCapacity(List<MemoryEntity> all) {
         int cap = memoryProperties.getEviction().getMaxActivePerUser();
         List<MemoryEntity> active = all.stream()
                 .filter(memory -> "ACTIVE".equals(memory.getStatus()))
@@ -209,7 +257,7 @@ public class MemoryConsolidator {
                         .thenComparing(MemoryEntity::getUpdatedAt, Comparator.nullsLast(Comparator.naturalOrder())))
                 .toList();
         if (active.size() <= cap) {
-            return;
+            return 0;
         }
         int overflow = active.size() - cap;
         for (int i = 0; i < overflow; i++) {
@@ -221,6 +269,7 @@ public class MemoryConsolidator {
             log.info("Demoted memory due to capacity pressure: id={}, title={}, score={}",
                     demoted.getId(), demoted.getTitle(), demoted.getLastScore());
         }
+        return overflow;
     }
 
     private void transitionStatus(MemoryEntity memory, Instant now) {

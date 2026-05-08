@@ -73,7 +73,7 @@ public class MemoryConsolidationScheduler {
         if (!enabled) {
             log.info("MemoryConsolidationScheduler disabled via "
                     + "skillforge.memory.consolidation.scheduled-enabled=false");
-            return new ConsolidationSummary(0, 0, 0);
+            return new ConsolidationSummary(0, 0, 0, MemoryConsolidator.ConsolidationResult.empty());
         }
 
         List<Long> userIds;
@@ -87,21 +87,26 @@ public class MemoryConsolidationScheduler {
             } catch (Exception e) {
                 log.error("MemoryConsolidationScheduler: failed to query active userIds since={}: {}",
                         since, e.getMessage(), e);
-                return new ConsolidationSummary(0, 0, 0);
+                return new ConsolidationSummary(0, 0, 0, MemoryConsolidator.ConsolidationResult.empty());
             }
         }
 
         if (userIds == null || userIds.isEmpty()) {
             log.info("MemoryConsolidationScheduler: 0 eligible users{}",
                     userIdFilter != null ? " (filter=" + userIdFilter + ")" : "");
-            return new ConsolidationSummary(0, 0, 0);
+            return new ConsolidationSummary(0, 0, 0,
+                    MemoryConsolidator.ConsolidationResult.empty());
         }
 
         int succeeded = 0;
         int failed = 0;
+        MemoryConsolidator.ConsolidationResult totals = MemoryConsolidator.ConsolidationResult.empty();
         for (Long userId : userIds) {
             try {
-                memoryConsolidator.consolidate(userId);
+                MemoryConsolidator.ConsolidationResult perUser = memoryConsolidator.consolidate(userId);
+                if (perUser != null) {
+                    totals = totals.plus(perUser);
+                }
                 succeeded++;
             } catch (Exception e) {
                 // INV-2: per-user failure logs WARN and continues — never abort the whole cron.
@@ -110,9 +115,13 @@ public class MemoryConsolidationScheduler {
                         userId, e.getMessage(), e);
             }
         }
-        log.info("MemoryConsolidationScheduler: done eligible={} succeeded={} failed={}",
-                userIds.size(), succeeded, failed);
-        return new ConsolidationSummary(userIds.size(), succeeded, failed);
+        log.info("MemoryConsolidationScheduler: done eligible={} succeeded={} failed={} "
+                        + "dedupArchived={} ttlArchived={} staleTransitioned={} "
+                        + "capacityDemoted={} expiredDeleted={} activeAfter={}",
+                userIds.size(), succeeded, failed,
+                totals.dedupArchived(), totals.ttlArchived(), totals.staleTransitioned(),
+                totals.capacityDemoted(), totals.expiredDeleted(), totals.activeAfter());
+        return new ConsolidationSummary(userIds.size(), succeeded, failed, totals);
     }
 
     /** Convenience overload for the cron path. */
@@ -120,6 +129,12 @@ public class MemoryConsolidationScheduler {
         return runOnce(null);
     }
 
-    /** Result row for the admin endpoint and for tests. */
-    public record ConsolidationSummary(int eligible, int succeeded, int failed) {}
+    /**
+     * Result row for the admin endpoint and for tests.
+     *
+     * <p>V2.5 — augmented with detailed action counts so operators can verify
+     * what the cron actually did without resorting to SQL inspection of t_memory.
+     */
+    public record ConsolidationSummary(int eligible, int succeeded, int failed,
+                                       MemoryConsolidator.ConsolidationResult totals) {}
 }
