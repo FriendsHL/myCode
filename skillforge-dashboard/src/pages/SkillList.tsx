@@ -21,7 +21,6 @@ import type { SkillRow } from '../components/skills/types';
 import { normalizeSkill } from '../components/skills/utils';
 import { BOLT_ICON, PLUS_ICON } from '../components/skills/icons';
 import { FilterItem } from '../components/skills/FilterItem';
-import { SkillCard } from '../components/skills/SkillCard';
 import { SkillTable } from '../components/skills/SkillTable';
 import { SkillDrawer } from '../components/skills/SkillDrawer';
 import { NewSkillModal } from '../components/skills/NewSkillModal';
@@ -517,8 +516,6 @@ const SkillList: React.FC = () => {
                 return Array.from(map.entries()).map(([name, versions]) => {
                   const primary = versions.find(v => v.enabled) || versions[0];
                   const totalVersions = versions.length;
-                  const score = primary.latestEvalScore || 0;
-                  const scoreColor = score >= 80 ? '#52c41a' : score >= 60 ? '#faad14' : '#ff4d4f';
                   
                   return (
                     <div 
@@ -572,7 +569,7 @@ const SkillList: React.FC = () => {
                         {/* Tool Badges Row */}
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                           {(() => {
-                            const textContent = (primary.skillMd || primary.description || '').toLowerCase();
+                            const textContent = (primary.description || '').toLowerCase();
                             const tools = [];
                             
                             // 1. Check for explicit tool schema

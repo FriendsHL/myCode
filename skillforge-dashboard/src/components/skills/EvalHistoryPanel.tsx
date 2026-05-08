@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Tag, Tooltip, message, Drawer, Table, Button, Modal } from 'antd';
+import { Tag, Tooltip, message, Table, Button, Modal } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   evaluateSkill,
@@ -208,7 +208,7 @@ export const EvalHistoryPanel: React.FC<EvalHistoryPanelProps> = ({
                 title: 'Score', 
                 dataIndex: 'compositeScore', 
                 key: 'score', 
-                render: (s) => <span style={{ fontWeight: 700, color: visualForScore(s).color }}>{formatScore(s)}</span> 
+                render: (s) => <span style={{ fontWeight: 700, color: visualForScore(s).stroke }}>{formatScore(s)}</span>
               },
               {
                 title: 'Action',
@@ -267,13 +267,13 @@ export const EvalHistoryPanel: React.FC<EvalHistoryPanelProps> = ({
                         padding: '10px 12px',
                         background: 'var(--bg-hover, #1d1d22)',
                         borderRadius: 6,
-                        borderLeft: `3px solid ${visual.color}`,
+                        borderLeft: `3px solid ${visual.stroke}`,
                       }}
                     >
                       <div style={{ fontSize: 10, color: 'var(--fg-4, #8a8a93)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
                         {label}
                       </div>
-                      <div style={{ fontSize: 22, fontWeight: 700, color: visual.color }}>
+                      <div style={{ fontSize: 22, fontWeight: 700, color: visual.stroke }}>
                         {formatScore(val ?? undefined)}
                       </div>
                     </div>

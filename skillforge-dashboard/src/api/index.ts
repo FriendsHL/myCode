@@ -766,6 +766,32 @@ export const batchDeleteMemories = (userId: number, ids: number[]) =>
 export const getMemoryStats = (userId: number) =>
   api.get<MemoryStats>('/memories/stats', { params: { userId } });
 
+// MEMORY-DREAM-CONSOLIDATION-V2.5 — manual trigger for the nightly cron.
+export interface MemoryConsolidationTotals {
+  dedupArchived: number;
+  ttlArchived: number;
+  staleTransitioned: number;
+  capacityDemoted: number;
+  expiredDeleted: number;
+  activeAfter: number;
+}
+export interface MemoryConsolidationResponse {
+  ok: boolean;
+  ran: string;
+  at: string;
+  userIdFilter: number | null;
+  eligible: number;
+  succeeded: number;
+  failed: number;
+  totals?: MemoryConsolidationTotals;
+}
+export const triggerMemoryConsolidation = (userId?: number) =>
+  api.post<MemoryConsolidationResponse>(
+    '/admin/memory/consolidation/run-once',
+    null,
+    { params: userId != null ? { userId } : {} },
+  );
+
 // User Config API
 export const getClaudeMd = (userId: number) => api.get('/user-config/claude-md', { params: { userId } });
 export const saveClaudeMd = (userId: number, claudeMd: string) =>

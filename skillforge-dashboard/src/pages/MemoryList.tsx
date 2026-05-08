@@ -13,8 +13,10 @@ import {
   searchMemories,
   updateMemory,
   updateMemoryStatus,
+  triggerMemoryConsolidation,
 } from '../api';
 import { useAuth } from '../contexts/AuthContext';
+import { message } from 'antd';
 import '../components/agents/agents.css';
 import '../components/memory/memory.css';
 import '../components/skills/skills.css';
@@ -205,6 +207,33 @@ const MemoryList: React.FC = () => {
     },
   });
 
+  // V2.5 — manual MEMORY-DREAM-CONSOLIDATION trigger.
+  const consolidateMutation = useMutation({
+    mutationFn: () => triggerMemoryConsolidation(userId).then(r => r.data),
+    onSuccess: (data) => {
+      const t = data?.totals;
+      if (!t) {
+        message.success('Consolidation done.');
+      } else {
+        const moved = t.dedupArchived + t.ttlArchived + t.staleTransitioned + t.capacityDemoted + t.expiredDeleted;
+        if (moved === 0) {
+          message.info(`No memory needed action (${t.activeAfter} active).`);
+        } else {
+          message.success(
+            `Done · stale ${t.staleTransitioned} / archived ${t.ttlArchived} / dedup ${t.dedupArchived} / `
+            + `demoted ${t.capacityDemoted} / deleted ${t.expiredDeleted} (active: ${t.activeAfter})`,
+            6,
+          );
+        }
+      }
+      invalidate();
+    },
+    onError: (err: unknown) => {
+      const e = err as { response?: { data?: { error?: string } }; message?: string };
+      message.error(e.response?.data?.error || e.message || 'Consolidation failed');
+    },
+  });
+
   const busy = updateMut.isPending || deleteMut.isPending || restoreMut.isPending
     || batchArchiveMut.isPending || batchRestoreMut.isPending || batchStatusMut.isPending || batchDeleteMut.isPending;
   const stats = statsQuery.data;
@@ -258,7 +287,17 @@ const MemoryList: React.FC = () => {
             <p className="agents-head-sub">{rows.length} of {all.length} · lifecycle-managed memory store</p>
           </div>
           <div className="agents-head-actions">
-            <button className="btn-ghost-sf">Export</button>
+            {/* V2.5 — replace dead "Export" button with manual consolidation trigger
+                (nightly cron at 03:30 still runs on its own; this is for ops who
+                want to verify or force-run between schedules). */}
+            <button
+              className="btn-ghost-sf"
+              disabled={consolidateMutation.isPending}
+              onClick={() => consolidateMutation.mutate()}
+              title="Run lifecycle sweep + dedup now (else fires nightly at 03:30)"
+            >
+              {consolidateMutation.isPending ? 'Running…' : 'Run Consolidation'}
+            </button>
           </div>
         </header>
 

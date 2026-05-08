@@ -62,6 +62,7 @@ export interface SkillRow {
 }
 
 export interface SkillDetailData {
+  id?: number;
   name: string;
   description?: string;
   skillMd?: string;
@@ -71,4 +72,6 @@ export interface SkillDetailData {
   requiredTools?: string;
   enabled?: boolean;
   createdAt?: string;
+  /** V2.5 — semver tag for the version (e.g. "v2"). Backend puts this in detail JSON. */
+  semver?: string;
 }

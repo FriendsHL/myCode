@@ -1,13 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { Tag, Tooltip, Button, Switch, Empty, Divider, Modal, message } from 'antd';
+import { Tag, Button, Switch, Modal, message } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { getSkillDetail, getSkillVersionTree } from '../../api';
+import { getSkillDetail } from '../../api';
 import type { SkillRow, SkillDetailData } from './types';
 import { CLOSE_ICON } from './icons';
 import { SkillAbPanel } from './SkillAbPanel';
 import { SkillEvolutionPanel } from './SkillEvolutionPanel';
 import { EvalHistoryPanel } from './EvalHistoryPanel';
-import { VersionTreeView } from './VersionTreeView';
 import { SkillMdDiff } from './SkillMdDiff';
 import { SkillFileBrowser } from './SkillFileBrowser';
 
@@ -38,7 +37,7 @@ interface SkillDrawerProps {
 }
 
 export const SkillDrawer: React.FC<SkillDrawerProps> = ({
-  skill, tab, setTab, onClose, onToggle, onDelete, currentUserId, sourceAgentId, onOpenSkill,
+  skill, tab, setTab, onClose, onToggle: _onToggle, onDelete, currentUserId, sourceAgentId, onOpenSkill: _onOpenSkill,
   siblingVersions,
 }) => {
   const queryClient = useQueryClient();
@@ -175,19 +174,9 @@ export const SkillDrawer: React.FC<SkillDrawerProps> = ({
                     );
                   })}
               </div>
-            ) : typeof skill.id === 'number' ? (
-              <VersionTreeView
-                skillId={skill.id as number}
-                userId={currentUserId || 0}
-                currentLiveId={skill.id as number}
-                onView={(id) => setViewingSkillId(id)}
-                onOpenSkill={onOpenSkill}
-              />
             ) : (
               <div style={{ padding: '0 16px', fontSize: 11, color: 'var(--fg-4)', lineHeight: 1.6 }}>
-                {skill.system
-                  ? 'System skills are managed via the marketplace and have a single live version — no fork/promote workflow.'
-                  : 'No version data available.'}
+                {'No version data available.'}
               </div>
             )}
 

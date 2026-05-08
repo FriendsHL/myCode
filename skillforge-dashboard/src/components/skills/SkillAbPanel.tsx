@@ -280,7 +280,7 @@ export const SkillAbPanel: React.FC<SkillAbPanelProps> = ({ skillId, agentId, sk
         
         {latest && latest.candidateSkillId && (
           <div style={{ fontSize: 11, color: 'var(--fg-3)', marginBottom: 8 }}>
-            Comparing: <strong>{skill.semver?.startsWith('v') ? skill.semver : `v${skill.semver}`}</strong> vs <strong>Candidate #{latest.candidateSkillId}</strong>
+            Comparing: <strong>{skill?.semver?.startsWith('v') ? skill.semver : `v${skill?.semver ?? '?'}`}</strong> vs <strong>Candidate #{latest.candidateSkillId}</strong>
           </div>
         )}
 
@@ -341,14 +341,14 @@ export const SkillAbPanel: React.FC<SkillAbPanelProps> = ({ skillId, agentId, sk
         }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12, fontSize: 12, fontWeight: 600 }}>
             <span>Performance Comparison</span>
-            <span style={{ color: latest.deltaPassRate > 0 ? '#52c41a' : '#ff4d4f' }}>
+            <span style={{ color: (latest.deltaPassRate ?? 0) > 0 ? '#52c41a' : '#ff4d4f' }}>
               Delta: {formatDeltaPp(latest.deltaPassRate)}
             </span>
           </div>
           
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
             <div>
-              <div style={{ fontSize: 10, color: 'var(--fg-3)', marginBottom: 4 }}>BASELINE ({skill.semver?.startsWith('v') ? skill.semver : `v${skill.semver}`})</div>
+              <div style={{ fontSize: 10, color: 'var(--fg-3)', marginBottom: 4 }}>BASELINE ({skill?.semver?.startsWith('v') ? skill.semver : `v${skill?.semver ?? '?'}`})</div>
               <div style={{ fontSize: 20, fontWeight: 700 }}>{formatPct(latest.baselinePassRate)}</div>
               <div style={{ fontSize: 10, color: 'var(--fg-4)' }}>Pass Rate</div>
             </div>
@@ -379,7 +379,7 @@ export const SkillAbPanel: React.FC<SkillAbPanelProps> = ({ skillId, agentId, sk
                 border: '1px solid var(--border-subtle)'
               }}>
                 <div style={{ color: 'var(--fg-3)', marginBottom: 4 }}>Initializing test environment...</div>
-                <div style={{ color: '#52c41a' }}>✓ Loaded Parent Skill (v{skill.semver})</div>
+                <div style={{ color: '#52c41a' }}>✓ Loaded Parent Skill (v{skill?.semver ?? '?'})</div>
                 <div style={{ color: '#52c41a' }}>✓ Loaded Candidate Skill (Fork #{latest.candidateSkillId})</div>
                 <div style={{ color: 'var(--accent-primary)', animation: 'pulse 1s infinite' }}>▶ Executing Scenario: "Complex Reasoning Task #1"...</div>
               </div>

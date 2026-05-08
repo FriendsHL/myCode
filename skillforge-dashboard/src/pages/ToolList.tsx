@@ -127,9 +127,8 @@ const ToolList: React.FC = () => {
             <h1 className="agents-head-title">Tools</h1>
             <p className="agents-head-sub">{rows.length} of {all.length} · built-in capabilities agents can call</p>
           </div>
-          <div className="agents-head-actions">
-            <button className="btn-ghost-sf">{COPY_ICON} Export registry</button>
-          </div>
+          {/* V2.5 — removed dead "Export registry" button (no handler, no BE
+              endpoint, ops-confusing). Re-add when there's a real export use case. */}
         </header>
 
         <div className="agents-body">

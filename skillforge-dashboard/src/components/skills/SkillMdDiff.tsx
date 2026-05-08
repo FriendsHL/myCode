@@ -52,7 +52,7 @@ const ROW_FG: Record<DiffLine['kind'], string> = {
 interface DiffPaneProps {
   label: string;
   lines: DiffLine[];
-  scrollRef?: React.RefObject<HTMLDivElement>;
+  scrollRef?: React.RefObject<HTMLDivElement | null>;
   onScroll?: () => void;
 }
 
