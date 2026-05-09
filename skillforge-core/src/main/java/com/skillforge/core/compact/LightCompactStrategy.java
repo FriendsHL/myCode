@@ -18,10 +18,12 @@ import java.util.Set;
  *
  * <p>规则(按顺序应用, 达到目标后停止):
  * <ol>
- *   <li>truncate-large-tool-output: tool_result.content > 5KB 截断头 10 行 + 尾 10 行</li>
+ *   <li>truncate-large-tool-output: tool_result.content &gt; {@link #LARGE_TOOL_OUTPUT_BYTES}
+ *       字节时按字符截断为头 {@link #TRUNCATE_HEAD_CHARS} + 尾 {@link #TRUNCATE_TAIL_CHARS}
+ *       chars (UTF-8 多字节安全)</li>
  *   <li>dedup-consecutive-tools: 相邻两次 tool_use 同名同输入, 去掉较早的一对 (tool_use + tool_result)</li>
  *   <li>fold-failed-retries: 3+ 连续 is_error=true 的 tool_result 折叠为 1 条 (保留最后一次)</li>
- *   <li>drop-empty-assistant-narration: 纯过渡文本(< 80 字符、下一条是 tool_use)的 assistant 文本消息</li>
+ *   <li>drop-empty-assistant-narration: 纯过渡文本(&lt; 80 字符、下一条是 tool_use)的 assistant 文本消息</li>
  * </ol>
  *
  * <p>不变量:
@@ -30,6 +32,7 @@ import java.util.Set;
  *   <li>孤立的 tool_result 永远不允许存在</li>
  *   <li>消息顺序不变</li>
  *   <li>最后 {@link #PROTECTION_WINDOW} 条消息永不触碰</li>
+ *   <li>已经被 truncate 过的 tool_result(含 marker)不再被二次 truncate</li>
  * </ul>
  */
 public class LightCompactStrategy {
@@ -47,10 +50,32 @@ public class LightCompactStrategy {
     }
 
     public static final int PROTECTION_WINDOW = 5;
-    public static final int LARGE_TOOL_OUTPUT_BYTES = 5 * 1024;
-    public static final int TRUNCATE_HEAD_LINES = 10;
-    public static final int TRUNCATE_TAIL_LINES = 10;
+    /**
+     * 触发 truncate 的字节阈值。原来 5KB 偏小（实测 42KB tool_result 才省 2-3K tokens），
+     * 提到 10KB 让中等 result 也能被压缩。阈值用 bytes 是因为 tokens 的粗估和 byte 大小相关。
+     */
+    public static final int LARGE_TOOL_OUTPUT_BYTES = 10 * 1024;
+    /**
+     * 截断后保留的头部字符数。按 char 而非 byte 截，避免切坏 UTF-8 多字节序列（中文等）。
+     */
+    public static final int TRUNCATE_HEAD_CHARS = 4 * 1024;
+    /**
+     * 截断后保留的尾部字符数。
+     */
+    public static final int TRUNCATE_TAIL_CHARS = 2 * 1024;
     public static final int NARRATION_MAX_CHARS = 80;
+
+    /**
+     * Marker 中部固定子串，用于幂等性识别（已 truncate 过的 content 含该子串则跳过）。
+     * 完整 marker 形如:
+     * {@code \n... [12345 chars truncated, original size: 50000 chars (75% reduced)] ...\n}
+     *
+     * <p>理论上若真实 tool_result 内容中本身包含该 substring，会被误判为已截断而跳过。
+     * 当前 {@link CompactableToolRegistry} 默认白名单（Bash / Grep / Glob / FileRead /
+     * FileWrite 等系统 tool）的 raw output 不会自然产生此英文 phrase；如未来出现误判可
+     * 切换为更独特 sentinel（例如 ASCII 控制字符 + GUID）。
+     */
+    private static final String MARKER_INFIX = " chars truncated, original size: ";
 
     /** 达到 20% reclaim 或 estTokens < 30% 即停止。 */
     private static final double TARGET_RECLAIM_RATIO = 0.20;
@@ -197,8 +222,11 @@ public class LightCompactStrategy {
                 if (content == null) continue;
                 int byteLen = content.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
                 if (byteLen <= LARGE_TOOL_OUTPUT_BYTES) continue;
+                // 幂等性: 已经被 truncate 过的不再二次截断 (marker 自识别)
+                if (content.contains(MARKER_INFIX)) continue;
 
-                String truncated = truncateLines(content, byteLen);
+                String truncated = truncateToHeadTail(content);
+                if (truncated.equals(content)) continue; // chars 不够 head+tail, 不实际截断
                 ContentBlock replaced = ContentBlock.toolResult(cb.getToolUseId(), truncated,
                         Boolean.TRUE.equals(cb.getIsError()));
                 if (newBlocks == null) {
@@ -221,23 +249,37 @@ public class LightCompactStrategy {
         return count;
     }
 
-    private String truncateLines(String content, int originalBytes) {
-        String[] lines = content.split("\n", -1);
-        if (lines.length <= TRUNCATE_HEAD_LINES + TRUNCATE_TAIL_LINES) {
-            // 不够行数折半即可:保持头尾各一半
+    /**
+     * 保留头 {@link #TRUNCATE_HEAD_CHARS} + 尾 {@link #TRUNCATE_TAIL_CHARS} chars,中间替换为
+     * marker。按 char 而非 byte 切——{@link #LARGE_TOOL_OUTPUT_BYTES} 是触发阈值(byte),但
+     * 实际截断单位是 Java char(code unit),避免切坏 UTF-8 多字节序列(中文 / emoji 等)。
+     *
+     * <p>Marker 中的 "chars" 指 Java char 数。对超 BMP 字符(emoji)这里没做 codepoint 对齐,
+     * 但日常 tool_result 99% ASCII/CJK BMP,代价可接受。
+     *
+     * <p>调用前提: caller 已确认 content 字节数 &gt; {@link #LARGE_TOOL_OUTPUT_BYTES}
+     * 且未携带幂等 marker。
+     *
+     * <p>边界: 若总 char 数 ≤ HEAD + TAIL(可能因为 byteLen 大但全是高字节字符),
+     * 直接返回原 content,不构造 marker(等价于 no-op)。
+     */
+    private String truncateToHeadTail(String content) {
+        int totalChars = content.length();
+        if (totalChars <= TRUNCATE_HEAD_CHARS + TRUNCATE_TAIL_CHARS) {
             return content;
         }
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < TRUNCATE_HEAD_LINES; i++) {
-            sb.append(lines[i]).append("\n");
-        }
-        int droppedLines = lines.length - TRUNCATE_HEAD_LINES - TRUNCATE_TAIL_LINES;
-        sb.append("\n... [truncated ").append(droppedLines)
-          .append(" lines, original ").append(originalBytes).append(" bytes] ...\n\n");
-        for (int i = lines.length - TRUNCATE_TAIL_LINES; i < lines.length; i++) {
-            sb.append(lines[i]);
-            if (i < lines.length - 1) sb.append("\n");
-        }
+        int truncatedChars = totalChars - TRUNCATE_HEAD_CHARS - TRUNCATE_TAIL_CHARS;
+        int reducedPct = (int) Math.round((100.0 * truncatedChars) / totalChars);
+        StringBuilder sb = new StringBuilder(TRUNCATE_HEAD_CHARS + TRUNCATE_TAIL_CHARS + 128);
+        sb.append(content, 0, TRUNCATE_HEAD_CHARS);
+        sb.append("\n... [")
+          .append(truncatedChars)
+          .append(MARKER_INFIX)
+          .append(totalChars)
+          .append(" chars (")
+          .append(reducedPct)
+          .append("% reduced)] ...\n");
+        sb.append(content, totalChars - TRUNCATE_TAIL_CHARS, totalChars);
         return sb.toString();
     }
 

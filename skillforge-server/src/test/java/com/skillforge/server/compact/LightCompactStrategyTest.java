@@ -8,6 +8,7 @@ import com.skillforge.core.model.Message;
 
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -69,7 +70,7 @@ class LightCompactStrategyTest {
         // find the tool_result in the result
         ContentBlock tr = findFirstToolResult(r.getMessages());
         assertThat(tr).isNotNull();
-        assertThat(tr.getContent()).contains("[truncated");
+        assertThat(tr.getContent()).contains("chars truncated");
         assertThat(tr.getContent().length()).isLessThan(big.length());
         assertThat(r.getTokensReclaimed()).isGreaterThan(0);
     }
@@ -188,7 +189,7 @@ class LightCompactStrategyTest {
         // The tool_result should be untouched because it is in the protection window.
         ContentBlock tr = findFirstToolResult(r.getMessages());
         assertThat(tr).isNotNull();
-        assertThat(tr.getContent()).doesNotContain("[truncated");
+        assertThat(tr.getContent()).doesNotContain("chars truncated");
     }
 
     @Test
@@ -256,7 +257,7 @@ class LightCompactStrategyTest {
         ContentBlock tr = findToolResultForId(r.getMessages(), "t1");
         assertThat(tr).isNotNull();
         assertThat(tr.getContent()).isEqualTo(originalContent);
-        assertThat(tr.getContent()).doesNotContain("[truncated");
+        assertThat(tr.getContent()).doesNotContain("chars truncated");
     }
 
     @Test
@@ -292,7 +293,7 @@ class LightCompactStrategyTest {
         assertThat(r.getStrategiesApplied()).contains("truncate-large-tool-output");
         ContentBlock tr = findToolResultForId(r.getMessages(), "t1");
         assertThat(tr).isNotNull();
-        assertThat(tr.getContent()).contains("[truncated");
+        assertThat(tr.getContent()).contains("chars truncated");
     }
 
     @Test
@@ -355,6 +356,256 @@ class LightCompactStrategyTest {
         ContentBlock tr = findToolResultForId(r.getMessages(), "t1");
         assertThat(tr).isNotNull();
         assertThat(tr.getContent()).isEqualTo(originalContent); // not truncated by override
+    }
+
+    // ---- truncate-by-bytes acceptance tests (LLM-OUTPUT-BUDGET-AND-TRUNCATE Fix 2) ----
+
+    @Test
+    void truncate_preserves_first_4k_chars_verbatim() {
+        // Build a content where first 4096 chars are predictable: "A" repeated 4096 times,
+        // followed by enough other chars to push total > 10K bytes and > HEAD+TAIL chars.
+        StringBuilder big = new StringBuilder();
+        for (int i = 0; i < LightCompactStrategy.TRUNCATE_HEAD_CHARS; i++) big.append('A');
+        for (int i = 0; i < 50_000; i++) big.append('B');
+        for (int i = 0; i < LightCompactStrategy.TRUNCATE_TAIL_CHARS; i++) big.append('C');
+        String original = big.toString();
+
+        List<Message> msgs = buildBashToolResultMessages(original);
+        CompactResult r = strategy.apply(msgs, 32000);
+
+        ContentBlock tr = findFirstToolResult(r.getMessages());
+        assertThat(tr).isNotNull();
+        String result = tr.getContent();
+        // first HEAD_CHARS chars must be byte-identical to original head
+        assertThat(result.substring(0, LightCompactStrategy.TRUNCATE_HEAD_CHARS))
+                .isEqualTo(original.substring(0, LightCompactStrategy.TRUNCATE_HEAD_CHARS));
+    }
+
+    @Test
+    void truncate_preserves_last_2k_chars_verbatim() {
+        StringBuilder big = new StringBuilder();
+        for (int i = 0; i < LightCompactStrategy.TRUNCATE_HEAD_CHARS; i++) big.append('A');
+        for (int i = 0; i < 50_000; i++) big.append('B');
+        for (int i = 0; i < LightCompactStrategy.TRUNCATE_TAIL_CHARS; i++) big.append('C');
+        String original = big.toString();
+
+        List<Message> msgs = buildBashToolResultMessages(original);
+        CompactResult r = strategy.apply(msgs, 32000);
+
+        ContentBlock tr = findFirstToolResult(r.getMessages());
+        assertThat(tr).isNotNull();
+        String result = tr.getContent();
+        // last TAIL_CHARS chars of result must equal last TAIL_CHARS chars of original
+        String resultTail = result.substring(result.length() - LightCompactStrategy.TRUNCATE_TAIL_CHARS);
+        String origTail = original.substring(original.length() - LightCompactStrategy.TRUNCATE_TAIL_CHARS);
+        assertThat(resultTail).isEqualTo(origTail);
+    }
+
+    @Test
+    void truncate_marker_contains_truncated_chars_and_original_size() {
+        StringBuilder big = new StringBuilder();
+        int totalChars = 50_000;
+        for (int i = 0; i < totalChars; i++) big.append('x');
+        String original = big.toString();
+
+        List<Message> msgs = buildBashToolResultMessages(original);
+        CompactResult r = strategy.apply(msgs, 32000);
+
+        ContentBlock tr = findFirstToolResult(r.getMessages());
+        assertThat(tr).isNotNull();
+        String content = tr.getContent();
+        int expectedTruncated = totalChars
+                - LightCompactStrategy.TRUNCATE_HEAD_CHARS
+                - LightCompactStrategy.TRUNCATE_TAIL_CHARS;
+        assertThat(content).contains(expectedTruncated + " chars truncated, original size: "
+                + totalChars + " chars");
+        assertThat(content).contains("% reduced)]");
+    }
+
+    @Test
+    void truncate_handles_single_long_line() {
+        // Old line-based truncate would do nothing because there's only 1 line.
+        // New byte-based truncate must still cut.
+        StringBuilder big = new StringBuilder();
+        for (int i = 0; i < 50_000; i++) big.append('z');
+        String original = big.toString();
+        // sanity: no '\n' so one line
+        assertThat(original).doesNotContain("\n");
+
+        List<Message> msgs = buildBashToolResultMessages(original);
+        CompactResult r = strategy.apply(msgs, 32000);
+
+        assertThat(r.getStrategiesApplied()).contains("truncate-large-tool-output");
+        ContentBlock tr = findFirstToolResult(r.getMessages());
+        assertThat(tr).isNotNull();
+        assertThat(tr.getContent()).contains("chars truncated");
+        assertThat(tr.getContent().length()).isLessThan(original.length());
+    }
+
+    @Test
+    void truncate_skips_when_exactly_at_threshold() {
+        // Build content whose UTF-8 byte size is exactly LARGE_TOOL_OUTPUT_BYTES (10240).
+        // ASCII => 1 byte/char => 10240 chars exactly.
+        StringBuilder big = new StringBuilder();
+        for (int i = 0; i < LightCompactStrategy.LARGE_TOOL_OUTPUT_BYTES; i++) big.append('a');
+        String original = big.toString();
+        assertThat(original.getBytes(java.nio.charset.StandardCharsets.UTF_8).length)
+                .isEqualTo(LightCompactStrategy.LARGE_TOOL_OUTPUT_BYTES);
+
+        List<Message> msgs = buildBashToolResultMessages(original);
+        CompactResult r = strategy.apply(msgs, 32000);
+
+        ContentBlock tr = findFirstToolResult(r.getMessages());
+        assertThat(tr).isNotNull();
+        // <=  threshold => not truncated
+        assertThat(tr.getContent()).isEqualTo(original);
+        assertThat(r.getStrategiesApplied()).doesNotContain("truncate-large-tool-output");
+    }
+
+    @Test
+    void truncate_is_idempotent_for_already_truncated_content() {
+        // Run once to produce a truncated content, then re-run the strategy on the result.
+        StringBuilder big = new StringBuilder();
+        for (int i = 0; i < 50_000; i++) big.append('y');
+        String original = big.toString();
+
+        List<Message> msgsA = buildBashToolResultMessages(original);
+        CompactResult r1 = strategy.apply(msgsA, 32000);
+        ContentBlock tr1 = findFirstToolResult(r1.getMessages());
+        assertThat(tr1).isNotNull();
+        String firstPass = tr1.getContent();
+        assertThat(firstPass).contains("chars truncated");
+
+        // Build a fresh message list using firstPass as the tool_result content.
+        // It still > 10K bytes (4096 + 2048 + marker ≈ 6.2K — actually under 10K, so first
+        // we test a content that IS still > 10K bytes after truncation).
+        // To force >10K bytes after truncation, use a much larger original so head+tail+marker > 10K.
+        StringBuilder huge = new StringBuilder();
+        // head 4096 + tail 2048 = 6144 chars; need > 10K bytes total post-truncation, so make
+        // head/tail include chars that increase byte size (use ASCII but expand HEAD+TAIL via
+        // already-truncated content shape). Simpler: just verify that even when content carries
+        // marker, no second truncation happens regardless of byte size — by re-feeding the
+        // exact post-truncation content but pad it large enough to exceed threshold.
+        huge.append(firstPass);
+        // append enough ASCII to push the post-truncation content over 10K bytes
+        while (huge.length() < LightCompactStrategy.LARGE_TOOL_OUTPUT_BYTES + 100) {
+            huge.append("Z");
+        }
+        String alreadyTruncated = huge.toString();
+        // sanity: contains marker
+        assertThat(alreadyTruncated).contains("chars truncated, original size:");
+        assertThat(alreadyTruncated.getBytes(java.nio.charset.StandardCharsets.UTF_8).length)
+                .isGreaterThan(LightCompactStrategy.LARGE_TOOL_OUTPUT_BYTES);
+
+        List<Message> msgsB = buildBashToolResultMessages(alreadyTruncated);
+        CompactResult r2 = strategy.apply(msgsB, 32000);
+        ContentBlock tr2 = findFirstToolResult(r2.getMessages());
+        assertThat(tr2).isNotNull();
+        // Idempotent: second pass leaves content untouched (still equal to alreadyTruncated)
+        assertThat(tr2.getContent()).isEqualTo(alreadyTruncated);
+        // No truncate strategy applied (rule is a no-op for marker-bearing content)
+        assertThat(r2.getStrategiesApplied()).doesNotContain("truncate-large-tool-output");
+    }
+
+    /**
+     * Helper that builds a message list with a single Bash tool_use + tool_result outside the
+     * protection window, surrounded by enough fillers to keep the pair compactable.
+     */
+    private List<Message> buildBashToolResultMessages(String content) {
+        List<Message> msgs = new ArrayList<>();
+        for (int i = 0; i < 3; i++) msgs.add(filler("pad " + i));
+        msgs.add(assistantToolUse("t1", "Bash", Map.of("cmd", "ls -la")));
+        msgs.add(toolResult("t1", content, false));
+        for (int i = 0; i < 6; i++) msgs.add(filler("tail " + i));
+        return msgs;
+    }
+
+    @Test
+    void truncate_handles_chinese_cjk_characters() {
+        // U+6D4B (测) is 3 bytes in UTF-8. 15_000 chars => ~45_000 bytes, well over 10K threshold.
+        // Char count (15_000) > HEAD + TAIL (4096 + 2048 = 6144), so truncation runs.
+        StringBuilder big = new StringBuilder();
+        for (int i = 0; i < 15_000; i++) big.append('测');
+        String original = big.toString();
+        assertThat(original.getBytes(StandardCharsets.UTF_8).length)
+                .isGreaterThan(LightCompactStrategy.LARGE_TOOL_OUTPUT_BYTES);
+
+        List<Message> msgs = buildBashToolResultMessages(original);
+        CompactResult r = strategy.apply(msgs, 32000);
+
+        assertThat(r.getStrategiesApplied()).contains("truncate-large-tool-output");
+        ContentBlock tr = findFirstToolResult(r.getMessages());
+        assertThat(tr).isNotNull();
+        String result = tr.getContent();
+
+        // Head: first HEAD_CHARS chars are CJK and byte-identical (no multibyte split).
+        String resultHead = result.substring(0, LightCompactStrategy.TRUNCATE_HEAD_CHARS);
+        String origHead = original.substring(0, LightCompactStrategy.TRUNCATE_HEAD_CHARS);
+        assertThat(resultHead).isEqualTo(origHead);
+        // Sanity: head is all '测' chars (no byte split would yield '?' or U+FFFD).
+        for (int i = 0; i < resultHead.length(); i++) {
+            assertThat(resultHead.charAt(i)).isEqualTo('测');
+        }
+
+        // Tail: last TAIL_CHARS chars are CJK and byte-identical.
+        String resultTail = result.substring(result.length() - LightCompactStrategy.TRUNCATE_TAIL_CHARS);
+        String origTail = original.substring(original.length() - LightCompactStrategy.TRUNCATE_TAIL_CHARS);
+        assertThat(resultTail).isEqualTo(origTail);
+        for (int i = 0; i < resultTail.length(); i++) {
+            assertThat(resultTail.charAt(i)).isEqualTo('测');
+        }
+
+        // Marker present.
+        assertThat(result).contains("chars truncated, original size:");
+        // No replacement / mojibake characters introduced.
+        assertThat(result).doesNotContain("�");
+    }
+
+    @Test
+    void truncate_multiple_large_tool_results_in_same_pass() {
+        // Two whitelisted tool_use → tool_result pairs, both with content well over the
+        // 10K threshold. A single strategy.apply() must truncate BOTH.
+        StringBuilder big1 = new StringBuilder();
+        for (int i = 0; i < 30_000; i++) big1.append('a');
+        StringBuilder big2 = new StringBuilder();
+        for (int i = 0; i < 50_000; i++) big2.append('b');
+        String content1 = big1.toString();
+        String content2 = big2.toString();
+
+        List<Message> msgs = new ArrayList<>();
+        for (int i = 0; i < 3; i++) msgs.add(filler("pad " + i));
+        msgs.add(assistantToolUse("t1", "Bash", Map.of("cmd", "echo a")));
+        msgs.add(toolResult("t1", content1, false));
+        msgs.add(filler("between"));
+        msgs.add(assistantToolUse("t2", "Bash", Map.of("cmd", "echo b")));
+        msgs.add(toolResult("t2", content2, false));
+        // Padding tail so both pairs sit outside the protection window.
+        for (int i = 0; i < 6; i++) msgs.add(filler("tail " + i));
+
+        CompactResult r = strategy.apply(msgs, 32000);
+
+        // Strategy applied (recorded once even though it touched two blocks — current impl).
+        assertThat(r.getStrategiesApplied()).contains("truncate-large-tool-output");
+
+        // Both tool_results truncated with correct head / tail / marker.
+        ContentBlock tr1 = findToolResultForId(r.getMessages(), "t1");
+        ContentBlock tr2 = findToolResultForId(r.getMessages(), "t2");
+        assertThat(tr1).isNotNull();
+        assertThat(tr2).isNotNull();
+        for (ContentBlock tr : List.of(tr1, tr2)) {
+            String c = tr.getContent();
+            assertThat(c).contains("chars truncated, original size:");
+            assertThat(c.length()).isLessThan(content2.length()); // shorter than the larger original
+        }
+
+        // Distinct content preserved (head+tail belong to the right original).
+        assertThat(tr1.getContent().substring(0, LightCompactStrategy.TRUNCATE_HEAD_CHARS))
+                .isEqualTo(content1.substring(0, LightCompactStrategy.TRUNCATE_HEAD_CHARS));
+        assertThat(tr2.getContent().substring(0, LightCompactStrategy.TRUNCATE_HEAD_CHARS))
+                .isEqualTo(content2.substring(0, LightCompactStrategy.TRUNCATE_HEAD_CHARS));
+        // No cross-contamination.
+        assertThat(tr1.getContent()).doesNotContain("bbbbbbbb");
+        assertThat(tr2.getContent()).doesNotContain("aaaaaaaa");
     }
 
     // ---- helpers ----

@@ -47,6 +47,29 @@ public class ClaudeProvider implements LlmProvider {
     /** Backoff base (ms); jitter ±20% applied on top. */
     private static final long[] STREAM_HANDSHAKE_BACKOFF_MS = {2000L, 5000L};
 
+    /**
+     * Per-model API hard cap on {@code max_tokens}. Anthropic returns HTTP 400 if the request
+     * exceeds the model's supported maximum output tokens; we clamp client-side to avoid that.
+     *
+     * <p>Models NOT listed here (e.g. claude-3-7-sonnet-20250219+, claude-opus-4-x,
+     * claude-sonnet-4-x, claude-3-5-sonnet-latest aliases) support 16K+ output and pass
+     * through unmodified.
+     *
+     * <p>References:
+     * <ul>
+     *   <li>claude-3-opus / claude-3-sonnet / claude-3-haiku: max 4096</li>
+     *   <li>claude-3-5-sonnet (20240620, 20241022) / claude-3-5-haiku: max 8192</li>
+     * </ul>
+     */
+    private static final Map<String, Integer> MODEL_MAX_OUTPUT_CAPS = Map.of(
+            "claude-3-opus-20240229", 4096,
+            "claude-3-haiku-20240307", 4096,
+            "claude-3-sonnet-20240229", 4096,
+            "claude-3-5-sonnet-20240620", 8192,
+            "claude-3-5-sonnet-20241022", 8192,
+            "claude-3-5-haiku-20241022", 8192
+    );
+
     private final String apiKey;
     private final String baseUrl;
     private final String defaultModel;
@@ -385,11 +408,29 @@ public class ClaudeProvider implements LlmProvider {
 
     // ----- Request building -----
 
+    /**
+     * Clamp the requested {@code max_tokens} to the per-model API hard cap if known.
+     * Anthropic returns HTTP 400 for {@code max_tokens > model cap} (see
+     * {@link #MODEL_MAX_OUTPUT_CAPS}). For models not in the map (newer / unrecognized),
+     * pass through unchanged — the Anthropic API will be the final authority.
+     *
+     * <p>Visible for test ({@code package-private}).
+     */
+    static int clampMaxTokensForModel(int requested, String modelId) {
+        if (modelId == null) return requested;
+        Integer cap = MODEL_MAX_OUTPUT_CAPS.get(modelId);
+        if (cap == null) return requested;
+        if (requested <= cap) return requested;
+        log.debug("ClaudeProvider: clamped max_tokens {} -> {} for model {} (per-model API cap)",
+                requested, cap, modelId);
+        return cap;
+    }
+
     private String buildRequestBody(LlmRequest request, String model, boolean stream)
             throws JsonProcessingException {
         ObjectNode root = objectMapper.createObjectNode();
         root.put("model", model);
-        root.put("max_tokens", request.getMaxTokens());
+        root.put("max_tokens", clampMaxTokensForModel(request.getMaxTokens(), model));
         root.put("temperature", request.getTemperature());
 
         if (stream) {

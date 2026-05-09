@@ -10,6 +10,7 @@ import com.fasterxml.jackson.databind.JsonDeserializer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.skillforge.core.engine.hook.LifecycleHooksConfig;
+import com.skillforge.core.llm.LlmRequest;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -173,14 +174,17 @@ public class AgentDefinition {
     }
 
     /**
-     * 获取最大 token 数，默认 4096。
+     * 获取最大 token 数，默认 {@link LlmRequest#DEFAULT_MAX_TOKENS}（16384）。
+     *
+     * <p>per-agent yaml 可以通过 {@code config.max_tokens} 覆盖，自部署 vLLM 等小模型场景应当显式
+     * 设置较小值，避免触顶。
      */
     public int getMaxTokens() {
         Object val = config.get("max_tokens");
         if (val instanceof Number num) {
             return num.intValue();
         }
-        return 4096;
+        return LlmRequest.DEFAULT_MAX_TOKENS;
     }
 
     public String getId() {
