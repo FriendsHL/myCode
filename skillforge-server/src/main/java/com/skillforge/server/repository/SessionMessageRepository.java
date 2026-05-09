@@ -72,4 +72,32 @@ public interface SessionMessageRepository extends JpaRepository<SessionMessageEn
            nativeQuery = true)
     List<Object[]> findFirstUserMessageContentByTraceIds(
             @Param("traceIds") Collection<String> traceIds);
+
+    /**
+     * OBS-2 Q1: lightweight (seq_no, trace_id) projection for the trace_id
+     * preservation layer. Used by:
+     * <ul>
+     *   <li>{@code SessionService.rewriteMessages} — snapshot pre-DELETE+INSERT
+     *       trace_ids so they can be patched back onto the rewritten rows
+     *       (fixes light no-boundary regression that wiped trace_id column).</li>
+     *   <li>{@code CompactionService.persistCompactResult} — copy the original
+     *       last-N trace_ids onto the freshly-appended retained block.</li>
+     * </ul>
+     */
+    interface TraceIdView {
+        long getSeqNo();
+        String getTraceId();
+    }
+
+    @Query("SELECT m.seqNo AS seqNo, m.traceId AS traceId " +
+           "FROM SessionMessageEntity m " +
+           "WHERE m.sessionId = :sessionId AND m.traceId IS NOT NULL")
+    List<TraceIdView> findNonNullTraceIdProjections(@Param("sessionId") String sessionId);
+
+    @Query("SELECT m.seqNo AS seqNo, m.traceId AS traceId " +
+           "FROM SessionMessageEntity m " +
+           "WHERE m.sessionId = :sessionId " +
+           "ORDER BY m.seqNo DESC")
+    List<TraceIdView> findTailTraceIdProjections(
+            @Param("sessionId") String sessionId, Pageable pageable);
 }

@@ -565,9 +565,26 @@ public class CompactionService implements ContextCompactorCallback {
                     summary, SessionService.MSG_TYPE_SUMMARY, summaryMeta));
             List<Message> retained = extractRetainedMessages(result.getMessages());
             if (!retained.isEmpty()) {
-                for (Message message : retained) {
+                // OBS-2 Q1: full compact appends a fresh retained block at new
+                // seq_nos, so the auto-preserve in SessionService.rewriteMessages
+                // cannot help here (this path goes through appendMessages, not
+                // rewrite). Look up the original tail trace_ids — at this moment
+                // appendMessages has not yet run, so the DB tail is still the
+                // pre-compact source rows that retained[] mirrors — and stamp
+                // them onto the retained AppendMessages via the 7-arg form.
+                List<String> retainedTraceIds = sessionService.findTailTraceIds(
+                        sessionId, retained.size());
+                for (int i = 0; i < retained.size(); i++) {
+                    String preservedTraceId = (i < retainedTraceIds.size())
+                            ? retainedTraceIds.get(i) : null;
                     appends.add(new SessionService.AppendMessage(
-                            message, SessionService.MSG_TYPE_NORMAL, Collections.emptyMap()));
+                            retained.get(i),
+                            SessionService.MSG_TYPE_NORMAL,
+                            SessionService.MESSAGE_TYPE_NORMAL,
+                            null,                       // controlId
+                            null,                       // answeredAt
+                            Collections.emptyMap(),
+                            preservedTraceId));
                 }
             }
 

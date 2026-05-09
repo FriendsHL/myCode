@@ -923,26 +923,133 @@ public class SessionService {
         // 兼容旧调用：保留“覆盖写”语义（迁移完成后应逐步移除该入口）
         synchronized (lockForAppend(id)) {
             requiredTxTemplate.execute(status -> {
+                List<AppendMessage> patched = messages;
                 if (storeProperties.isRowWriteEnabled()) {
-                    rewriteRowsInNewTransaction(id, messages);
+                    // OBS-2 Q1: snapshot existing trace_ids by seq_no BEFORE the
+                    // DELETE+INSERT rewrite, then patch them onto rewritten rows
+                    // whose AppendMessage.traceId is null. Index alignment:
+                    // appendRowsOnce after deleteBySessionId starts base = -1, so
+                    // the new row at list index i lands at seq_no = i — matching
+                    // the old row at seq_no = i (project invariant: seq_no starts
+                    // at 0, contiguous). Caller-provided non-null traceIds win.
+                    //
+                    // Concurrency: this snapshot must stay inside the
+                    // synchronized(lockForAppend(id)) + outer REQUIRED tx. The
+                    // stripe lock excludes other writers on the same session,
+                    // and the inner REQUIRES_NEW used by rewriteRowsInNewTransaction
+                    // is safe because the lock is already held when it runs.
+                    // Moving snapshot outside the lock would open a race window
+                    // where a parallel append/rewrite could change trace_ids
+                    // between snapshot and the DELETE.
+                    Map<Long, String> oldTraceIds = snapshotTraceIds(id);
+                    patched = patchTraceIds(messages, oldTraceIds);
+                    rewriteRowsInNewTransaction(id, patched);
                 }
                 SessionEntity session = getSession(id);
-                if (messages == null || messages.isEmpty()) {
+                if (patched == null || patched.isEmpty()) {
                     session.setMessagesJson("[]");
                 } else {
-                    List<Message> plainMessages = new ArrayList<>(messages.size());
-                    for (AppendMessage appendMessage : messages) {
+                    List<Message> plainMessages = new ArrayList<>(patched.size());
+                    for (AppendMessage appendMessage : patched) {
                         plainMessages.add(appendMessage.message());
                     }
                     session.setMessagesJson(writeJsonSafely(plainMessages));
                 }
                 session.setMessageCount(storeProperties.isRowWriteEnabled()
                         ? (int) sessionMessageRepository.countBySessionId(id)
-                        : (messages == null ? 0 : messages.size()));
+                        : (patched == null ? 0 : patched.size()));
                 sessionRepository.save(session);
                 return null;
             });
         }
+    }
+
+    /**
+     * OBS-2 Q1: snapshot existing (seq_no → trace_id) for rows whose trace_id is
+     * non-null. Used by {@link #rewriteMessages} to preserve trace_ids across the
+     * DELETE+INSERT rewrite that previously wiped the column.
+     */
+    private Map<Long, String> snapshotTraceIds(String sessionId) {
+        if (sessionMessageRepository == null) {
+            return Collections.emptyMap();
+        }
+        List<SessionMessageRepository.TraceIdView> rows =
+                sessionMessageRepository.findNonNullTraceIdProjections(sessionId);
+        if (rows.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<Long, String> map = new HashMap<>(rows.size() * 2);
+        for (SessionMessageRepository.TraceIdView v : rows) {
+            map.put(v.getSeqNo(), v.getTraceId());
+        }
+        return map;
+    }
+
+    /**
+     * OBS-2 Q1: copy each {@link AppendMessage} forward, replacing only those
+     * whose {@code traceId} is null with the snapshot value at index = seq_no.
+     * Caller-provided non-null traceIds (e.g. boundary-preservation 7-arg path)
+     * are never overwritten. Returns the original list reference unchanged when
+     * no patch applies (avoids extra allocation in the common no-trace case).
+     */
+    private List<AppendMessage> patchTraceIds(List<AppendMessage> messages,
+                                              Map<Long, String> oldTraceIds) {
+        // Known limitation (OBS-2 Q1): index-aligned patching is only precise
+        // when the rewrite preserves message count (e.g. light Rule 1
+        // truncate-large-tool-output mutates blocks in place). Light Rule 2/3/4
+        // (dedupConsecutiveTools / foldFailedRetries / dropEmptyNarration) call
+        // working.remove() and shrink the list — newList[i] can then come from
+        // oldSeqNo>i, so the patched trace_id may bind to the "wrong" turn.
+        // Accepted trade-off: still strictly better than the prior 100% NULL
+        // wipe. A precise fix needs CompactResult to carry seq_no identity per
+        // surviving message instead of relying on list index.
+        if (messages == null || messages.isEmpty()
+                || oldTraceIds == null || oldTraceIds.isEmpty()) {
+            return messages;
+        }
+        List<AppendMessage> out = null;
+        for (int i = 0; i < messages.size(); i++) {
+            AppendMessage am = messages.get(i);
+            String preserved = (am.traceId() == null) ? oldTraceIds.get((long) i) : null;
+            if (preserved != null) {
+                if (out == null) {
+                    out = new ArrayList<>(messages);
+                }
+                out.set(i, new AppendMessage(am.message(), am.msgType(), am.messageType(),
+                        am.controlId(), am.answeredAt(), am.metadata(), preserved));
+            }
+        }
+        return out != null ? out : messages;
+    }
+
+    /**
+     * OBS-2 Q1: return the trace_ids of the last {@code n} rows of {@code
+     * sessionId}, ordered by seq_no ASC. Slots whose row had a null trace_id are
+     * preserved as null in the result so the list size matches {@code n} (or
+     * fewer when the session has &lt; n rows). Returns an empty list when
+     * {@code n &lt;= 0} or row-store is disabled.
+     *
+     * <p>Used by {@code CompactionService.persistCompactResult} to copy the
+     * original tail trace_ids onto the freshly-appended retained block during a
+     * full compact. Must be called BEFORE the new compact rows are appended,
+     * because once appended the "last N" no longer points at the source rows.
+     */
+    public List<String> findTailTraceIds(String sessionId, int n) {
+        if (n <= 0 || sessionMessageRepository == null
+                || storeProperties == null || !storeProperties.isRowWriteEnabled()) {
+            return Collections.emptyList();
+        }
+        List<SessionMessageRepository.TraceIdView> rows = sessionMessageRepository
+                .findTailTraceIdProjections(sessionId, PageRequest.of(0, n));
+        if (rows.isEmpty()) {
+            return Collections.emptyList();
+        }
+        // rows are seq_no DESC; reverse to ASC for caller (matches retained[i] ↔ tail[i]).
+        List<String> out = new ArrayList<>(rows.size());
+        for (int i = rows.size() - 1; i >= 0; i--) {
+            out.add(rows.get(i).getTraceId());
+        }
+        return out;
     }
 
     public List<SessionEntity> listByCollabRunId(String collabRunId) {

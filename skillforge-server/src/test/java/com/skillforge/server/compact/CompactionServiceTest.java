@@ -46,6 +46,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -318,6 +319,76 @@ class CompactionServiceTest {
         assertThat(event).isNotNull();
         assertThat(event.getStrategiesApplied()).isEqualTo("llm-summary");
         verify(checkpointRepository).save(any());
+    }
+
+    /**
+     * OBS-2 Q1: full compact's retained young-gen block must inherit the
+     * pre-compact tail trace_ids by seq_no alignment. Without this, retained
+     * rows would land with traceId=null and break per-trace UI lookups.
+     */
+    @Test
+    @DisplayName("OBS-2 Q1: full compact retained block carries pre-compact tail trace_ids")
+    @SuppressWarnings("unchecked")
+    void full_compact_retainedBlock_inheritsTailTraceIds() {
+        seedSession("sFTRACE", 30, 0, "idle");
+        seedMessages("sFTRACE");
+
+        // Stub findTailTraceIds to return deterministic per-index trace_ids so
+        // we can assert each retained AppendMessage carries the matching value.
+        when(sessionService.findTailTraceIds(eq("sFTRACE"), org.mockito.ArgumentMatchers.anyInt()))
+                .thenAnswer(inv -> {
+                    int n = inv.getArgument(1);
+                    List<String> out = new ArrayList<>();
+                    for (int i = 0; i < n; i++) {
+                        out.add("trace-tail-" + i);
+                    }
+                    return out;
+                });
+
+        org.mockito.ArgumentCaptor<List<SessionService.AppendMessage>> captor =
+                org.mockito.ArgumentCaptor.forClass(List.class);
+
+        CompactionEventEntity event = service.compact("sFTRACE", "full", "engine-hard", "trace-id-preserve");
+        assertThat(event).isNotNull();
+
+        // times(1): full compact persistCompactResult writes the boundary +
+        // summary + retained block in a single appendMessages call. Pinning to
+        // exactly 1 turns any future regression that adds a second call into a
+        // clean Mockito failure rather than a confusing index-mismatch error
+        // when captor.getValue() returns the LAST capture and the retained
+        // assertions below collide with whatever that batch contained.
+        verify(sessionService, times(1)).appendMessages(eq("sFTRACE"), captor.capture());
+        List<SessionService.AppendMessage> appended = captor.getValue();
+
+        // The first row is BOUNDARY, second is SUMMARY. Retained NORMAL rows
+        // start at index 2 and run until either the optional RECOVERY_PAYLOAD or
+        // end of list. They must each carry trace-tail-{i} where i is the index
+        // within the retained block (NOT within the full appended list).
+        assertThat(appended.size()).isGreaterThanOrEqualTo(3);
+        assertThat(appended.get(0).msgType()).isEqualTo(SessionService.MSG_TYPE_COMPACT_BOUNDARY);
+        assertThat(appended.get(1).msgType()).isEqualTo(SessionService.MSG_TYPE_SUMMARY);
+        // Boundary + summary rows themselves must NOT receive a trace_id (they are
+        // background markers — see CompactionService comment).
+        assertThat(appended.get(0).traceId()).isNull();
+        assertThat(appended.get(1).traceId()).isNull();
+
+        int retainedIdx = 0;
+        for (int i = 2; i < appended.size(); i++) {
+            SessionService.AppendMessage row = appended.get(i);
+            if (SessionService.MSG_TYPE_RECOVERY_PAYLOAD.equals(row.msgType())) {
+                continue; // Recovery payload is also a background marker, no trace_id.
+            }
+            assertThat(row.msgType()).isEqualTo(SessionService.MSG_TYPE_NORMAL);
+            assertThat(row.traceId())
+                    .as("retained row at retainedIdx=%d must carry trace-tail-%d", retainedIdx, retainedIdx)
+                    .isEqualTo("trace-tail-" + retainedIdx);
+            retainedIdx++;
+        }
+        // Sanity: at least one retained row was checked.
+        assertThat(retainedIdx).isGreaterThan(0);
+
+        // findTailTraceIds was queried for the retained block size (= retainedIdx).
+        verify(sessionService).findTailTraceIds(eq("sFTRACE"), eq(retainedIdx));
     }
 
     /**
