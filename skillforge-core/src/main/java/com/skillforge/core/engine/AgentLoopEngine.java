@@ -148,6 +148,13 @@ public class AgentLoopEngine {
     private com.skillforge.core.skill.view.SessionSkillResolver sessionSkillResolver;
 
     /**
+     * P9-5: optional — per-session file content cache for post-compact recovery payload.
+     * Engine evicts the session's entry in the run() try-finally so memory is reclaimed
+     * after every loop run (idempotent if already absent).  null disables eviction.
+     */
+    private com.skillforge.core.compact.recovery.FileStateCache fileStateCache;
+
+    /**
      * P9-2: request-time tool_result aggregate budget (chars). 0 / 负数禁用 budgeter。
      * 默认 200K，与持久化归档 per-message 预算同量级。可由 agent config "request_tool_result_budget_chars" 覆盖。
      */
@@ -206,6 +213,14 @@ public class AgentLoopEngine {
 
     public void setSessionConfirmCache(SessionConfirmCache sessionConfirmCache) {
         this.sessionConfirmCache = sessionConfirmCache;
+    }
+
+    /**
+     * P9-5: optional setter — wires the file cache used by post-compact recovery so the
+     * engine can evict per-session entries when the agent loop exits (afterLoop / try-finally).
+     */
+    public void setFileStateCache(com.skillforge.core.compact.recovery.FileStateCache fileStateCache) {
+        this.fileStateCache = fileStateCache;
     }
 
     public void setRootSessionLookup(RootSessionLookup rootSessionLookup) {
@@ -311,6 +326,27 @@ public class AgentLoopEngine {
                           List<Message> history, String sessionId, Long userId,
                           LoopContext externalContext) {
         log.info("AgentLoop started for agent={}, session={}, user={}", agentDef.getName(), sessionId, userId);
+
+        try {
+            return runInternal(agentDef, userMessage, history, sessionId, userId, externalContext);
+        } finally {
+            // P9-5: evict per-session file cache regardless of how run() exits (normal return,
+            // max_loops, exception, etc.).  Idempotent when cache absent or already evicted.
+            if (fileStateCache != null && sessionId != null) {
+                try {
+                    fileStateCache.evictSession(sessionId);
+                } catch (Exception evictEx) {
+                    log.warn("FileStateCache.evictSession failed for sessionId={}", sessionId, evictEx);
+                }
+            }
+        }
+    }
+
+    /** Internal body of {@link #run(AgentDefinition, String, List, String, Long, LoopContext)}; the
+     *  public {@code run()} only adds a try-finally around this for P9-5 cache eviction. */
+    private LoopResult runInternal(AgentDefinition agentDef, String userMessage,
+                                   List<Message> history, String sessionId, Long userId,
+                                   LoopContext externalContext) {
 
         // 1. 创建或复用 LoopContext
         LoopContext context = externalContext != null ? externalContext : new LoopContext();

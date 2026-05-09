@@ -50,6 +50,8 @@ public class SessionService {
     public static final String MSG_TYPE_COMPACT_BOUNDARY = "COMPACT_BOUNDARY";
     public static final String MSG_TYPE_SUMMARY = "SUMMARY";
     public static final String MSG_TYPE_SYSTEM_EVENT = "SYSTEM_EVENT";
+    /** P9-5: post-compact recovery payload (recently-read files snapshot). */
+    public static final String MSG_TYPE_RECOVERY_PAYLOAD = "RECOVERY_PAYLOAD";
     public static final String MESSAGE_TYPE_NORMAL = "normal";
     public static final String MESSAGE_TYPE_ASK_USER = "ask_user";
     public static final String MESSAGE_TYPE_CONFIRMATION = "confirmation";

@@ -1,9 +1,12 @@
 package com.skillforge.tools;
 
+import com.skillforge.core.compact.recovery.FileStateCache;
 import com.skillforge.core.model.ToolSchema;
 import com.skillforge.core.skill.Tool;
 import com.skillforge.core.skill.SkillContext;
 import com.skillforge.core.skill.SkillResult;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -17,6 +20,19 @@ import java.util.Map;
  * Tool that performs exact string replacement in a file.
  */
 public class FileEditTool implements Tool {
+
+    private static final Logger log = LoggerFactory.getLogger(FileEditTool.class);
+
+    /** P9-5: optional cache hook — null when constructed without recovery (legacy / tests). */
+    private final FileStateCache fileStateCache;
+
+    public FileEditTool() {
+        this(null);
+    }
+
+    public FileEditTool(FileStateCache fileStateCache) {
+        this.fileStateCache = fileStateCache;
+    }
 
     @Override
     public String getName() {
@@ -107,6 +123,16 @@ public class FileEditTool implements Tool {
             }
 
             Files.writeString(path, updated, StandardCharsets.UTF_8);
+
+            // P9-5: cache the post-edit full file content for post-compact recovery.
+            if (fileStateCache != null && context != null) {
+                try {
+                    fileStateCache.put(context.getSessionId(), filePath, updated);
+                } catch (Exception cacheEx) {
+                    log.warn("FileStateCache.put failed (FileEdit) session={} path={}: {}",
+                            context.getSessionId(), filePath, cacheEx.getMessage());
+                }
+            }
 
             String msg = replaceAll
                     ? "Replaced all " + occurrences + " occurrences in " + filePath

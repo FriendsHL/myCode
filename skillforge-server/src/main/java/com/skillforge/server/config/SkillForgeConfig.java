@@ -6,6 +6,8 @@ import com.skillforge.core.compact.CompactableToolRegistry;
 import com.skillforge.core.compact.ContextCompactorCallback;
 import com.skillforge.core.compact.FullCompactStrategy;
 import com.skillforge.core.compact.LightCompactStrategy;
+import com.skillforge.core.compact.recovery.FileStateCache;
+import com.skillforge.core.compact.recovery.RecoveryPayloadBuilder;
 import com.skillforge.core.engine.AgentLoopEngine;
 import com.skillforge.core.engine.CancellationRegistry;
 import com.skillforge.core.engine.ChatEventBroadcaster;
@@ -132,13 +134,50 @@ public class SkillForgeConfig {
         return text -> { throw new com.skillforge.core.llm.EmbeddingNotSupportedException("no-op"); };
     }
 
+    /**
+     * P9-5: process-wide cache of file content read/written/edited per session.  Feeds the
+     * post-compact recovery payload (RecoveryPayloadBuilder).  Singleton — file tools and
+     * the agent loop engine share the same instance.
+     *
+     * <p>The cache uses the same {@code max-tokens-per-file} value as the builder so a yaml
+     * change on this single property propagates through both write-side truncation (here)
+     * and read-side budget (builder).  Single source of truth.
+     */
     @Bean
-    public SkillRegistry skillRegistry(MemoryService memoryService, EmbeddingService embeddingService) {
+    public FileStateCache fileStateCache(
+            @Value("${skillforge.compact.recovery.max-tokens-per-file:5000}") int maxTokensPerFile) {
+        return new FileStateCache(maxTokensPerFile);
+    }
+
+    /**
+     * P9-5: builds the recovery {@link com.skillforge.core.model.Message} appended after the
+     * compact summary.  Configuration via {@code skillforge.compact.recovery.*} properties.
+     *
+     * <p>Note: {@code maxTokensPerFile} is read from the same property as
+     * {@link #fileStateCache(int)} so write-side truncation and read-side budget stay in sync.
+     */
+    @Bean
+    public RecoveryPayloadBuilder recoveryPayloadBuilder(
+            FileStateCache fileStateCache,
+            @Value("${skillforge.compact.recovery.enabled:true}") boolean enabled,
+            @Value("${skillforge.compact.recovery.max-files:5}") int maxFiles,
+            @Value("${skillforge.compact.recovery.max-tokens-per-file:5000}") int maxTokensPerFile) {
+        RecoveryPayloadBuilder builder = new RecoveryPayloadBuilder(fileStateCache);
+        builder.setEnabled(enabled);
+        builder.setMaxFiles(maxFiles);
+        builder.setMaxTokensPerFile(maxTokensPerFile);
+        return builder;
+    }
+
+    @Bean
+    public SkillRegistry skillRegistry(MemoryService memoryService, EmbeddingService embeddingService,
+                                       FileStateCache fileStateCache) {
         SkillRegistry registry = new SkillRegistry();
         registry.registerTool(new BashTool());
-        registry.registerTool(new FileReadTool());
-        registry.registerTool(new FileWriteTool());
-        registry.registerTool(new FileEditTool());
+        // P9-5: file tools share the FileStateCache so recovery payload knows recent files.
+        registry.registerTool(new FileReadTool(fileStateCache));
+        registry.registerTool(new FileWriteTool(fileStateCache));
+        registry.registerTool(new FileEditTool(fileStateCache));
         registry.registerTool(new GlobTool());
         registry.registerTool(new GrepTool());
         registry.registerTool(new MemoryTool(memoryService));
@@ -672,6 +711,7 @@ public class SkillForgeConfig {
                                            com.skillforge.core.engine.confirm.ConfirmationPrompter confirmationPrompter,
                                            com.skillforge.core.skill.view.SessionSkillResolver sessionSkillResolver,
                                            com.skillforge.server.service.SkillService skillService,
+                                           FileStateCache fileStateCache,
                                            com.fasterxml.jackson.databind.ObjectMapper objectMapper) {
         String defaultProvider = llmProperties.getDefaultProvider() != null
                 ? llmProperties.getDefaultProvider() : "claude";
@@ -701,6 +741,8 @@ public class SkillForgeConfig {
         // Plan r2 §5 + §7: wire skill control plane.
         engine.setSessionSkillResolver(sessionSkillResolver);
         engine.setSkillTelemetryRecorder(skillService::recordUsage);
+        // P9-5: per-session file state cache for post-compact recovery payload.
+        engine.setFileStateCache(fileStateCache);
         return engine;
     }
 

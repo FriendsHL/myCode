@@ -7,6 +7,7 @@ import com.skillforge.core.compact.FullCompactStrategy;
 import com.skillforge.core.compact.LightCompactStrategy;
 import com.skillforge.core.compact.SessionMemoryCompactStrategy;
 import com.skillforge.core.compact.TokenEstimator;
+import com.skillforge.core.compact.recovery.RecoveryPayloadBuilder;
 import com.skillforge.core.engine.ChatEventBroadcaster;
 import com.skillforge.core.llm.LlmProvider;
 import com.skillforge.core.llm.LlmProviderFactory;
@@ -89,6 +90,8 @@ public class CompactionService implements ContextCompactorCallback {
     private final SessionMemoryCompactStrategy sessionMemoryCompactStrategy = new SessionMemoryCompactStrategy();
     private AgentRepository agentRepository;
     private MemoryService memoryService;
+    /** P9-5: optional — when set, full-compact emits a recovery payload row after retained messages. */
+    private RecoveryPayloadBuilder recoveryPayloadBuilder;
 
     private final Object[] sessionLocks;
 
@@ -142,6 +145,16 @@ public class CompactionService implements ContextCompactorCallback {
     @Autowired(required = false)
     public void setMemoryService(MemoryService memoryService) {
         this.memoryService = memoryService;
+    }
+
+    /**
+     * P9-5: optional setter — when wired (production path), every full compact will append a
+     * recovery payload after the retained young-gen messages. null in test paths is fine; the
+     * persistence loop just skips the recovery insertion.
+     */
+    @Autowired(required = false)
+    public void setRecoveryPayloadBuilder(RecoveryPayloadBuilder recoveryPayloadBuilder) {
+        this.recoveryPayloadBuilder = recoveryPayloadBuilder;
     }
 
     /**
@@ -557,6 +570,26 @@ public class CompactionService implements ContextCompactorCallback {
                             message, SessionService.MSG_TYPE_NORMAL, Collections.emptyMap()));
                 }
             }
+
+            // === P9-5: post-compact recovery payload ===
+            // Order: boundary → summary(USER) → retained young-gen → recoveryPayload(USER, optional).
+            // Recovery payload is a plain user message (no tool_use / tool_result blocks) so it does
+            // not interact with the tool_use ↔ tool_result pairing invariant.
+            if (recoveryPayloadBuilder != null) {
+                try {
+                    Message recovery = recoveryPayloadBuilder.build(sessionId);
+                    if (recovery != null) {
+                        Map<String, Object> recoveryMeta = new HashMap<>();
+                        recoveryMeta.put("trigger", source);
+                        appends.add(new SessionService.AppendMessage(
+                                recovery, SessionService.MSG_TYPE_RECOVERY_PAYLOAD, recoveryMeta));
+                    }
+                } catch (Exception ex) {
+                    // Recovery is best-effort; never block compact persistence on it.
+                    log.warn("recovery payload build failed; continuing compact: sessionId={}", sessionId, ex);
+                }
+            }
+
             long lastSeqNo = sessionService.appendMessages(sessionId, appends);
             long firstSeqNo = lastSeqNo - appends.size() + 1;
             long boundarySeqNo = firstSeqNo;

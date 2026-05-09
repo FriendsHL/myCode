@@ -19,7 +19,7 @@
 
 | ID | 标题 | 状态 | 需求包 | MRD | PRD | 技术方案 | 交付 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| P9-4/P9-5 | Partial compact + post-compact 恢复 | prd-draft | [需求包](requirements/active/P9-4-P9-5-compaction-recovery/index.md) | [MRD](requirements/active/P9-4-P9-5-compaction-recovery/mrd.md) | [PRD](requirements/active/P9-4-P9-5-compaction-recovery/prd.md) | [方案](requirements/active/P9-4-P9-5-compaction-recovery/tech-design.md) | - |
+| _(空)_ | — | — | — | — | — | — | — |
 
 ## Backlog 和暂缓
 
@@ -27,6 +27,7 @@
 | --- | --- | --- | --- |
 | SEC-1 | Channel 配置加密 | deferred | [需求包](requirements/backlog/SEC-1-channel-config-encryption/index.md) |
 | BUG-G | 防御性 follow-up | deferred | [需求包](requirements/deferred/BUG-G-defensive-hardening/index.md) |
+| P9-4 | Partial compact（按位置切） | deferred | [需求包](requirements/deferred/P9-4-partial-compact/index.md) |
 
 ## 已交付方案
 
@@ -34,6 +35,7 @@
 
 | ID | 标题 | 需求包 | 技术方案 |
 | --- | --- | --- | --- |
+| P9-5 | Post-compact 恢复（FileStateCache + recovery payload + 4 路径自动注入） | [需求包](requirements/archive/2026-05-09-P9-5-post-compact-recovery/index.md) | [方案](requirements/archive/2026-05-09-P9-5-post-compact-recovery/tech-design.md) |
 | PROMPT-CACHE-MVP | Prompt Cache MVP（5 provider 全链路 + Claude 3 breakpoint + dashboard hit rate） | [需求包](requirements/archive/2026-05-08-PROMPT-CACHE-MVP/index.md) | [方案](requirements/archive/2026-05-08-PROMPT-CACHE-MVP/tech-design.md) |
 | MCP-CLIENT-MVP | MCP Client MVP（stdio + per-agent + dashboard CRUD + dogfood time） | [需求包](requirements/archive/2026-05-07-MCP-CLIENT-MVP/index.md) | [方案](requirements/archive/2026-05-07-MCP-CLIENT-MVP/tech-design.md) |
 | P10 | 聊天斜杠命令 MVP（8 命令 + dashboard popup + channel BE 拦截） | [需求包](requirements/archive/2026-05-07-P10-slash-commands/index.md) | [方案](requirements/archive/2026-05-07-P10-slash-commands/tech-design.md) |

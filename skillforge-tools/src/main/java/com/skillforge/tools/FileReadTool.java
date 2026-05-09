@@ -1,9 +1,12 @@
 package com.skillforge.tools;
 
+import com.skillforge.core.compact.recovery.FileStateCache;
 import com.skillforge.core.model.ToolSchema;
 import com.skillforge.core.skill.Tool;
 import com.skillforge.core.skill.SkillContext;
 import com.skillforge.core.skill.SkillResult;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -20,8 +23,21 @@ import java.util.stream.IntStream;
  */
 public class FileReadTool implements Tool {
 
+    private static final Logger log = LoggerFactory.getLogger(FileReadTool.class);
+
     private static final int DEFAULT_OFFSET = 0;
     private static final int DEFAULT_LIMIT = 2000;
+
+    /** P9-5: optional cache hook — null when constructed without recovery (legacy / tests). */
+    private final FileStateCache fileStateCache;
+
+    public FileReadTool() {
+        this(null);
+    }
+
+    public FileReadTool(FileStateCache fileStateCache) {
+        this.fileStateCache = fileStateCache;
+    }
 
     @Override
     public String getName() {
@@ -96,6 +112,19 @@ public class FileReadTool implements Tool {
                     .collect(Collectors.joining("\n"));
 
             // Read dedup removed — cross-session cache + compaction conflict issues
+
+            // P9-5: cache full file content (not paginated slice) for post-compact recovery.
+            if (fileStateCache != null && context != null) {
+                try {
+                    String fullContent = String.join("\n", allLines);
+                    fileStateCache.put(context.getSessionId(), filePath, fullContent);
+                } catch (Exception cacheEx) {
+                    // never let recovery instrumentation break the tool's primary contract,
+                    // but signal the failure so ops can spot a persistent cache fault.
+                    log.warn("FileStateCache.put failed (FileRead) session={} path={}: {}",
+                            context.getSessionId(), filePath, cacheEx.getMessage());
+                }
+            }
 
             return SkillResult.success(result);
         } catch (IOException e) {

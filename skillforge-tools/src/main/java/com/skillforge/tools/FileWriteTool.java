@@ -1,9 +1,12 @@
 package com.skillforge.tools;
 
+import com.skillforge.core.compact.recovery.FileStateCache;
 import com.skillforge.core.model.ToolSchema;
 import com.skillforge.core.skill.Tool;
 import com.skillforge.core.skill.SkillContext;
 import com.skillforge.core.skill.SkillResult;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -17,6 +20,19 @@ import java.util.Map;
  * Tool that writes content to a file, creating parent directories if needed.
  */
 public class FileWriteTool implements Tool {
+
+    private static final Logger log = LoggerFactory.getLogger(FileWriteTool.class);
+
+    /** P9-5: optional cache hook — null when constructed without recovery (legacy / tests). */
+    private final FileStateCache fileStateCache;
+
+    public FileWriteTool() {
+        this(null);
+    }
+
+    public FileWriteTool(FileStateCache fileStateCache) {
+        this.fileStateCache = fileStateCache;
+    }
 
     @Override
     public String getName() {
@@ -71,6 +87,16 @@ public class FileWriteTool implements Tool {
 
             Files.writeString(path, content, StandardCharsets.UTF_8);
             long bytes = content.getBytes(StandardCharsets.UTF_8).length;
+
+            // P9-5: cache the just-written content for post-compact recovery.
+            if (fileStateCache != null && context != null) {
+                try {
+                    fileStateCache.put(context.getSessionId(), filePath, content);
+                } catch (Exception cacheEx) {
+                    log.warn("FileStateCache.put failed (FileWrite) session={} path={}: {}",
+                            context.getSessionId(), filePath, cacheEx.getMessage());
+                }
+            }
 
             return SkillResult.success("Successfully wrote " + bytes + " bytes to " + filePath);
         } catch (IOException e) {
