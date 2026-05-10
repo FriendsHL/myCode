@@ -8,23 +8,43 @@ interface SpanDetailPanelProps {
   span: SpanSummary | null;
 }
 
-function copyText(text: string) {
+function copyText(text: string, onSuccess?: () => void) {
   if (typeof navigator !== 'undefined' && navigator.clipboard) {
-    navigator.clipboard.writeText(text).catch(() => {});
+    navigator.clipboard.writeText(text).then(() => {
+      onSuccess?.();
+    }).catch(() => {});
   }
 }
 
-const CopyBtn: React.FC<{ text: string; title?: string }> = ({ text, title = 'Copy' }) => (
-  <button
-    type="button"
-    className="mini-btn"
-    onClick={() => copyText(text)}
-    title={title}
-    style={{ padding: '2px 6px', fontSize: 11, marginLeft: 4 }}
-  >
-    📋
-  </button>
-);
+/** Copy button with visual feedback */
+const CopyBtn: React.FC<{ text: string; title?: string }> = ({ text, title = 'Copy' }) => {
+  const [copied, setCopied] = React.useState(false);
+
+  const handleCopy = () => {
+    copyText(text, () => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+
+  return (
+    <button
+      type="button"
+      className="mini-btn"
+      onClick={handleCopy}
+      title={copied ? 'Copied!' : title}
+      style={{
+        padding: '2px 6px',
+        fontSize: 11,
+        marginLeft: 4,
+        color: copied ? 'var(--color-ok)' : undefined,
+        borderColor: copied ? 'var(--color-ok)' : undefined,
+      }}
+    >
+      {copied ? '✓' : '📋'}
+    </button>
+  );
+};
 
 /**
  * Right-pane container that switches between LLM and Tool detail views based
