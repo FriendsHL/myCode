@@ -48,6 +48,54 @@ private Instant updatedAt;
 参照 `ClaudeProvider`：`chat()` 方法只对 `SocketTimeoutException` 重试，其他 `IOException` 快速失败。
 流式路径（`chatStream`）**不重试**——重试会导致已推送的 delta 重复交付给 handler。
 
+### 4. 持久化层 vs Engine 内存层 Message 形态必须字节一致
+
+ChatService 持久化进 `t_session_message.content_json` 的 Message 跟 AgentLoopEngine 内存 `messages` 列表里的同一条 logical message，**JSON 序列化字节必须完全相等**。否则 `SessionService.updateSessionMessages` 内部 `commonPrefixSize + messageEquals`（字节比较）对账时会把发散点之后的内容当 delta silently dup-append（Q2 commit `bdb0453` 这就是这条 invariant 的反面教材，Q3 `cc87776` 修；commit `b2c7039` 加 mid-prefix divergence guard 兜底）。
+
+```java
+// BAD — Q2 era 半残品（修于 Q3 cc87776）
+ChatService.chatAsync:
+    Message userMsg = buildUserMessageWithReminder(...);   // array-shape
+    sessionService.appendNormalMessages(..., userMsg);       // 持久化 array
+    chatLoopExecutor.execute(() -> runLoop(sessionId, userMessage, ...));   // ← 只透传 String
+
+AgentLoopEngine.runInternal(... String userMessage ...):
+    messages.add(Message.user(userMessage));   // ← 重建 String-shape！跟持久化形态不一致
+
+// GOOD — Q3 后
+ChatService.chatAsync:
+    Message userMsg = buildUserMessageWithReminder(...);
+    sessionService.appendNormalMessages(..., userMsg);
+    final Message userMsgWithReminder = userMsg;             // ← capture object reference
+    chatLoopExecutor.execute(() -> runLoop(..., userMsgWithReminder, ...));
+
+AgentLoopEngine.run(AgentDef, String, Message userMessageBlock, List, ..., LoopContext):
+    if (userMessageBlock != null) {
+        messages.add(userMessageBlock);   // ← 同一个 Java 对象引用，字节必然一致
+    } else if (userMessage != null) {
+        messages.add(Message.user(userMessage));
+    }
+```
+
+**完整 invariant + 4 触发条件 + roundtrip 测试模板**见 [`persistence-shape-invariant.md`](persistence-shape-invariant.md)（触碰 ChatService / AgentLoopEngine / CompactionService / SessionService.rewriteMessages / Message / ContentBlock 时必读）。
+
+### 5. 给 t_session_message 加 identity 列后必须扩展 rewriteMessages preserve 逻辑
+
+`SessionService.rewriteMessages` 走 DELETE+INSERT 模式。3-arg `AppendMessage` 默认所有 identity 列（`controlId` / `answeredAt` / `traceId` / 未来候选 `origin_span_id`）为 null。Q1 commit `a4100f7` 给 `trace_id` 加了 `snapshotTraceIds + patchTraceIds`，但**只覆盖 trace_id 一列**。新加 identity 列必须扩展同样模式，否则 rewrite 后该列被 silently 清空。
+
+```java
+// 加新 identity column 必经 4 步（详细 checklist 见独立 rule）：
+// 1) Repository 加 XView projection + findNonNullXProjections JPQL
+// 2) SessionService 加 snapshotX() 私有方法
+// 3) updateSessionMessages 内调 patchX(messages, oldX)
+// 4) AppendMessage record 加新字段 + 7-arg constructor 接受 + 3-arg null 默认
+// 5) SessionServiceXxxPreservationIT 4 case（auto-preserve / caller-wins / no-op / tail 查询）
+```
+
+判断"是不是 identity 列"：**这条列回答"row 来自哪里 / 关联哪个上层概念" → 是；回答"row 现在内容是啥" → 不是**。
+
+完整列分类表 + Light compact index-alignment limitation 见 [`identity-column-on-rewrite.md`](identity-column-on-rewrite.md)。
+
 ---
 
 ## 依赖注入

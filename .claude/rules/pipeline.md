@@ -288,6 +288,59 @@ reviewer prompt 的"每条打 severity"章节必须用严格 checklist：
 - **"Judge 裁决必须引用行号"**：听起来严谨但实操 Judge 会变啰嗦
 - **"新发现阈值"**（reviewer 不能下轮提完全不同维度的问题）：会阻止真发现
 
+### Solo → Full Retroactive Review（错误恢复路径）
+
+**什么时候走这条**：开工时按"3 问自检"判 Solo，写到一半 / 写完才发现：
+- 触碰了核心文件清单（红灯漏看）
+- brief 实际 >800 字（开工前低估）
+- 改动跨了 3+ 模块（边写边滚雪球）
+- 用户拦截指出"这应该走 Full"
+
+直白讲：**Solo 起手错了，但代码已经写出来了**。
+
+**不要做**的事：
+
+- ❌ 回退已写好的代码重做 ——浪费工作 + 用户体感差
+- ❌ 假装没触碰核心文件硬过 —— 漏检率失控
+- ❌ 自己当 reviewer 自审 —— 失去对抗性，本来就是 pipeline 要避免的
+
+**正确处置**：转 retroactive Full review，把已写完的 diff 当 dev 产出。
+
+```
+1. git diff HEAD > /tmp/<topic>-diff.patch        # 捕获已写代码
+2. 不要 commit，改动留工作树
+3. TeamCreate <topic>-retro-review                # 起 review team
+4. 起 java-reviewer + code-reviewer 并行（diff-in-prompt）
+   提示词显式标注:
+   "this is post-Solo retroactive review on existing diff. dev produced
+    the code without prior pipeline gating; treat as Stage 1 spec
+    compliance + Stage 2 quality. assume you're a fresh reviewer seeing
+    chat unfamiliar diff — don't be biased by what's already implemented."
+5. Judge 仲裁
+6. 1 round mandatory fix (warning-only) 或 升级回主会话决策 (blocker)
+7. Phase Final + commit
+```
+
+**实测案例（2026-05-10）**：commit `cc87776` (Q3 reminder propagation fix) 起手 Solo
+跑触碰 `AgentLoopEngine.java` + `ChatService.java`（核心文件双红灯），用户拦截
+后转 retroactive Full review（已写完 282 行 diff + ChatServiceModelOverrideTest）→
+java-reviewer + code-reviewer 双 PASS 0 blocker w/ 4 mandatory follow-up（W1
+invariant 注释 / W2 mock null assumption 注释 / Code WARN-1 reminder→engine
+chain regression test / Code nit task→todo 术语统一）→ dev fix 后 commit。
+
+**与正常 Full 的差异**：
+
+| 步骤 | 正常 Full | Retroactive |
+|---|---|---|
+| Plan phase | 可选（默认跳过）| 跳过（代码已写）|
+| Phase 1 Dev | dev agent 写代码 | 跳过（代码已写）|
+| Phase 2 Review | reviewer 看 brief + 新 diff | reviewer 看**已写完的 diff** + 显式提示"as if fresh dev review" |
+| Phase 3 Judge | 看双方 report | 同 |
+| Mandatory fix | dev 改 | dev 改（or 主会话改）|
+| Phase Final | 同 | 同 |
+
+**核心要点**：reviewer 提示里加"假设你是 fresh reviewer 看陌生 diff，不要被现有实现 bias 你的判断" —— 防止 reviewer 心理上认为"代码都写完了，找毛病也改不大"。
+
 ---
 
 ## 四、子 agent 模型选择策略（2026-04-30 更新）

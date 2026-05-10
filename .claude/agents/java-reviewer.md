@@ -46,6 +46,12 @@ If any CRITICAL security issue is found, stop and escalate to `security-reviewer
 - **Missing `@Modifying`**: Any `@Query` that mutates data requires `@Modifying` + `@Transactional`
 - **Dangerous cascade**: `CascadeType.ALL` with `orphanRemoval = true` — confirm intent is deliberate
 
+### HIGH -- SkillForge Compact / Persistence Subsystem (项目特有)
+- **Identity column wipe on rewrite**: 改 `SessionService.rewriteMessages` 路径 / 加新列到 `t_session_message` / `SessionMessageEntity` 时，**必须验**：是否扩展 `snapshotXByseqNo + patchX` preserve 模式（参 `snapshotTraceIds` Q1 a4100f7 fix）。3-arg `AppendMessage` 默认所有 identity 列为 null，rewrite 后 silently 清空。详见 [`identity-column-on-rewrite.md`](../rules/identity-column-on-rewrite.md)。
+- **Persistence-vs-engine shape mismatch**: 改 `ChatService` 持久化路径 + `AgentLoopEngine.runInternal` messages 拼装时，**必须验**两侧 Message 对象引用一致或 JSON 序列化字节相等。验证锚点：`ChatService.chatAsync` line ~290 持久化点 + `runInternal` line ~370 messages.add 处。Q2 `bdb0453` 这条不变量被破坏 → silent dup row 5 条。详见 [`persistence-shape-invariant.md`](../rules/persistence-shape-invariant.md)。
+- **Compact subsystem 改动**: 改 `CompactionService` / `LightCompactStrategy` / `FullCompactStrategy` / `SessionMemoryCompactStrategy` / `FileStateCache` / `RecoveryPayloadBuilder` / `AgentLoopEngine` compact 集成时，**优先 spawn `compact-reviewer` agent**（系统提示内嵌 8 条 compact 不变量，比通用 java-reviewer 检查精确）。java-reviewer 仍负责通用 Java 风格 / 安全 / 测试规范。
+- **ContentBlock JSON roundtrip**: 给 `ContentBlock` / `Message` 加注解（`@JsonInclude` / `@JsonSerialize`）或新字段时**必须**加 roundtrip 测试（serialize → deserialize → serialize 字节相等），否则破 `messageEquals` JSON 字节比较 → 对账机制失效。
+
 ### MEDIUM -- Concurrency and State
 - **Mutable singleton fields**: Non-final instance fields in `@Service` / `@Component` are a race condition
 - **Unbounded `@Async`**: `CompletableFuture` or `@Async` without a custom `Executor` — default creates unbounded threads

@@ -223,6 +223,12 @@ When available, also check project-specific conventions from `CLAUDE.md` or proj
 
 Adapt your review to the project's established patterns. When in doubt, match what the rest of the codebase does.
 
+### SkillForge-specific cross-stack checks (HIGH)
+
+- **Cross-stack BE/FE wire-shape consistency**: BE 改 wire shape（`content_json` 加新 type / 加新字段 / rename 字段）→ 检查 FE 是否同步识别。grep 类似字段在 `skillforge-dashboard/src/utils/` / `hooks/` / `pages/`。**已知历史 miss**：Q2 commit `bdb0453` 加 `<system-reminder>` String wrap 给 recovery payload 但 FE `stripSystemReminderBlocks` 只处理 array shape 漏 string → chat 显原文 (commit `c712ffa` 补)；TodoWriteTool schema 用 `tasks` 与 Anthropic Claude Code canonical `todos` 不齐 → LLM 重试浪费 (commit `cc87776` 改对齐)。
+- **delivery-index 同步检查**: 任何 feature commit / FE polish / fix 完成 → 验证 `docs/delivery-index.md` 是否有对应条目（按 `docs/DOCS-GOVERNANCE.md` "完成时同步两处" 治理规则）。reviewer 不强制要求 dev 在该 commit 内更新，但 feature 性质改动不带 delivery-index 行 = warning。docs commit 单独 batch 也算合规。
+- **Solo-on-core-files 红灯漏看**: 如果 review 的 diff 触碰核心文件清单（`AgentLoopEngine.java` / `ChatService.java` / `CompactionService.java` / `SessionService.java` 行存储路径 / `LlmProvider*.java` cache 路径 / `LifecycleHooksEditor.tsx` discriminated union / `ChatWindow.tsx` 流式渲染 等，详见 `pipeline.md` 第二节"核心文件清单"），**必须**在 report 顶部 confirm 走的是 Full pipeline。如果是 Solo 起手 + retroactive review 模式（pipeline.md 第三节"Solo→Full Retroactive Review"路径），按 retroactive 提示词处理（"as if fresh dev review"，不被现有实现 bias）。
+
 ## v1.8 AI-Generated Code Review Addendum
 
 When reviewing AI-generated changes, prioritize:

@@ -59,7 +59,9 @@ mvn test
 | `.claude/rules/pipeline.md` | 所有非 trivial 开发任务 | 4 档划分（Solo / Light / **Mid** / Full）；红灯 Full / 默认 Mid（1 轮对抗不循环）/ Solo 例外；对抗约束 A/B/C；Reviewer 两阶段（spec → quality）；Dev 4 状态分诊（DONE/CONCERNS/NEEDS_CONTEXT/BLOCKED）；Reviewer Sonnet + Judge Opus |
 | `.claude/rules/context-budget.md` | 加新 rule/agent/command 后 / 每 2-3 周定期 | system prompt 加载量 audit：inventory → 分桶 → 优化建议；SkillForge 当前组件清单基线 |
 | `.claude/rules/pipeline-meta.md` | **不自动加载**，维护 pipeline 时再读 | 流水线演进观察 / ROI 判断 / 迁移到新项目 |
-| `.claude/rules/java.md` | `**/*.java` | ObjectMapper footgun、时间字段、构造器注入、@Transactional、Skill/LlmProvider 扩展、测试、安全 |
+| `.claude/rules/java.md` | `**/*.java` | ObjectMapper footgun、时间字段、构造器注入、@Transactional、Skill/LlmProvider 扩展、测试、安全；**known footgun #4 持久化 vs Engine 内存 Message 形态字节一致** + **#5 加 t_session_message identity 列必扩 rewriteMessages preserve** |
+| `.claude/rules/persistence-shape-invariant.md` | `**/CompactionService.java` / `**/SessionService.java` / `**/ChatService.java` / `**/AgentLoopEngine.java` / `**/Message.java` / `**/ContentBlock.java` | Iron Law: ChatService 持久化 Message 跟 Engine 内存 messages list 同位置 message **JSON 字节必须一致**；4 触发条件 + roundtrip 测试模板（来源 Q2 bdb0453 反例 + Q3 cc87776 修 + b2c7039 guard）|
+| `.claude/rules/identity-column-on-rewrite.md` | `**/SessionService.java` / `**/SessionMessageEntity.java` / `**/V*.sql` 加列影响 t_session_message | 加 identity 列必扩 `snapshotXByseqNo + patchX` preserve 模式（来源 Q1 a4100f7 trace_id wipe regression）；列分类表 + checklist 4 步 + Light compact index-alignment limitation |
 | `.claude/rules/frontend.md` | `**/*.tsx` / `**/*.ts` | API 类型、WebSocket cleanup、流式渲染节流、组件规范、状态管理、Ant Design 使用 |
 | `.claude/rules/design.md` | `**/*.tsx` / `**/*.css` | 设计质量标准、Anti-template、SkillForge 视觉风格方向 |
 
@@ -76,7 +78,8 @@ mvn test
 
 | Agent | 何时使用 |
 |-------|---------|
-| `java-reviewer` | 所有 Java 改动落地后调用 |
+| `java-reviewer` | 所有 Java 改动落地后调用；触碰 SessionService rewrite 路径 / 加 t_session_message column / ChatService 持久化 + Engine 内存拼装时显式审 persistence-shape + identity-column 不变量 |
+| `compact-reviewer` | **触碰 compact 子系统优先调用**（CompactionService / Light/Full/SessionMemoryCompactStrategy / FileStateCache / RecoveryPayloadBuilder / AgentLoopEngine compact 集成 / SessionService.rewriteMessages）；系统提示内嵌 8 条 compact 不变量（INV-1 tool_use↔tool_result pairing / INV-2 SUMMARY USER role / INV-3 boundary 不消失 / INV-4 持久化-engine 字节一致 / INV-5 rewrite preserve identity 列 / INV-6 不可 mutate 共享 Message / INV-7 4 路径覆盖 / INV-8 UTF-16 surrogate-safe） |
 | `typescript-reviewer` | 所有 TypeScript/React 改动落地后调用 |
 | `code-reviewer` | 任何代码改动后的通用质量检查 |
 | `security-reviewer` | 触碰认证、权限、SQL 查询、外部输入处理时必须调用 |
