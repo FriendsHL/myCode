@@ -34,7 +34,6 @@ import com.skillforge.server.memory.SessionDigestExtractor;
 import com.skillforge.server.service.event.SessionLoopFinishedEvent;
 import com.skillforge.server.subagent.CollabRunService;
 import com.skillforge.server.subagent.SubAgentRegistry;
-import com.skillforge.server.util.StackTraceFormatter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -690,13 +689,11 @@ public class ChatService {
         } catch (Exception e) {
             log.error("Agent loop failed: sessionId={}", sessionId, e);
             finalStatus = "error";
-            // Generic, non-leaking message for client-facing surfaces.
-            // Full exception detail is captured in the server log above.
-            // 简要错误（用于 finalMessage / assistant-facing message 兜底）保持不变；
-            // runtime_error 和 WS error 字段改成完整异常详情，便于追溯根因。
+            // 用户友好错误信息：根据 cause chain 识别常见异常类型映射成 actionable 中文提示，
+            // 写入 runtime_error / WS error 推给前端展示。完整 stack trace 仅记日志（line above），
+            // 不再回灌前端避免暴露内部结构 + 让用户能直接看懂"该重试 / 调超时 / 检查网络"。
             String safeError = "Agent loop failed";
-            // errorDetail 仅包含原始异常栈文本，前缀由前端/消费方自行组装（避免双层前缀）。
-            String errorDetail = StackTraceFormatter.format(e, 10);
+            String errorDetail = toFriendlyChatError(e);
             finalMessage = safeError;
             // OBS-2 M1 §D.8.3 (r2 review r2): exception path 保底 finalize trace。
             // engine 抛 unhandled exception 时确保 t_llm_trace.status 不留 'running'。
@@ -1072,5 +1069,47 @@ public class ChatService {
                 ContentBlock.text(reminderText),
                 ContentBlock.text(userText)));
         return msg;
+    }
+
+    /**
+     * Map a chat-loop exception to a user-facing actionable hint (Chinese).
+     * Walks the cause chain to identify common HTTP / network failure modes from
+     * okhttp / SSE streaming and gives users a clear next step. Falls back to
+     * the top-level message (no stack) for unrecognized types. Full stack stays
+     * in {@code log.error} above this caller.
+     */
+    private static String toFriendlyChatError(Throwable e) {
+        for (Throwable c = e; c != null; c = c.getCause()) {
+            if (c instanceof java.net.SocketTimeoutException) {
+                return "模型响应超时：流式响应中长时间未收到新 chunk。"
+                        + "推理模型深度思考时常见，可重试，或在 application.yml 调高对应 provider 的 read-timeout-seconds。";
+            }
+            if (c instanceof java.net.UnknownHostException) {
+                return "无法解析 LLM 提供方域名（" + safeMsgOrType(c) + "）。"
+                        + "检查 application.yml 里该 provider 的 base-url 拼写、DNS、或代理设置。";
+            }
+            if (c instanceof java.net.ConnectException) {
+                return "连接 LLM 提供方失败（" + safeMsgOrType(c) + "）。"
+                        + "检查网络 / API key / base-url 是否正确，或 provider 是否短暂不可用。";
+            }
+            if (c instanceof javax.net.ssl.SSLHandshakeException) {
+                return "TLS 握手失败（" + safeMsgOrType(c) + "）。"
+                        + "可能是证书过期、代理拦截、或 base-url 协议错误（http / https 混用）。";
+            }
+            // okhttp 取消（用户主动 stop / cancellation）保持原 message
+            if (c instanceof java.io.InterruptedIOException) {
+                return "请求被中断（可能是用户取消或服务关闭）。可重新发送 message。";
+            }
+        }
+        // 未识别类型：保留 top-level message（不带 stack）让开发者也有线索
+        String topMsg = e.getMessage();
+        if (topMsg == null || topMsg.isBlank()) topMsg = e.getClass().getSimpleName();
+        return "Agent 执行失败：" + topMsg + "。完整堆栈见 server 日志。";
+    }
+
+    /** Return non-blank getMessage() or fall back to simple class name. */
+    private static String safeMsgOrType(Throwable t) {
+        String m = t.getMessage();
+        return (m != null && !m.isBlank()) ? m : t.getClass().getSimpleName();
     }
 }
