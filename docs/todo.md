@@ -66,6 +66,32 @@
 
 ## 暂缓
 
+> **ROI 优先级概览（2026-05-10 audit）** —— 点 ID 跳到下方详细行查看完整方案 + 触发条件
+>
+> | 优先 | ID | Cost | Impact | 何时做 |
+> | --- | --- | --- | --- | --- |
+> | 🟢 P0 | EVAL-LATENCY-DIM-EXPLICIT-NULL | Light ~40-60 行 | 中 — eval latency 维度信号修复 | 任何 A/B 比对都受益，最低成本 |
+> | 🟢 P0 | MEMORY-DEDUP-COSINE-ACTIVATION | 0 新代码 + 1 migration | 中-高 — memory 质量保障 | 拿到 embedding API key 立刻激活 |
+> | 🟡 P1 | DATA-LAYER-ORIGIN-SPAN-LINK | ~80 行 + 1 migration | 中 — chat "展开看截断 tool 原文" | 用户调试大 tool 输出痛点 |
+> | 🟡 P1 | SUBAGENT-APPROVAL-FORWARD | Mid ~80-130 行 | 中 — sub-agent 审批转发到主 chat | 用户多次报"sub-agent 卡住" |
+> | 🟡 P1 | GAP-FILEEDIT-MULTIMODAL (4a Read-before-Edit) | Mid ~100 行 | 中 — 防 stale edit 覆盖外部修改 | 用户报 stale edit |
+> | 🔴 P1 战略储备 | SKILL-SECURITY-SCAN | Full ~400-600 行 | **高** — 防 OpenClaw 类注入 | 接 channel gateway / 公网 marketplace 立刻升 P0 |
+> | 🔴 P1 战略储备 | GAP-PRETOOL-HOOK-PERMISSION | Full | 高 — 三级权限 + 危险命令 backstop | 公网用户 / 真 prod / SKILL-SECURITY-SCAN 互补 |
+> | 🔴 P1 战略储备 | GAP-FILEEDIT-MULTIMODAL (4b Multimodal Read) | Mid ~150 行 | 高 — image/PDF/notebook 进 vision 模型 | 用户开始上传文件 / 用 omni 模型 |
+> | 🟡 P2 | EVAL-PARALLEL-SCENARIO | Mid ~100-150 行 | 中 — dataset >50 case 加速 | dataset 大 / nightly auto-eval 痛点 |
+> | 🟡 P2 | REMINDER-MVP-PARTIAL-PATHS | Light ~30-50 行 | 低 — reminder feature 覆盖率（用户暂不做）| 触发概率低 |
+> | 🟡 P2 | EVAL-SCENARIO-EXTRACT-DEDUP | Light ~30-50 行 | 低 — dataset 重复条目防爆 | 用户感知重复时 |
+> | 🔴 P2 | LSP-TOOL | Full ~3-5 day | 中-高 — IDE 级代码导航 | 大型 codebase 调研 / 重构频繁 |
+> | 🔴 P2 | MEMORY-DREAM-CONSOLIDATION | Full ~500-800 行 | 高 — 长期 memory 质量保障 | 长期使用 memory 检索质量降 |
+> | 🔴 P2 | STREAM-TOOL-EARLY-DISPATCH | Full ~480 行 | 中 — 1-3s/turn latency 节省 | 接入 Claude API key 后立做 |
+> | 🟦 P3 | MULTIMODAL-FULL-MVP | Full | 高 — 端到端多模态 | 等 4b 先 |
+> | 🟦 P3 | EVAL-DYNAMIC-USER-SIM | Mid ~400-500 行 | 中 — 冷启动 multi-turn eval | SKILL-FROM-SESSION 落地后看痛点 |
+> | 🟦 P3 | OBS-2-ADMIN-RUN-ETL | Mid | 低 — 运维痛点 | ETL 频繁触发时 |
+> | 🟦 P3 | P10-INLINE-CMD-RESULT | Mid ~80-150 行 FE | 低 — UX 优化 | 用户觉得 modal 体验差 |
+> | 🟦 P4 | SKILL-VERSION-MAIN-DETAIL-REFACTOR | Full 红灯 ~600-1000 行 | 中 — 架构改善 | 多 owner / multi-tenant 需要时 |
+> | 🟦 deferred | P9-4 partial compact | — | — | microcompact 覆盖大部分 |
+> | ✅ 已交付 | ~~REMINDER-FE-CONTENT-TYPE-DRIFT~~ (`67d50bb`) / ~~GAP-PROMPT-CACHE~~ (P13) / ~~GAP-MCP~~ Client (P11) / ~~SKILL-FROM-SESSION~~ / ~~EVAL-SKILL-EVOLVE-USE-FAILURES~~ / ~~OBS-3~~ (OBS-4) | — | — | — |
+
 | ID              | 原因                                                      | 重评触发条件                                                | 文档                                                                      |
 | --------------- | ------------------------------------------------------- | ----------------------------------------------------- | ----------------------------------------------------------------------- |
 | **P9-4**        | 按位置切的 partial_head/partial_tail 痛点已被 microcompact（按内容粒度切 + 不调 LLM 零 token 成本）更精确覆盖；partial_tail 几乎无场景 | microcompact 落地后用户报告"还是想要按位置切的 mini summary" / 出现 microcompact 不能解决的真实场景 | [需求包](requirements/deferred/P9-4-partial-compact/index.md) |
