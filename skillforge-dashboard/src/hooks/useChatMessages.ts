@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ChatMessage } from '../components/ChatWindow';
+import type { RawMessage, ContentBlock } from '../types/messages';
 
 export interface InflightTool {
   name: string;
@@ -27,20 +28,25 @@ export interface LoopSpan {
  * 归一化后端返回的消息列表:
  * Agent Loop 产生的历史消息里 tool_result 以 role=user 发回,会变成空文本的用户气泡。
  * 这里把这类消息过滤掉,并把 tool_result 按 tool_use_id 合并到上一条 assistant 的 toolCalls。
+ *
+ * **类型契约**：input `RawMessage[]`（pre-normalize，content 可为 string | ContentBlock[]）
+ * → output `ChatMessage[]`（post-normalize, content 已 collapse 成 string）。修 drift 后
+ * `as any[]` cast 全删，以前类型隐式不诚实。详见 `src/types/messages.ts` 注释。
  */
-export function normalizeMessages(list: any[]): ChatMessage[] {
+export function normalizeMessages(list: RawMessage[]): ChatMessage[] {
   const result: ChatMessage[] = [];
-  const extractBlocks = (content: any) => {
+  const extractBlocks = (content: RawMessage['content']) => {
     let text = '';
-    const toolUseBlocks: any[] = [];
-    const toolResultBlocks: any[] = [];
+    const toolUseBlocks: ContentBlock[] = [];
+    const toolResultBlocks: ContentBlock[] = [];
     if (typeof content === 'string') {
       text = content;
     } else if (Array.isArray(content)) {
       for (const b of content) {
         if (!b || typeof b !== 'object') continue;
-        if (b.type === 'text' && b.text) {
-          text += (text ? '\n' : '') + b.text;
+        if (b.type === 'text' && typeof (b as { text?: unknown }).text === 'string') {
+          const t = (b as { text: string }).text;
+          if (t) text += (text ? '\n' : '') + t;
         } else if (b.type === 'tool_use') {
           toolUseBlocks.push(b);
         } else if (b.type === 'tool_result') {
@@ -173,7 +179,10 @@ export function normalizeMessages(list: any[]): ChatMessage[] {
       result.push({
         role: 'assistant',
         content: text,
-        toolCalls: toolCalls.length > 0 ? toolCalls : m.toolCalls,
+        // m.toolCalls runtime 是 BE 推过来的 fallback 数组（不走 content blocks 路径时），
+        // RawMessage.toolCalls 类型 unknown[]，此处 narrow 成 ChatMessage.toolCalls 期望的形态。
+        // 不在 RawMessage 严格类型里的原因：fallback 路径形态不固定，类型贸然窄化反而 ripple 大。
+        toolCalls: toolCalls.length > 0 ? toolCalls : (m.toolCalls as ChatMessage['toolCalls']),
       });
     }
   }
@@ -181,13 +190,13 @@ export function normalizeMessages(list: any[]): ChatMessage[] {
 }
 
 export function useChatMessages(activeSessionId: string | undefined) {
-  const [rawMessages, setRawMessages] = useState<unknown[]>([]);
+  const [rawMessages, setRawMessages] = useState<RawMessage[]>([]);
   const [streamingText, setStreamingText] = useState<string>('');
   const [streamingToolInputs, setStreamingToolInputs] = useState<Record<string, StreamingToolInput>>({});
   const [inflightTools, setInflightTools] = useState<Record<string, InflightTool>>({});
   const [loopSpans, setLoopSpans] = useState<LoopSpan[]>([]);
 
-  const messages = useMemo(() => normalizeMessages(rawMessages as any[]), [rawMessages]);
+  const messages = useMemo(() => normalizeMessages(rawMessages), [rawMessages]);
 
   useEffect(() => {
     setRawMessages([]);

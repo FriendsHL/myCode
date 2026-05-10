@@ -18,6 +18,7 @@ import '../components/sessions/sessions.css';
 import '../components/skills/skills.css';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import { stripSystemReminderBlocks } from '../utils/messageContent';
+import type { RawMessage } from '../types/messages';
 
 const CLOSE_ICON = (
   <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
@@ -542,7 +543,7 @@ function SessionDrawer({ session, tab, setTab, onClose, onOpenChat, userId }: {
 
   const { data: rawMessages, isLoading: msgsLoading } = useQuery({
     queryKey: ['session-messages', session.id],
-    queryFn: () => getSessionMessages(session.id, userId).then(res => res.data as Record<string, unknown>[]),
+    queryFn: () => getSessionMessages(session.id, userId).then(res => res.data as RawMessage[]),
     staleTime: 30_000,
   });
 

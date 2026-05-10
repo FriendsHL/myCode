@@ -11,6 +11,7 @@ import {
 } from '@ant-design/icons';
 import { getSessionMessages, extractList } from '../api';
 import { stripSystemReminderBlocks } from '../utils/messageContent';
+import type { RawMessage } from '../types/messages';
 
 const { Text } = Typography;
 
@@ -31,7 +32,7 @@ interface ParsedMessage {
 }
 
 /** Parse raw API messages into a compact display format. */
-function parseMessages(rawMessages: any[]): ParsedMessage[] {
+function parseMessages(rawMessages: RawMessage[]): ParsedMessage[] {
   const result: ParsedMessage[] = [];
   for (let i = 0; i < rawMessages.length; i++) {
     const msg = rawMessages[i];
@@ -79,9 +80,11 @@ function parseMessages(rawMessages: any[]): ParsedMessage[] {
       }
     }
 
-    // Also handle toolCalls array style (from ChatWindow's ChatMessage format)
+    // Also handle toolCalls array style (from ChatWindow's ChatMessage format).
+    // RawMessage.toolCalls 是 unknown[]（fallback 路径形态不固定），用最低限度断言取字段。
     if (role === 'assistant' && Array.isArray(msg.toolCalls)) {
-      for (const tc of msg.toolCalls) {
+      for (const tcRaw of msg.toolCalls) {
+        const tc = tcRaw as { name?: string; toolName?: string; error?: unknown; output?: string; result?: string };
         toolCalls.push({
           name: tc.name ?? tc.toolName ?? 'unknown',
           status: tc.error ? 'error' : 'success',
@@ -94,7 +97,7 @@ function parseMessages(rawMessages: any[]): ParsedMessage[] {
     if (!text && toolCalls.length === 0) continue;
 
     result.push({
-      id: msg.id ?? `msg-${i}`,
+      id: typeof msg.id === 'string' ? msg.id : `msg-${i}`,
       role,
       text,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,

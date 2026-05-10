@@ -6,6 +6,7 @@ import type {
 } from '../api';
 import type { InflightTool, StreamingToolInput, LoopSpan } from './useChatMessages';
 import type { RuntimeStatus } from './useChatSession';
+import type { RawMessage } from '../types/messages';
 import {
   stripSystemReminderBlocks,
   stripRemindersFromMessageList,
@@ -39,7 +40,7 @@ export interface WsEventHandlerDeps {
   setStreamingText: Dispatch<SetStateAction<string>>;
   setStreamingToolInputs: Dispatch<SetStateAction<Record<string, StreamingToolInput>>>;
   setCancelling: Dispatch<SetStateAction<boolean>>;
-  setRawMessages: Dispatch<SetStateAction<unknown[]>>;
+  setRawMessages: Dispatch<SetStateAction<RawMessage[]>>;
   setOtherInput: Dispatch<SetStateAction<string>>;
   setCollabRunStatus: Dispatch<SetStateAction<string | null>>;
   setSessions: Dispatch<SetStateAction<any[]>>;
@@ -104,7 +105,7 @@ export function useChatWsEventHandler(deps: WsEventHandlerDeps) {
         ) {
           return;
         }
-        const msg = evt.message as { role?: string; content?: unknown } | undefined;
+        const msg = evt.message as RawMessage | undefined;
         if (msg?.role === 'assistant') {
           setStreamingText('');
           // Close active LLM_CALL span
@@ -122,8 +123,11 @@ export function useChatWsEventHandler(deps: WsEventHandlerDeps) {
         if (msg) {
           // REMINDER-MVP: strip <system-reminder> blocks before storing so
           // dedupe/append logic and downstream renderers see clean content.
-          const cleanedContent = stripSystemReminderBlocks(msg.content);
-          const cleanedMsg =
+          // strip helper returns `unknown`（防御任何 input 形态），但 input 来自
+          // RawMessage.content（string | ContentBlock[] | undefined），strip 后仍是
+          // 这几种 shape 之一，安全 cast 回 RawMessage.content。
+          const cleanedContent = stripSystemReminderBlocks(msg.content) as RawMessage['content'];
+          const cleanedMsg: RawMessage =
             cleanedContent === msg.content ? msg : { ...msg, content: cleanedContent };
           setRawMessages((prev) => {
             if (prev.length > 0) {

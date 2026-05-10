@@ -2,12 +2,13 @@ import { useEffect, useRef } from 'react';
 import { message } from 'antd';
 import { getSession, getSessionMessages, extractList } from '../api';
 import { stripRemindersFromMessageList } from '../utils/messageContent';
+import type { RawMessage } from '../types/messages';
 
 export type RuntimeStatus = 'idle' | 'running' | 'waiting_user' | 'error';
 export type ExecutionMode = 'ask' | 'auto';
 
 export interface ChatSessionSetters {
-  setRawMessages: (list: unknown[]) => void;
+  setRawMessages: (list: RawMessage[]) => void;
   setRuntimeStatus: (s: RuntimeStatus) => void;
   setRuntimeStep: (s: string) => void;
   setRuntimeError: (s: string) => void;
