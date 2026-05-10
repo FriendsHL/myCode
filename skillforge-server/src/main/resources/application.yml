@@ -85,6 +85,26 @@ skillforge:
       enabled: true
       max-files: 5
       max-tokens-per-file: 5000
+  # REMINDER-MVP Phase A: <system-reminder> framework + 3 sources.
+  # PRD D5 default cadence — Context every turn (≥70%); Memory every 5 turns (>7d stale);
+  # File every 5 turns (top-5 files older than 30s). PRD D7 source order is fixed in code
+  # (ContextUsage → MemoryAge → FileActivity) under a shared 5K token budget.
+  reminder:
+    enabled: true                      # global master switch
+    total-budget-tokens: 5000          # cumulative per-turn budget across sources
+    memory-age:
+      enabled: true
+      interval-turns: 5
+      stale-days-threshold: 7
+    context-usage:
+      enabled: true
+      interval-turns: 1
+      pct-threshold: 70
+    file-activity:
+      enabled: true
+      interval-turns: 5
+      max-files: 5
+      min-age-seconds: 30
   # SKILL-EVOLVE-LOOP feature flags (INV-1, default true; flip to false to keep
   # the cron beans alive but skip work on each tick — see Phase 1 / 3 / 5
   # docstrings).

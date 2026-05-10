@@ -43,6 +43,7 @@ import { z } from 'zod';
 import { AgentSchema, SessionSchema, safeParseList } from '../api/schemas';
 import { useChatWebSocket } from '../hooks/useChatWebSocket';
 import { useChatMessages, type InflightTool } from '../hooks/useChatMessages';
+import { stripRemindersFromMessageList } from '../utils/messageContent';
 import { useCollabState } from '../hooks/useCollabState';
 import {
   useChatSession,
@@ -491,7 +492,7 @@ const Chat: React.FC = () => {
       await refreshCompactStats();
       try {
         const mres = await getSessionMessages(activeSessionId, userId);
-        setRawMessages(extractList(mres));
+        setRawMessages(stripRemindersFromMessageList(extractList(mres)));
       } catch {
         message.warning('Could not refresh messages after compaction');
       }
@@ -575,7 +576,7 @@ const Chat: React.FC = () => {
     try {
       const mres = await getSessionMessages(sessionId, userId);
       if (sessionId !== activeSessionIdRef.current) return;
-      setRawMessages(extractList(mres));
+      setRawMessages(stripRemindersFromMessageList(extractList(mres)));
     } catch {
       message.warning('Checkpoint applied, but failed to refresh messages');
     }

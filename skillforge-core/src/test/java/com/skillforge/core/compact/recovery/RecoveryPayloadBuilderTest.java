@@ -52,6 +52,9 @@ class RecoveryPayloadBuilderTest {
         assertThat(msg).isNotNull();
         assertThat(msg.getRole()).isEqualTo(Message.Role.USER);
         String text = (String) msg.getContent();
+        // REMINDER-MVP D6: payload is now wrapped in <system-reminder>...</system-reminder>.
+        assertThat(text).startsWith("<system-reminder>\n");
+        assertThat(text).endsWith("</system-reminder>\n");
         assertThat(text).contains("Recovery payload");
         assertThat(text).contains("/abs/path/foo.java");
         assertThat(text).contains("public class Foo {}");
@@ -70,6 +73,9 @@ class RecoveryPayloadBuilderTest {
         Message msg = builder.build("s1");
         assertThat(msg).isNotNull();
         String text = (String) msg.getContent();
+        // REMINDER-MVP D6: payload is wrapped in <system-reminder>...</system-reminder>.
+        assertThat(text).startsWith("<system-reminder>\n");
+        assertThat(text).endsWith("</system-reminder>\n");
         // Must mention "3" in the header and contain the 3 most recent paths
         assertThat(text).contains("3 most recently accessed");
         assertThat(text).contains("/file5.txt");

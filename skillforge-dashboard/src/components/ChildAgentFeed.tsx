@@ -10,6 +10,7 @@ import {
   ToolOutlined,
 } from '@ant-design/icons';
 import { getSessionMessages, extractList } from '../api';
+import { stripSystemReminderBlocks } from '../utils/messageContent';
 
 const { Text } = Typography;
 
@@ -36,19 +37,25 @@ function parseMessages(rawMessages: any[]): ParsedMessage[] {
     const msg = rawMessages[i];
     const role: 'user' | 'assistant' = msg.role === 'user' ? 'user' : 'assistant';
 
+    // REMINDER-MVP — strip <system-reminder> blocks before extracting text so
+    // sub-agent feed never leaks framework reminders. The helper collapses a
+    // single remaining text block back to a String, so downstream branches
+    // see the legacy shape when applicable.
+    const cleanedContent = stripSystemReminderBlocks(msg.content);
+
     // Extract text content
     let text = '';
-    if (typeof msg.content === 'string') {
-      text = msg.content;
-    } else if (Array.isArray(msg.content)) {
-      const textParts = msg.content.filter((b: any) => b.type === 'text');
+    if (typeof cleanedContent === 'string') {
+      text = cleanedContent;
+    } else if (Array.isArray(cleanedContent)) {
+      const textParts = cleanedContent.filter((b: any) => b.type === 'text');
       text = textParts.map((b: any) => b.text ?? '').join('\n');
     }
 
     // Extract tool calls from assistant messages
     const toolCalls: ParsedMessage['toolCalls'] = [];
-    if (role === 'assistant' && Array.isArray(msg.content)) {
-      const toolUseBlocks = msg.content.filter((b: any) => b.type === 'tool_use');
+    if (role === 'assistant' && Array.isArray(cleanedContent)) {
+      const toolUseBlocks = cleanedContent.filter((b: any) => b.type === 'tool_use');
       for (const tu of toolUseBlocks) {
         // Look ahead for matching tool_result
         let status: 'success' | 'error' | 'running' = 'running';

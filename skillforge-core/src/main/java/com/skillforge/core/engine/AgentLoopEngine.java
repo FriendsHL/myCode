@@ -738,6 +738,12 @@ public class AgentLoopEngine {
                 log.info("Appending loop-ending reminder: {} iterations remaining", remaining);
             }
 
+            // Q2 (cache-friendly migration, 2026-05-10): reminder injection moved out of the
+            // engine — it now happens in ChatService at user-message boundary and is persisted
+            // as a ContentBlock on the user Message so the history stays byte-identical across
+            // turns (preserves cache breakpoints 2 + 3). The MARKER insertion below still
+            // covers the rare promptSuffix paths (loop-ending reminder / no-progress / NOTICE).
+
             LlmRequest request = new LlmRequest();
             // PROMPT-CACHE-MVP r2 W3: promptSuffix is dynamic (loop-ending reminder /
             // notice / wrap-up hint). If systemPrompt has no MARKER yet (dynamicSection

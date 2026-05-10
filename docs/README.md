@@ -35,6 +35,7 @@
 
 | ID | 标题 | 需求包 | 技术方案 |
 | --- | --- | --- | --- |
+| REMINDER-MVP | system-reminder 框架 Phase A（ReminderBuilder + 3 source + P9-5 recovery payload 迁移到 `<system-reminder>` 包装） | [需求包](requirements/archive/2026-05-09-REMINDER-MVP/index.md) | [方案](requirements/archive/2026-05-09-REMINDER-MVP/tech-design.md) |
 | P9-5 | Post-compact 恢复（FileStateCache + recovery payload + 4 路径自动注入） | [需求包](requirements/archive/2026-05-09-P9-5-post-compact-recovery/index.md) | [方案](requirements/archive/2026-05-09-P9-5-post-compact-recovery/tech-design.md) |
 | PROMPT-CACHE-MVP | Prompt Cache MVP（5 provider 全链路 + Claude 3 breakpoint + dashboard hit rate） | [需求包](requirements/archive/2026-05-08-PROMPT-CACHE-MVP/index.md) | [方案](requirements/archive/2026-05-08-PROMPT-CACHE-MVP/tech-design.md) |
 | MCP-CLIENT-MVP | MCP Client MVP（stdio + per-agent + dashboard CRUD + dogfood time） | [需求包](requirements/archive/2026-05-07-MCP-CLIENT-MVP/index.md) | [方案](requirements/archive/2026-05-07-MCP-CLIENT-MVP/tech-design.md) |

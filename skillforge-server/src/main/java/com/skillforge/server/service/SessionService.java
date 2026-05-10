@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.skillforge.core.engine.ChatEventBroadcaster;
 import com.skillforge.core.model.ContentBlock;
 import com.skillforge.core.model.Message;
+import com.skillforge.core.reminder.ReminderBuilder;
 import com.skillforge.server.config.SessionMessageStoreProperties;
 import com.skillforge.server.dto.SessionMessageDto;
 import com.skillforge.server.entity.AgentEntity;
@@ -79,6 +80,14 @@ public class SessionService {
      */
     private ToolResultArchiveService toolResultArchiveService;
 
+    /**
+     * Q2 BE-W1: ReminderBuilder per-session debounce map needs to be cleared on session
+     * deletion, otherwise the Spring singleton accumulates dead entries (≈20MB / 100K
+     * deletions). Setter injection keeps SessionService unit tests free of this dependency.
+     * Null at unit-test time → no-op.
+     */
+    private ReminderBuilder reminderBuilder;
+
     public SessionService(SessionRepository sessionRepository,
                           SessionMessageRepository sessionMessageRepository,
                           AgentRepository agentRepository,
@@ -111,6 +120,13 @@ public class SessionService {
     @Autowired(required = false)
     public void setToolResultArchiveService(ToolResultArchiveService toolResultArchiveService) {
         this.toolResultArchiveService = toolResultArchiveService;
+    }
+
+    /** Q2 BE-W1: optional setter for the singleton ReminderBuilder; clears per-session
+     *  debounce state on session deletion so the singleton's map doesn't leak entries. */
+    @Autowired(required = false)
+    public void setReminderBuilder(ReminderBuilder reminderBuilder) {
+        this.reminderBuilder = reminderBuilder;
     }
 
     private Map<String, Object> toListProjection(SessionEntity s) {
@@ -808,6 +824,10 @@ public class SessionService {
         }
         sessionRepository.saveAll(children);
         sessionRepository.deleteById(id);
+        // Q2 BE-W1: drop singleton-scoped reminder debounce state for this session.
+        if (reminderBuilder != null) {
+            reminderBuilder.clearSession(id);
+        }
         scheduleDeletedBroadcast(userId, id);
     }
 
@@ -858,6 +878,12 @@ public class SessionService {
                 sessionRepository.saveAll(children);
             }
             sessionRepository.deleteAllById(toDelete.keySet());
+            // Q2 BE-W1: drop singleton-scoped reminder debounce state for each deleted session.
+            if (reminderBuilder != null) {
+                for (String deletedId : toDelete.keySet()) {
+                    reminderBuilder.clearSession(deletedId);
+                }
+            }
             toDelete.forEach((sessionId, userId) -> scheduleDeletedBroadcast(userId, sessionId));
         }
         return new DeleteResult(toDelete.size(), skipped);

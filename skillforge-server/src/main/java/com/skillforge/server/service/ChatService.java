@@ -15,8 +15,11 @@ import com.skillforge.core.engine.confirm.RootSessionLookup;
 import com.skillforge.core.engine.confirm.SessionConfirmCache;
 import com.skillforge.core.engine.hook.LifecycleHookDispatcher;
 import com.skillforge.core.model.AgentDefinition;
+import com.skillforge.core.model.ContentBlock;
 import com.skillforge.core.model.Message;
 import com.skillforge.core.model.SkillDefinition;
+import com.skillforge.core.reminder.ReminderBuilder;
+import com.skillforge.core.reminder.ReminderContext;
 import com.skillforge.core.skill.SkillRegistry;
 import com.skillforge.observability.api.LlmTraceStore;
 import com.skillforge.observability.api.LlmTraceStore.TraceFinalizeRequest;
@@ -79,6 +82,15 @@ public class ChatService {
      * 注入后 Spring 启动失败会先报错（traceStore 是 OBS-1 既有 @Service Bean），不再用 null guard。
      */
     private final LlmTraceStore traceStore;
+    /**
+     * Q2 (cache-friendly migration, 2026-05-10): builds the {@code <system-reminder>} block
+     * inserted as the first ContentBlock on every user Message that has anything to remind.
+     * Persisting reminder text on the user message keeps the request history byte-identical
+     * across turns so Anthropic prompt-cache breakpoints (BP2 tools, BP3 history prefix) hit
+     * instead of every turn invalidating the cache via system-prompt churn. Nullable so test
+     * setups that don't care about reminders can pass {@code null}.
+     */
+    private final ReminderBuilder reminderBuilder;
 
     /**
      * P12: publishes {@link SessionLoopFinishedEvent} in the loop teardown finally
@@ -107,7 +119,8 @@ public class ChatService {
                        PendingConfirmationRegistry pendingConfirmationRegistry,
                        RootSessionLookup rootSessionLookup,
                        LlmTraceStore traceStore,
-                       ApplicationEventPublisher applicationEventPublisher) {
+                       ApplicationEventPublisher applicationEventPublisher,
+                       ReminderBuilder reminderBuilder) {
         this.agentService = agentService;
         this.sessionService = sessionService;
         this.skillRegistry = skillRegistry;
@@ -129,6 +142,7 @@ public class ChatService {
         this.rootSessionLookup = rootSessionLookup;
         this.traceStore = traceStore;
         this.applicationEventPublisher = applicationEventPublisher;
+        this.reminderBuilder = reminderBuilder;
     }
 
     /**
@@ -269,7 +283,12 @@ public class ChatService {
 
             List<Message> fullHistory = sessionService.getFullHistory(sessionId);
             List<Message> history = sessionService.getContextMessages(sessionId);
-            Message userMsg = Message.user(userMessage);
+            // Q2 (cache-friendly migration, 2026-05-10): build the <system-reminder> block
+            // BEFORE materialising the user message so we can prepend it as the first
+            // ContentBlock when there is something to remind. Persisting the block on the
+            // message itself keeps history byte-identical across turns (BP2/BP3 cache hits).
+            Message userMsg = buildUserMessageWithReminder(
+                    sessionId, userId, userMessage, history, agentEntity);
             sessionService.appendNormalMessages(sessionId, List.of(userMsg), traceId);
 
             // 2.1 第一条 user message 时立即生成截断标题(同步,极快)
@@ -986,5 +1005,72 @@ public class ChatService {
         } catch (Exception e) {
             throw new IllegalStateException("invalid control metadata", e);
         }
+    }
+
+    /**
+     * Q2 (cache-friendly migration, 2026-05-10): build the user-Message that will be persisted
+     * + broadcast + fed into the engine. When the {@link ReminderBuilder} produces a non-empty
+     * {@code <system-reminder>} block, the user message becomes a two-block ContentBlock list:
+     * <pre>
+     * [ {type:"text", text:"&lt;system-reminder&gt;…&lt;/system-reminder&gt;\n"},
+     *   {type:"text", text:"&lt;raw user input&gt;"} ]
+     * </pre>
+     * Otherwise it stays as a plain String content (legacy/back-compat shape; smaller payload).
+     *
+     * <p>Errors inside the builder are swallowed — reminders MUST NEVER block a user message.
+     *
+     * <p>The {@code currentTurnIndex} passed to {@link ReminderContext} is {@code history.size()}
+     * <em>before</em> the new user message is appended, matching PRD D3 debounce semantics.
+     */
+    private Message buildUserMessageWithReminder(String sessionId,
+                                                 Long userId,
+                                                 String userText,
+                                                 List<Message> historyBeforeAppend,
+                                                 AgentEntity agentEntity) {
+        if (reminderBuilder == null) {
+            return Message.user(userText);
+        }
+        String reminderText;
+        try {
+            AgentDefinition agentDef = agentService.toAgentDefinition(agentEntity);
+            int contextWindowTokens = agentDef.getMaxContextTokens();
+            int requestMaxTokens = agentDef.getMaxTokens();
+            String systemPrompt = agentDef.getSystemPrompt() != null ? agentDef.getSystemPrompt() : "";
+            // Q2 approximation: ChatService cannot easily reconstruct the full engine-built
+            // request envelope (skill defs / behavior rules / context providers / tools list).
+            // Pass the raw agent systemPrompt + empty tool list. ContextUsageSource still
+            // estimates current ratio over messages + raw systemPrompt + maxTokens reservation
+            // — close enough to gate the 70% reminder near the same point engine compaction
+            // would, accepting a small under-estimate as the price of cache friendliness.
+            ReminderContext ctx = new ReminderContext(
+                    sessionId,
+                    userId,
+                    historyBeforeAppend != null ? historyBeforeAppend.size() : 0,
+                    historyBeforeAppend,
+                    contextWindowTokens,
+                    systemPrompt,
+                    java.util.Collections.emptyList(),
+                    requestMaxTokens,
+                    objectMapper,
+                    null /* per-provider thresholds resolved here would require the provider;
+                             null → DEFAULTS in the context constructor */,
+                    reminderBuilder);
+            reminderText = reminderBuilder.build(ctx);
+        } catch (Exception e) {
+            log.warn("ReminderBuilder failed in ChatService for session={}: {}",
+                    sessionId, e.toString());
+            reminderText = "";
+        }
+        if (reminderText == null || reminderText.isEmpty()) {
+            return Message.user(userText);
+        }
+        // Q2 wire shape: array content with reminder block first, raw user text second. FE
+        // filters by exact `<system-reminder>` prefix on the first text block.
+        Message msg = new Message();
+        msg.setRole(Message.Role.USER);
+        msg.setContent(List.of(
+                ContentBlock.text(reminderText),
+                ContentBlock.text(userText)));
+        return msg;
     }
 }

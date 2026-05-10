@@ -715,7 +715,11 @@ class CompactionServiceTest {
         // Recovery row is plain user message, content is String containing the cached path.
         assertThat(recoveryRow.message().getRole()).isEqualTo(Message.Role.USER);
         assertThat(recoveryRow.message().getContent()).isInstanceOf(String.class);
-        assertThat((String) recoveryRow.message().getContent()).contains("/abs/foo.java");
+        // REMINDER-MVP D6: payload is wrapped in <system-reminder>...</system-reminder>.
+        String content = (String) recoveryRow.message().getContent();
+        assertThat(content).startsWith("<system-reminder>\n");
+        assertThat(content).endsWith("</system-reminder>\n");
+        assertThat(content).contains("/abs/foo.java");
         // Order invariant: recovery row must come AFTER boundary + summary (which are at index 0/1).
         int recoveryIdx = appended.indexOf(recoveryRow);
         assertThat(recoveryIdx).isGreaterThanOrEqualTo(2);
@@ -828,7 +832,11 @@ class CompactionServiceTest {
                 .filter(am -> SessionService.MSG_TYPE_RECOVERY_PAYLOAD.equals(am.msgType()))
                 .findFirst().orElse(null);
         assertThat(recoveryRow).as("preemptive path must emit RECOVERY_PAYLOAD row").isNotNull();
-        assertThat((String) recoveryRow.message().getContent()).contains("/abs/preempt.txt");
+        // REMINDER-MVP D6: payload wrapped in <system-reminder>.
+        String preemptContent = (String) recoveryRow.message().getContent();
+        assertThat(preemptContent).startsWith("<system-reminder>\n");
+        assertThat(preemptContent).endsWith("</system-reminder>\n");
+        assertThat(preemptContent).contains("/abs/preempt.txt");
         assertThat(recoveryRow.metadata()).containsEntry("trigger", "engine-preemptive");
     }
 
@@ -859,7 +867,11 @@ class CompactionServiceTest {
                 .filter(am -> SessionService.MSG_TYPE_RECOVERY_PAYLOAD.equals(am.msgType()))
                 .findFirst().orElse(null);
         assertThat(recoveryRow).as("post-overflow path must emit RECOVERY_PAYLOAD row").isNotNull();
-        assertThat((String) recoveryRow.message().getContent()).contains("/abs/overflow.txt");
+        // REMINDER-MVP D6: payload wrapped in <system-reminder>.
+        String overflowContent = (String) recoveryRow.message().getContent();
+        assertThat(overflowContent).startsWith("<system-reminder>\n");
+        assertThat(overflowContent).endsWith("</system-reminder>\n");
+        assertThat(overflowContent).contains("/abs/overflow.txt");
         assertThat(recoveryRow.metadata()).containsEntry("trigger", "post-overflow");
     }
 
@@ -904,6 +916,10 @@ class CompactionServiceTest {
                 .filter(am -> SessionService.MSG_TYPE_RECOVERY_PAYLOAD.equals(am.msgType()))
                 .findFirst().orElse(null);
         assertThat(recoveryRow).as("session-memory path must emit RECOVERY_PAYLOAD row").isNotNull();
-        assertThat((String) recoveryRow.message().getContent()).contains("/abs/memory.txt");
+        // REMINDER-MVP D6: payload wrapped in <system-reminder>.
+        String memoryContent = (String) recoveryRow.message().getContent();
+        assertThat(memoryContent).startsWith("<system-reminder>\n");
+        assertThat(memoryContent).endsWith("</system-reminder>\n");
+        assertThat(memoryContent).contains("/abs/memory.txt");
     }
 }

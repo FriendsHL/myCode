@@ -29,6 +29,26 @@ public interface MemoryRepository extends JpaRepository<MemoryEntity, Long> {
 
     long countByUserIdAndStatus(Long userId, String status);
 
+    /**
+     * REMINDER-MVP MemoryAgeSource (W2): single aggregate query returning
+     * {@code [activeCount, staleCount, maxLastRecalledAt]} so the reminder source needs
+     * exactly one DB round-trip per emit (vs. 3 in the r1 design that also opened a TOCTOU
+     * race window between separate calls).
+     *
+     * <p>Stale = {@code lastRecalledAt IS NULL OR lastRecalledAt < :threshold}, i.e. memories
+     * that have never been recalled or haven't been recalled within the threshold window.
+     *
+     * <p>Plain JPQL — portable across PostgreSQL prod and the embedded H2/zonky test DB.
+     * SUM(CASE WHEN ...) returns Long; the {@link Object[]} packing is the standard JPA
+     * idiom for multi-aggregate single-row results.
+     */
+    @Query("SELECT COUNT(m), "
+            + "SUM(CASE WHEN m.lastRecalledAt IS NULL OR m.lastRecalledAt < :threshold THEN 1L ELSE 0L END), "
+            + "MAX(m.lastRecalledAt) "
+            + "FROM MemoryEntity m WHERE m.userId = :userId AND m.status = 'ACTIVE'")
+    Object[] aggregateActiveStats(@Param("userId") Long userId,
+                                  @Param("threshold") Instant threshold);
+
     List<MemoryEntity> findByUserIdAndTitle(Long userId, String title);
 
     List<MemoryEntity> findByExtractionBatchIdAndUserId(String extractionBatchId, Long userId);

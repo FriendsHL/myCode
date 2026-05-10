@@ -17,6 +17,7 @@ import '../components/agents/agents.css';
 import '../components/sessions/sessions.css';
 import '../components/skills/skills.css';
 import MarkdownRenderer from '../components/MarkdownRenderer';
+import { stripSystemReminderBlocks } from '../utils/messageContent';
 
 const CLOSE_ICON = (
   <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
@@ -513,11 +514,14 @@ function normalizeMessages(rawMsgs: Record<string, unknown>[]): MessageItem[] {
     .filter(m => m.role === 'user' || m.role === 'assistant')
     .map(m => {
       const role = m.role === 'assistant' ? 'assistant' as const : 'user' as const;
+      // REMINDER-MVP: strip <system-reminder> blocks before extracting text
+      // so session list summaries don't surface framework reminders.
+      const cleanedContent = stripSystemReminderBlocks(m.content);
       return {
         role,
-        text: extractText(m.content),
-        toolUses: role === 'assistant' ? extractToolUses(m.content) : undefined,
-        toolResults: role === 'user' ? extractToolResults(m.content) : undefined,
+        text: extractText(cleanedContent),
+        toolUses: role === 'assistant' ? extractToolUses(cleanedContent) : undefined,
+        toolResults: role === 'user' ? extractToolResults(cleanedContent) : undefined,
       };
     });
 }

@@ -10,6 +10,7 @@ import { traceSpanToSummary } from '../components/sessions/detail/session-detail
 import TraceDetailPanel, { type TraceOverview } from '../components/sessions/detail/TraceDetailPanel';
 import SessionStatsBar from '../components/sessions/detail/SessionStatsBar';
 import type { SpanSummary, TraceTreeDto, TraceNodeDto } from '../types/observability';
+import { stripSystemReminderBlocks } from '../utils/messageContent';
 import '../components/sessions/sessions.css';
 import '../components/skills/skills.css';
 import '../components/traces/traces.css';
@@ -31,9 +32,12 @@ interface RawMessage {
 }
 
 function flattenContentText(content: unknown): string {
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return '';
-  return content
+  // REMINDER-MVP: strip <system-reminder> blocks before flattening so trace
+  // input/output previews don't leak framework reminders to users.
+  const cleaned = stripSystemReminderBlocks(content);
+  if (typeof cleaned === 'string') return cleaned;
+  if (!Array.isArray(cleaned)) return '';
+  return cleaned
     .map((b) => {
       if (b && typeof b === 'object') {
         const block = b as Record<string, unknown>;

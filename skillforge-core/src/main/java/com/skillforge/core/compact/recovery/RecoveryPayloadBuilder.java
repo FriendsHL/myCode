@@ -14,10 +14,11 @@ import java.util.List;
  * P9-5: build the post-compact recovery payload (a single user-role {@link Message}) from
  * the per-session {@link FileStateCache} snapshot.
  *
- * <p>Format (plain user message; no system-reminder wrapper — independent skill, will migrate
- * once the system-reminder framework lands):
+ * <p>Format (REMINDER-MVP D6: wrapped in {@code <system-reminder>} tag once the framework
+ * landed; PRD/MRD set Phase A as the migration point):
  *
  * <pre>
+ * &lt;system-reminder&gt;
  * [Recovery payload — N most recently accessed files at &lt;HH:mm:ss UTC&gt;]
  *
  * ### /abs/path/file1 (lastRead 14:32, lines 128)
@@ -26,6 +27,7 @@ import java.util.List;
  * ```
  *
  * ### /abs/path/file2 ...
+ * &lt;/system-reminder&gt;
  * </pre>
  *
  * <p>Returns {@code null} when:
@@ -87,6 +89,11 @@ public class RecoveryPayloadBuilder {
         }
 
         StringBuilder sb = new StringBuilder(2048);
+        // REMINDER-MVP D6: wrap recovery payload in <system-reminder> so it joins the same
+        // framework as Phase A sources.  CompactionService still owns the trigger (4 paths:
+        // B2 / preemptive / post-overflow / session-memory) and persistence; we only changed
+        // the rendered string here.
+        sb.append("<system-reminder>\n");
         sb.append("[Recovery payload — ")
           .append(files.size())
           .append(files.size() == 1 ? " most recently accessed file at " : " most recently accessed files at ")
@@ -110,6 +117,7 @@ public class RecoveryPayloadBuilder {
             }
             sb.append("```\n\n");
         }
+        sb.append("</system-reminder>\n");
         return Message.user(sb.toString());
     }
 

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { message } from 'antd';
 import { getSession, getSessionMessages, extractList } from '../api';
+import { stripRemindersFromMessageList } from '../utils/messageContent';
 
 export type RuntimeStatus = 'idle' | 'running' | 'waiting_user' | 'error';
 export type ExecutionMode = 'ask' | 'auto';
@@ -38,7 +39,7 @@ export function useChatSession(
 
     getSessionMessages(activeSessionId, 1)
       .then((res) => {
-        s.setRawMessages(extractList(res));
+        s.setRawMessages(stripRemindersFromMessageList(extractList(res)));
       })
       .catch(() => message.error('Failed to load messages'));
 

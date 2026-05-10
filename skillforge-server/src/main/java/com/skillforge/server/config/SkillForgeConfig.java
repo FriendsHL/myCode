@@ -169,6 +169,77 @@ public class SkillForgeConfig {
         return builder;
     }
 
+    // ─────────────────────────────────────────────────────────────────────────────
+    // REMINDER-MVP Phase A: <system-reminder> framework + 3 sources.
+    // PRD D7 source order in builder: ContextUsage → MemoryAge → FileActivity.
+    // PRD D5 default cadence: ContextUsage every turn (≥70%); MemoryAge every 5 turns (>7d
+    // stale); FileActivity every 5 turns (top-5 files older than 30s).
+    // Each source is best-effort and degrades to "skip" on internal failure; the builder
+    // wraps every source call in try/catch so reminders can never block the LLM call.
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    /**
+     * REMINDER-MVP: server-side adapter exposing {@link MemoryService} as a core-side
+     * {@link com.skillforge.core.reminder.MemoryAgeStatsProvider} (W2: single combined call).
+     * Avoids a core→server compile-time link; same pattern as {@code memoryProvider}
+     * (BiFunction wired as a setter).
+     */
+    @Bean
+    public com.skillforge.core.reminder.MemoryAgeStatsProvider memoryAgeStatsProvider(
+            MemoryService memoryService) {
+        return memoryService::getMemoryAgeStats;
+    }
+
+    @Bean
+    public com.skillforge.core.reminder.MemoryAgeSource memoryAgeSource(
+            com.skillforge.core.reminder.MemoryAgeStatsProvider memoryAgeStatsProvider,
+            @Value("${skillforge.reminder.memory-age.enabled:true}") boolean enabled,
+            @Value("${skillforge.reminder.memory-age.interval-turns:5}") int intervalTurns,
+            @Value("${skillforge.reminder.memory-age.stale-days-threshold:7}") int staleDaysThreshold) {
+        return new com.skillforge.core.reminder.MemoryAgeSource(
+                memoryAgeStatsProvider, enabled, intervalTurns, staleDaysThreshold);
+    }
+
+    /**
+     * REMINDER-MVP ContextUsageSource (W1+W3 fix): zero LLM/Spring deps. The actual
+     * RequestTokenEstimator inputs (systemPrompt, tools, jsonMapper, thresholds) flow
+     * through {@link com.skillforge.core.reminder.ReminderContext} per-iteration, so this
+     * bean is just the YAML-driven config holder.
+     */
+    @Bean
+    public com.skillforge.core.reminder.ContextUsageSource contextUsageSource(
+            @Value("${skillforge.reminder.context-usage.enabled:true}") boolean enabled,
+            @Value("${skillforge.reminder.context-usage.interval-turns:1}") int intervalTurns,
+            @Value("${skillforge.reminder.context-usage.pct-threshold:70}") int pctThreshold) {
+        return new com.skillforge.core.reminder.ContextUsageSource(
+                enabled, intervalTurns, pctThreshold);
+    }
+
+    @Bean
+    public com.skillforge.core.reminder.FileActivitySource fileActivitySource(
+            FileStateCache fileStateCache,
+            @Value("${skillforge.reminder.file-activity.enabled:true}") boolean enabled,
+            @Value("${skillforge.reminder.file-activity.interval-turns:5}") int intervalTurns,
+            @Value("${skillforge.reminder.file-activity.max-files:5}") int maxFiles,
+            @Value("${skillforge.reminder.file-activity.min-age-seconds:30}") long minAgeSeconds) {
+        return new com.skillforge.core.reminder.FileActivitySource(
+                fileStateCache, enabled, intervalTurns, maxFiles, minAgeSeconds);
+    }
+
+    @Bean
+    public com.skillforge.core.reminder.ReminderBuilder reminderBuilder(
+            com.skillforge.core.reminder.ContextUsageSource contextUsageSource,
+            com.skillforge.core.reminder.MemoryAgeSource memoryAgeSource,
+            com.skillforge.core.reminder.FileActivitySource fileActivitySource,
+            @Value("${skillforge.reminder.enabled:true}") boolean globalEnabled,
+            @Value("${skillforge.reminder.total-budget-tokens:5000}") int totalBudgetTokens) {
+        // PRD D7 ordered: most-actionable first → ContextUsage → MemoryAge → FileActivity.
+        return new com.skillforge.core.reminder.ReminderBuilder(
+                List.of(contextUsageSource, memoryAgeSource, fileActivitySource),
+                totalBudgetTokens,
+                globalEnabled);
+    }
+
     @Bean
     public SkillRegistry skillRegistry(MemoryService memoryService, EmbeddingService embeddingService,
                                        FileStateCache fileStateCache) {
@@ -743,6 +814,10 @@ public class SkillForgeConfig {
         engine.setSkillTelemetryRecorder(skillService::recordUsage);
         // P9-5: per-session file state cache for post-compact recovery payload.
         engine.setFileStateCache(fileStateCache);
+        // Q2 (cache-friendly migration, 2026-05-10): reminderBuilder no longer wired into the
+        // engine — ChatService injects the <system-reminder> as a ContentBlock on the user
+        // Message at chatAsync entry, so it persists with the message and stays byte-identical
+        // across turns (preserves Anthropic prompt-cache breakpoints 2 + 3).
         return engine;
     }
 

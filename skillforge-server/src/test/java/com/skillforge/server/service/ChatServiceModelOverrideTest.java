@@ -86,7 +86,8 @@ class ChatServiceModelOverrideTest {
                 new NoopDispatcher(),
                 new SessionConfirmCache(), new PendingConfirmationRegistry(),
                 sid -> sid, mock(LlmTraceStore.class),
-                mock(org.springframework.context.ApplicationEventPublisher.class));
+                mock(org.springframework.context.ApplicationEventPublisher.class),
+                null /* reminderBuilder — Q2: null = no reminder injected */);
     }
 
     @Test

@@ -559,4 +559,5 @@ public class LoopContext {
         if (skillName == null) return 0;
         return notAllowedCount.getOrDefault(skillName, 0);
     }
+
 }

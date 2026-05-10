@@ -6,6 +6,10 @@ import type {
 } from '../api';
 import type { InflightTool, StreamingToolInput, LoopSpan } from './useChatMessages';
 import type { RuntimeStatus } from './useChatSession';
+import {
+  stripSystemReminderBlocks,
+  stripRemindersFromMessageList,
+} from '../utils/messageContent';
 
 interface PendingAskOption {
   label: string;
@@ -116,20 +120,25 @@ export function useChatWsEventHandler(deps: WsEventHandlerDeps) {
           }
         }
         if (msg) {
+          // REMINDER-MVP: strip <system-reminder> blocks before storing so
+          // dedupe/append logic and downstream renderers see clean content.
+          const cleanedContent = stripSystemReminderBlocks(msg.content);
+          const cleanedMsg =
+            cleanedContent === msg.content ? msg : { ...msg, content: cleanedContent };
           setRawMessages((prev) => {
             if (prev.length > 0) {
               const last = prev[prev.length - 1] as { role?: string; content?: unknown } | null;
               if (
                 last &&
-                last.role === msg.role &&
+                last.role === cleanedMsg.role &&
                 typeof last.content === 'string' &&
-                typeof msg.content === 'string' &&
-                last.content === msg.content
+                typeof cleanedMsg.content === 'string' &&
+                last.content === cleanedMsg.content
               ) {
                 return prev;
               }
             }
-            return [...prev, msg];
+            return [...prev, cleanedMsg];
           });
         }
       } else if (evt.type === 'messages_snapshot') {
@@ -138,7 +147,7 @@ export function useChatWsEventHandler(deps: WsEventHandlerDeps) {
           if (typeof evt.snapshotVersion === 'number') {
             lastSnapshotVersionRef.current = evt.snapshotVersion;
           }
-          setRawMessages(evt.messages);
+          setRawMessages(stripRemindersFromMessageList(evt.messages));
           if (prevVersion >= 0) {
             setCompactionNotice(true);
           }

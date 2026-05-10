@@ -1,6 +1,7 @@
 package com.skillforge.server.service;
 
 import com.skillforge.core.engine.MemoryInjection;
+import com.skillforge.core.reminder.MemoryAgeStatsProvider;
 import com.skillforge.server.config.MemoryProperties;
 import com.skillforge.server.dto.MemorySearchResult;
 import com.skillforge.server.entity.MemoryEntity;
@@ -241,6 +242,35 @@ public class MemoryService {
         long stale = memoryRepository.countByUserIdAndStatus(userId, "STALE");
         long archived = memoryRepository.countByUserIdAndStatus(userId, "ARCHIVED");
         return new MemoryStats(active, stale, archived, memoryProperties.getEviction().getMaxActivePerUser());
+    }
+
+    /**
+     * REMINDER-MVP MemoryAgeSource (W2): single aggregate call returning active + stale counts
+     * + last-recalled timestamp for the user, in one transaction (one DB round-trip). Was 3
+     * separate methods + 3 round-trips with a TOCTOU race window in the r1 design.
+     *
+     * <p>{@code Stats.staleCount} reflects memories whose {@code lastRecalledAt} is older than
+     * {@code daysThreshold} days, or has never been recalled. The same {@code @Transactional
+     * (readOnly = true)} scope guarantees the count + max are computed against the same
+     * MVCC snapshot.
+     *
+     * <p>Defensive defaults: null userId / non-positive threshold returns
+     * {@link MemoryAgeStatsProvider.Stats#EMPTY} without touching the DB.
+     */
+    @Transactional(readOnly = true)
+    public MemoryAgeStatsProvider.Stats getMemoryAgeStats(Long userId, int daysThreshold) {
+        if (userId == null || daysThreshold <= 0) {
+            return MemoryAgeStatsProvider.Stats.EMPTY;
+        }
+        Instant threshold = Instant.now().minus(Duration.ofDays(daysThreshold));
+        Object[] row = memoryRepository.aggregateActiveStats(userId, threshold);
+        if (row == null || row.length < 3) {
+            return MemoryAgeStatsProvider.Stats.EMPTY;
+        }
+        long active = row[0] instanceof Number n ? n.longValue() : 0L;
+        long stale = row[1] instanceof Number n ? n.longValue() : 0L;
+        Instant lastRecalled = row[2] instanceof Instant i ? i : null;
+        return new MemoryAgeStatsProvider.Stats(active, stale, Optional.ofNullable(lastRecalled));
     }
 
     @Transactional
