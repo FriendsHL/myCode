@@ -60,7 +60,7 @@
 
 /* Left filter rail */
 .agents-filters {
-  padding: 20px 16px 20px 24px;
+  padding: 20px 16px 20px 16px;
   border-right: 1px solid var(--border-1);
   background: var(--bg-base);
   overflow-y: auto;
