@@ -3,7 +3,7 @@
 ---
 id: SKILL-EVOLVE-LOOP
 mode: full
-status: delivered
+status: done
 priority: P0
 risk: Full
 created: 2026-05-08

@@ -3,7 +3,7 @@
 ---
 id: OBS-1
 mode: full
-status: delivered
+status: done
 priority: P1
 risk: Full
 created: 2026-04-28

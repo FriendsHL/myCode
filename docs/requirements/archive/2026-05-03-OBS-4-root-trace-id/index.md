@@ -3,7 +3,7 @@
 ---
 id: OBS-4
 mode: full
-status: archived
+status: done
 priority: P1
 risk: Full
 created: 2026-05-03

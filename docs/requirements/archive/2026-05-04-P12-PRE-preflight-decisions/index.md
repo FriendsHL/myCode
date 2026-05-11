@@ -3,7 +3,7 @@
 ---
 id: P12-PRE
 mode: lite
-status: archived
+status: done
 priority: P0
 risk: Solo
 created: 2026-04-28

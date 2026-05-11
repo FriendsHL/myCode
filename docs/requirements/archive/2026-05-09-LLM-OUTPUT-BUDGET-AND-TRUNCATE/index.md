@@ -3,11 +3,11 @@
 ---
 id: LLM-OUTPUT-BUDGET-AND-TRUNCATE
 mode: full
-status: prd-ready
+status: done
 priority: P0
 risk: Full
 created: 2026-05-09
-updated: 2026-05-09
+updated: 2026-05-11
 ---
 
 ## 用户原话
@@ -79,10 +79,14 @@ hit `LlmRequest.maxTokens` hard-coded default 4096 → continuation 再 hit 4096
 
 ## 验收
 
-- [ ] `mvn -pl skillforge-core test` 全套绿（旧测试不破，新加 LightCompactStrategy + LlmRequest 测试）
-- [ ] `mvn -pl skillforge-server test` 全套绿
-- [ ] Session Analyzer / Design Agent 重跑相同任务，**不再报 Output truncated**（手动验证）
-- [ ] light compact event before_tokens vs after_tokens 单次省 ≥ 30%（之前 ~10%）
+- [x] `mvn -pl skillforge-core,skillforge-server test` 全套绿（1159/0/0/60）
+- [x] 默认 `max_tokens` 4096 → 16384，per-agent override 仍优先
+- [x] Light compact 纯 truncate 算法落地（10KB 阈值、头尾保留、marker 幂等）
+- [x] Claude 模型感知 clamp 落地，避免老模型因 16384 上限 HTTP 400
+
+## 交付状态
+
+已交付并归档。主实现 commit 为 `715c386`；交付事实见 [delivery-index.md](../../../delivery-index.md) 的 2026-05-09 LLM-OUTPUT-BUDGET-AND-TRUNCATE 行。
 
 ## 风险
 

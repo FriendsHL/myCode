@@ -3,11 +3,11 @@
 ---
 id: P9-5
 mode: full
-status: prd-draft
+status: done
 priority: P2
 risk: Full
 created: 2026-04-28
-updated: 2026-05-09
+updated: 2026-05-11
 ---
 
 ## 摘要
@@ -28,8 +28,7 @@ Full compaction 完成后，往新 context 头部注入有预算上限的 recove
 
 ## 当前状态
 
-- 数据来源候选已加第三方案 **C：内存 FileStateCache**（来自 claude-code post-compact 路线），prd.md / tech-design.md 标注待用户 ratify。
-- 未决问题：recovery payload 范围（仅文件 vs 文件 + 工具 schema delta + skill listing）、注入格式（plain user message vs `<system-reminder>` 包装）。
+已交付并归档。最终方案采用内存 `FileStateCache`，recovery payload V1 范围收敛为最近文件；注入格式先落为 plain recovery user message，后续由 REMINDER-MVP Phase A 迁移到 `<system-reminder>` 包装。主实现 commit 为 `fda2374`；交付事实见 [delivery-index.md](../../../delivery-index.md) 的 2026-05-09 P9-5 行。
 
 ## 链接
 

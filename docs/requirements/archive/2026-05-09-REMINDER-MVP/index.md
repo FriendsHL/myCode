@@ -3,11 +3,11 @@
 ---
 id: REMINDER-MVP
 mode: full
-status: design-ratified
+status: done
 priority: P2
 risk: Full
 created: 2026-05-09
-updated: 2026-05-09
+updated: 2026-05-11
 ratified: 2026-05-09
 ---
 
@@ -26,6 +26,10 @@ Phase A：框架地基 + 3 个高价值 source + P9-5 recovery payload 迁移到
 - P9-5 `RecoveryPayloadBuilder.build()` 输出改 `<system-reminder>` 包装
 
 **不做（Phase B/C/V2）**：Date Change / Skill enable 变化 / Compact 失败计数 / MCP 状态变化（Phase B）；Lifecycle Hooks 联动 / dashboard 配置页（Phase C）；claude-code user message prepend 模式（Phase D，不一定做）；TodoWrite / Plan-mode / Malware（永不做，cli-only）。
+
+## 交付状态
+
+Phase A 已交付并归档。主实现 commit 为 `bdb0453`；后续 regression / 防御性补强 commit 为 `a4100f7`、`c712ffa`、`37ff1d3`、`cc87776`、`b2c7039`。交付事实见 [delivery-index.md](../../../delivery-index.md) 的 2026-05-09 / 2026-05-10 REMINDER-MVP 行。
 
 ## 阅读顺序
 
