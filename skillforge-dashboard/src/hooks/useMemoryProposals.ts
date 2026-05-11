@@ -53,12 +53,12 @@ export function useMemoryProposals({
 }: UseMemoryProposalsArgs) {
   const queryClient = useQueryClient();
 
-  const queryKey = [PROPOSAL_LIST_NS, { userId, status, proposalType }] as const;
+  const queryKey = [PROPOSAL_LIST_NS, { userId, status }] as const;
 
   const proposalsQuery = useQuery<MemoryProposal[]>({
     queryKey,
     queryFn: () =>
-      listMemoryProposals({ userId, status, proposalType }).then((r) => r.data),
+      listMemoryProposals({ userId, status }).then((r) => r.data),
     staleTime: 60_000,
     enabled,
   });

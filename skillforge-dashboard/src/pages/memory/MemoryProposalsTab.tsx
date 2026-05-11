@@ -1,28 +1,48 @@
 import React, { useMemo, useState } from 'react';
-import { Button, Space, Spin, Tag, Empty, Alert, message, Result } from 'antd';
+import { Button, Spin, message, Result } from 'antd';
 import { useAuth } from '../../contexts/AuthContext';
 import { useMemoryProposals } from '../../hooks/useMemoryProposals';
 import type {
   ApproveProposalOptions,
   EditProposalPatch,
+  MemoryProposal,
   MemoryProposalType,
 } from '../../api/memoryProposalsApi';
 import MemoryProposalCard from './MemoryProposalCard';
+import '../../components/memory/proposals.css';
 
-const TYPE_FILTERS: { label: string; value: MemoryProposalType | 'all' }[] = [
-  { label: 'All', value: 'all' },
-  { label: 'Dedup', value: 'dedup' },
-  { label: 'Reflection', value: 'reflection' },
-  { label: 'Optimize', value: 'optimize' },
-  { label: 'Contradiction', value: 'contradiction' },
+const TYPE_META: Record<
+  MemoryProposalType,
+  { label: string; color: string }
+> = {
+  dedup: { label: 'Dedup', color: 'var(--clr-dedup, #4a7aa8)' },
+  reflection: { label: 'Reflection', color: 'var(--clr-reflection, #8a6fb3)' },
+  optimize: { label: 'Optimize', color: 'var(--clr-optimize, #d49a3a)' },
+  contradiction: { label: 'Contradiction', color: 'var(--clr-contradiction, #b8412f)' },
+};
+
+const TYPE_ORDER: (MemoryProposalType | 'all')[] = [
+  'all', 'dedup', 'reflection', 'optimize', 'contradiction',
 ];
+
+const FILTER_LABELS: Record<MemoryProposalType | 'all', string> = {
+  all: 'All',
+  dedup: 'Dedup',
+  reflection: 'Reflection',
+  optimize: 'Optimize',
+  contradiction: 'Contradiction',
+};
+
+function daysUntilArchive(iso: string): number {
+  return Math.max(0, Math.ceil((new Date(iso).getTime() - Date.now()) / 86_400_000));
+}
 
 const MemoryProposalsTab: React.FC = () => {
   const { userId } = useAuth();
   const [typeFilter, setTypeFilter] = useState<MemoryProposalType | 'all'>('all');
 
   const {
-    proposals,
+    proposals: allProposals,
     isLoading,
     isError,
     error,
@@ -32,51 +52,47 @@ const MemoryProposalsTab: React.FC = () => {
     editMutation,
     revertMutation,
     runOnceMutation,
-  } = useMemoryProposals({
-    userId,
-    status: 'proposed',
-    proposalType: typeFilter === 'all' ? undefined : typeFilter,
-  });
+  } = useMemoryProposals({ userId, status: 'proposed' });
 
+  /* ── Client-side counts & filter ── */
   const counts = useMemo(() => {
     const c: Record<MemoryProposalType, number> = {
-      dedup: 0,
-      reflection: 0,
-      optimize: 0,
-      contradiction: 0,
+      dedup: 0, reflection: 0, optimize: 0, contradiction: 0,
     };
-    for (const p of proposals) {
-      c[p.proposalType] += 1;
-    }
+    for (const p of allProposals) c[p.proposalType] += 1;
     return c;
-  }, [proposals]);
+  }, [allProposals]);
 
+  const proposals = useMemo<MemoryProposal[]>(
+    () => typeFilter === 'all'
+      ? allProposals
+      : allProposals.filter((p) => p.proposalType === typeFilter),
+    [allProposals, typeFilter],
+  );
+
+  const soonestArchive = useMemo(() => {
+    if (allProposals.length === 0) return null;
+    let earliest = Infinity;
+    for (const p of allProposals) {
+      const d = new Date(p.autoArchiveAfter).getTime();
+      if (d < earliest) earliest = d;
+    }
+    return daysUntilArchive(new Date(earliest).toISOString());
+  }, [allProposals]);
+
+  /* ── Handlers ── */
   const handleRunNow = async () => {
     try {
       const result = await runOnceMutation.mutateAsync(userId);
-      const total =
-        result.dedupCount +
-        result.reflectionCount +
-        result.optimizeCount +
-        result.contradictionCount;
-      // Dogfood-mode trace pointer (option A) — appended to the toast when
-      // BE ran synthesis as a memory-curator agent session.
-      const traceSuffix = result.sessionId
-        ? ` · session ${result.sessionId.slice(0, 8)}…`
-        : '';
+      const total = result.dedupCount + result.reflectionCount + result.optimizeCount + result.contradictionCount;
+      const traceSuffix = result.sessionId ? ` · session ${result.sessionId.slice(0, 8)}…` : '';
       if (result.status === 'skipped') {
-        message.info(
-          `Synthesis skipped: ${result.skipReason ?? 'no viable input'}.${traceSuffix}`,
-        );
+        message.info(`Synthesis skipped: ${result.skipReason ?? 'no viable input'}.${traceSuffix}`);
       } else if (total === 0) {
-        message.info(
-          `Run ${result.runId ?? '—'} finished. 0 new proposals · ~$${result.estimatedUsd.toFixed(4)}.${traceSuffix}`,
-        );
+        message.info(`Run done · 0 new proposals · ~$${result.estimatedUsd.toFixed(4)}.${traceSuffix}`);
       } else {
         message.success(
-          `Run done · dedup ${result.dedupCount} / reflection ${result.reflectionCount} / `
-            + `optimize ${result.optimizeCount} / contradiction ${result.contradictionCount} `
-            + `· ~$${result.estimatedUsd.toFixed(4)}${traceSuffix}`,
+          `Run done · dedup ${result.dedupCount} / reflection ${result.reflectionCount} / optimize ${result.optimizeCount} / contradiction ${result.contradictionCount} · ~$${result.estimatedUsd.toFixed(4)}${traceSuffix}`,
           6,
         );
       }
@@ -90,9 +106,7 @@ const MemoryProposalsTab: React.FC = () => {
     try {
       const res = await approveMutation.mutateAsync({ id, options });
       if (res.status === 'stale') {
-        message.warning(
-          `Proposal #${id} is stale: ${res.staleReason ?? 'source changed'}.`,
-        );
+        message.warning(`Proposal #${id} is stale: ${res.staleReason ?? 'source changed'}.`);
       } else {
         message.success(`Proposal #${id} approved.`);
       }
@@ -128,61 +142,73 @@ const MemoryProposalsTab: React.FC = () => {
       message.success(`Proposal #${id} reverted; original_content restored.`);
     } catch (err: unknown) {
       const e = err as { response?: { data?: { error?: string } }; message?: string };
-      message.error(e.response?.data?.error || e.message || 'Revert failed');
+      message.error(e.response?.data?.error || e.message || '回退失败');
     }
   };
 
   return (
-    <div data-testid="memory-proposals-tab" style={{ padding: '0 4px' }}>
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: 16,
-          flexWrap: 'wrap',
-          gap: 8,
-        }}
-      >
+    <div data-testid="memory-proposals-tab" className="prop-tab">
+      {/* ── Header ── */}
+      <div className="prop-header">
         <div>
-          <h2 style={{ margin: 0 }}>Pending Reflections</h2>
-          <p style={{ margin: '4px 0 0', color: 'var(--text-secondary, #888)', fontSize: 13 }}>
-            LLM-proposed memory edits awaiting your review. Auto-archive after
-            7 days.
+          <h2 className="prop-header-title">Pending Reflections</h2>
+          <p className="prop-header-sub">
+            LLM-proposed memory edits awaiting review
+            {soonestArchive != null && (
+              <> · auto-archive in <strong>{soonestArchive}d</strong></>
+            )}
           </p>
         </div>
-        <Space>
-          <Button
-            type="primary"
-            loading={runOnceMutation.isPending}
-            onClick={handleRunNow}
-            data-testid="run-llm-synthesis-btn"
-          >
-            Run LLM Synthesis Now
-          </Button>
-        </Space>
+        <Button
+          type="primary"
+          loading={runOnceMutation.isPending}
+          onClick={handleRunNow}
+          data-testid="run-llm-synthesis-btn"
+        >
+          Run LLM Synthesis Now
+        </Button>
       </div>
 
-      <Space size={6} style={{ marginBottom: 16, flexWrap: 'wrap' }}>
-        {TYPE_FILTERS.map((f) => {
-          const total =
-            f.value === 'all'
-              ? proposals.length
-              : (counts[f.value as MemoryProposalType] ?? 0);
-          return (
-            <Tag
-              key={f.value}
-              color={typeFilter === f.value ? 'blue' : 'default'}
-              data-testid={`type-filter-${f.value}`}
-              style={{ cursor: 'pointer', padding: '4px 10px', fontSize: 12 }}
-              onClick={() => setTypeFilter(f.value)}
-            >
-              {f.label} · {total}
-            </Tag>
-          );
-        })}
-      </Space>
+      {/* ── Summary Stats ── */}
+      {!isLoading && !isError && (
+        <div className="prop-stats">
+          <div className="prop-stat">
+            <span className="prop-stat-val">{allProposals.length}</span>
+            <span className="prop-stat-label">Total</span>
+          </div>
+          {(Object.keys(TYPE_META) as MemoryProposalType[]).map((t) => (
+            <div key={t} className="prop-stat">
+              <span className={`prop-stat-val clr-${t}`}>{counts[t]}</span>
+              <span className="prop-stat-label">{TYPE_META[t].label}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
+      {/* ── Type Filter Pills ── */}
+      <div className="prop-filters">
+        <div className="prop-filter-pills">
+          {TYPE_ORDER.map((f) => {
+            const total = f === 'all' ? allProposals.length : (counts[f as MemoryProposalType] ?? 0);
+            const active = typeFilter === f;
+            const dotColor = f === 'all' ? 'var(--fg-3)' : TYPE_META[f as MemoryProposalType].color;
+            return (
+              <button
+                key={f}
+                className={`prop-pill ${active ? 'on' : ''}`}
+                data-testid={`type-filter-${f}`}
+                onClick={() => setTypeFilter(f)}
+              >
+                <span className="prop-pill-dot" style={{ background: dotColor }} />
+                <span>{FILTER_LABELS[f]}</span>
+                <span className="prop-pill-cnt">{total}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ── Content ── */}
       {isError ? (
         <Result
           status="error"
@@ -198,23 +224,26 @@ const MemoryProposalsTab: React.FC = () => {
         <div style={{ textAlign: 'center', padding: 48 }}>
           <Spin size="large" />
         </div>
+      ) : allProposals.length === 0 ? (
+        <div className="prop-empty">
+          <div className="prop-empty-icon">✦</div>
+          <div className="prop-empty-text">No pending proposals right now</div>
+          <div className="prop-empty-hint">
+            Click "Run LLM Synthesis Now" or wait for the daily auto-run
+          </div>
+        </div>
       ) : proposals.length === 0 ? (
-        <Empty
-          description={
-            typeFilter === 'all'
-              ? 'No pending proposals. Run synthesis manually or wait for the daily 04:30 cron.'
-              : `No pending ${typeFilter} proposals.`
-          }
-          style={{ marginTop: 48 }}
-        />
+        <div className="prop-empty">
+          <div className="prop-empty-icon">✦</div>
+          <div className="prop-empty-text">
+            No pending {FILTER_LABELS[typeFilter]} proposals
+          </div>
+          <div className="prop-empty-hint">
+            No matching results for the current filter
+          </div>
+        </div>
       ) : (
         <>
-          <Alert
-            type="info"
-            showIcon
-            message={`Showing ${proposals.length} pending proposals (limit 50 · sorted by created_at desc)`}
-            style={{ marginBottom: 12 }}
-          />
           {proposals.map((p) => (
             <MemoryProposalCard
               key={p.id}

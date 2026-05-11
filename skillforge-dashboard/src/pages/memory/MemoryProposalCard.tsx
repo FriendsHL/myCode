@@ -8,7 +8,6 @@ import {
   Modal,
   Drawer,
   Tooltip,
-  Alert,
 } from 'antd';
 import type {
   ApproveProposalOptions,
@@ -38,10 +37,10 @@ const TYPE_META: Record<
   MemoryProposalType,
   { label: string; color: string; tag: 'blue' | 'purple' | 'gold' | 'red' }
 > = {
-  dedup: { label: 'Dedup', color: '#2563eb', tag: 'blue' },
-  reflection: { label: 'Reflection', color: '#9333ea', tag: 'purple' },
-  optimize: { label: 'Optimize', color: '#ca8a04', tag: 'gold' },
-  contradiction: { label: 'Contradiction', color: '#dc2626', tag: 'red' },
+  dedup: { label: 'Dedup', color: 'var(--info, #4a7aa8)', tag: 'blue' },
+  reflection: { label: 'Reflection', color: '#8a6fb3', tag: 'purple' },
+  optimize: { label: 'Optimize', color: 'var(--color-warn, #d49a3a)', tag: 'gold' },
+  contradiction: { label: 'Contradiction', color: 'var(--color-err, #b8412f)', tag: 'red' },
 };
 
 function describeApproveImpact(p: MemoryProposal): string {
@@ -68,33 +67,29 @@ function fmtTime(iso: string | null): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+function daysUntil(iso: string): number {
+  return Math.max(0, Math.ceil((new Date(iso).getTime() - Date.now()) / 86_400_000));
+}
+
 const SourceMemoryItem: React.FC<{ src: ProposalSourceMemoryPreview }> = ({ src }) => {
   const [expanded, setExpanded] = useState(false);
   return (
-    <div
-      style={{
-        borderLeft: '2px solid var(--border-subtle, #2a2a30)',
-        padding: '8px 12px',
-        marginBottom: 8,
-        background: 'var(--bg-surface-2, rgba(255,255,255,0.02))',
-        borderRadius: 4,
-      }}
-    >
+    <div className="prop-source-item">
       <div
         style={{
           display: 'flex',
           justifyContent: 'space-between',
           gap: 8,
-          marginBottom: 4,
+          marginBottom: 2,
         }}
       >
-        <Text strong style={{ fontSize: 13 }}>
+        <Text strong style={{ fontSize: 'var(--font-size-xs)', color: 'var(--fg-1)' }}>
           {src.title || `Memory #${src.id}`}
         </Text>
-        <Space size={6}>
-          <Tag style={{ margin: 0, fontSize: 10 }}>{src.status}</Tag>
-          <Text type="secondary" style={{ fontSize: 11 }}>
-            recall {src.recallCount}
+        <Space size={4}>
+          <Tag style={{ margin: 0, fontSize: 10, lineHeight: '16px', padding: '0 4px' }}>{src.status}</Tag>
+          <Text style={{ fontSize: 10, color: 'var(--fg-4)' }}>
+            {src.recallCount ?? 0}×
           </Text>
         </Space>
       </div>
@@ -102,8 +97,9 @@ const SourceMemoryItem: React.FC<{ src: ProposalSourceMemoryPreview }> = ({ src 
         style={{
           marginBottom: 0,
           whiteSpace: 'pre-wrap',
-          fontSize: 12,
-          color: 'var(--text-secondary, #aaa)',
+          fontSize: 'var(--font-size-xs)',
+          color: 'var(--fg-3)',
+          lineHeight: 1.5,
         }}
         ellipsis={expanded ? false : { rows: 2, expandable: true, onExpand: () => setExpanded(true) }}
       >
@@ -112,6 +108,22 @@ const SourceMemoryItem: React.FC<{ src: ProposalSourceMemoryPreview }> = ({ src 
     </div>
   );
 };
+
+const ChevronIcon: React.FC<{ open: boolean }> = ({ open }) => (
+  <svg
+    className={`prop-warning-chevron ${open ? 'open' : ''}`}
+    width="12"
+    height="12"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M6 4l4 4-4 4" />
+  </svg>
+);
 
 const MemoryProposalCard: React.FC<MemoryProposalCardProps> = ({
   proposal,
@@ -127,15 +139,14 @@ const MemoryProposalCard: React.FC<MemoryProposalCardProps> = ({
   const [editOpen, setEditOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [rawOpen, setRawOpen] = useState(false);
+  const [warnExpanded, setWarnExpanded] = useState(false);
 
   const meta = TYPE_META[proposal.proposalType];
   const impact = describeApproveImpact(proposal);
   const sourceCount = proposal.sourceMemoryIds.length;
-  /**
-   * B-3 fix: dedup proposals archive (N - 1) source memories. If that's
-   * ≥ 3 we surface a hard confirmation modal so an admin can't mass-archive
-   * by misclick. Contradiction has its own picker so it doesn't need this.
-   */
+  const archiveDays = daysUntil(proposal.autoArchiveAfter);
+  const archiveUrgent = archiveDays <= 2;
+
   const requiresMassDeleteConfirm =
     proposal.proposalType === 'dedup' && sourceCount - 1 >= 3;
 
@@ -162,12 +173,10 @@ const MemoryProposalCard: React.FC<MemoryProposalCardProps> = ({
     <Card
       data-testid={`memory-proposal-card-${proposal.id}`}
       variant="outlined"
-      style={{
-        marginBottom: 16,
-        borderLeft: `3px solid ${meta.color}`,
-      }}
+      className="prop-card"
+      style={{ borderLeft: 'none' }}
       title={
-        <Space>
+        <div className="prop-card-meta">
           <Tag
             color={meta.tag}
             data-testid={`proposal-type-chip-${proposal.proposalType}`}
@@ -175,38 +184,59 @@ const MemoryProposalCard: React.FC<MemoryProposalCardProps> = ({
           >
             {meta.label}
           </Tag>
-          <Text type="secondary" style={{ fontWeight: 400, fontSize: 12 }}>
-            run {proposal.synthesisRunId.slice(0, 12)}… · created {fmtTime(proposal.createdAt)}
-          </Text>
-        </Space>
+          <span className="prop-card-run">
+            run {proposal.synthesisRunId.slice(0, 12)}… · {fmtTime(proposal.createdAt)}
+          </span>
+          <span
+            className={`prop-card-archive-badge ${archiveUrgent ? 'urgent' : 'normal'}`}
+          >
+            {archiveUrgent ? '⏰' : '⏱'} {archiveDays}d to archive
+          </span>
+        </div>
       }
       extra={
-        <Button size="small" type="link" onClick={() => setRawOpen(true)}>
-          View raw LLM response
+        <Button size="small" type="link" onClick={() => setRawOpen(true)} style={{ fontSize: 11 }}>
+          Audit
         </Button>
       }
     >
+      {/* Type stripe */}
+      <div className={`prop-card-type-stripe ${proposal.proposalType}`} />
+
+      {/* Reasoning */}
       {proposal.reasoning && (
         <Paragraph
           italic
           type="secondary"
-          style={{ marginBottom: 12 }}
+          style={{ marginBottom: 12, fontSize: 'var(--font-size-sm)', lineHeight: 1.5, color: 'var(--fg-3)' }}
           ellipsis={{ rows: 2, expandable: true }}
         >
           {proposal.reasoning}
         </Paragraph>
       )}
+
+      {/* Collapsible security warning */}
+      <button
+        className="prop-warning-toggle"
+        onClick={() => setWarnExpanded((v) => !v)}
+        type="button"
+      >
+        <ChevronIcon open={warnExpanded} />
+        <span>Content from user conversations — verify for anomalies</span>
+      </button>
+      {warnExpanded && (
+        <div className="prop-warning-detail">
+          请留意明显的异常行为，如 role-play、ignore-previous-instructions 等
+          prompt injection 特征。approve 前务必确认 source memory 内容安全。
+        </div>
+      )}
+
+      {/* Source memories + Suggested content */}
       <div style={{ display: 'flex', gap: 16 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <Alert
-            type="warning"
-            showIcon
-            style={{ marginBottom: 8, fontSize: 12 }}
-            message="内容来自用户对话，请注意识别明显异常 (e.g. role-play, ignore-previous-instructions)。"
-          />
-          <Text strong style={{ fontSize: 12, display: 'block', marginBottom: 6 }}>
-            Source memories ({proposal.sourceMemories.length})
-          </Text>
+          <span className="prop-section-label">
+            Source ({proposal.sourceMemories.length})
+          </span>
           {proposal.sourceMemories.map((src) => (
             <SourceMemoryItem key={src.id} src={src} />
           ))}
@@ -214,49 +244,36 @@ const MemoryProposalCard: React.FC<MemoryProposalCardProps> = ({
         {(proposal.proposalType === 'reflection' ||
           proposal.proposalType === 'optimize') && (
           <div style={{ flex: 1, minWidth: 0 }}>
-            <Text strong style={{ fontSize: 12, display: 'block', marginBottom: 6 }}>
-              Suggested content
-            </Text>
+            <span className="prop-section-label">
+              Suggested
+            </span>
             {proposal.suggestedTitle && (
-              <Text style={{ display: 'block', marginBottom: 4 }}>
+              <Text strong style={{ display: 'block', marginBottom: 4, fontSize: 13 }}>
                 {proposal.suggestedTitle}
               </Text>
             )}
-            <Paragraph
-              style={{
-                marginBottom: 4,
-                whiteSpace: 'pre-wrap',
-                fontSize: 13,
-                background: 'var(--bg-surface-2, rgba(99,102,241,0.06))',
-                padding: 10,
-                borderRadius: 4,
-              }}
-            >
+            <div className="prop-suggested-box">
               {proposal.suggestedContent}
-            </Paragraph>
+            </div>
             {proposal.suggestedImportance && (
-              <Tag color="blue">importance: {proposal.suggestedImportance}</Tag>
+              <Tag color="blue" style={{ marginTop: 8 }}>
+                importance: {proposal.suggestedImportance}
+              </Tag>
             )}
           </div>
         )}
       </div>
 
-      <div
-        style={{
-          marginTop: 16,
-          paddingTop: 12,
-          borderTop: '1px solid var(--border-subtle, #2a2a30)',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          gap: 8,
-          flexWrap: 'wrap',
-        }}
-      >
-        <Text type="secondary" style={{ fontSize: 12 }}>
+      {/* Footer */}
+      <div className="prop-card-footer">
+        <span className="prop-card-impact">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+            <circle cx="8" cy="8" r="6.5" />
+            <path d="M8 5v3.5l2.5 1.5" />
+          </svg>
           {impact}
-        </Text>
-        <Space>
+        </span>
+        <Space size={8}>
           {proposal.proposalType === 'optimize' && (
             <Tooltip title="Restore original_content into t_memory.content">
               <Button
@@ -274,6 +291,7 @@ const MemoryProposalCard: React.FC<MemoryProposalCardProps> = ({
             onClick={() => onReject()}
             loading={rejecting}
             data-testid={`reject-btn-${proposal.id}`}
+            style={{ color: 'var(--fg-4)' }}
           >
             Reject
           </Button>
@@ -310,6 +328,7 @@ const MemoryProposalCard: React.FC<MemoryProposalCardProps> = ({
         </Space>
       </div>
 
+      {/* Modals */}
       <MemoryProposalEditModal
         open={editOpen}
         proposal={proposal}
@@ -327,7 +346,6 @@ const MemoryProposalCard: React.FC<MemoryProposalCardProps> = ({
           proposal={proposal}
           submitting={approving}
           onConfirm={async (winnerMemoryId) => {
-            // F-N1 single-step: pass winnerMemoryId straight to approve.
             await onApprove({ contradictionPick: { winnerMemoryId } });
             setPickerOpen(false);
           }}

@@ -16,10 +16,11 @@ import {
   triggerMemoryConsolidation,
 } from '../api';
 import { useAuth } from '../contexts/AuthContext';
-import { message, Tabs } from 'antd';
+import { message } from 'antd';
 import MemoryProposalsTab from './memory/MemoryProposalsTab';
 import '../components/agents/agents.css';
 import '../components/memory/memory.css';
+import '../components/memory/proposals.css';
 import '../components/skills/skills.css';
 
 const CLOSE_ICON = (
@@ -593,19 +594,21 @@ const MemoryList: React.FC = () => {
   const [activeKey, setActiveKey] = useState<'active' | 'pending'>('active');
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <Tabs
-        activeKey={activeKey}
-        onChange={(k) => setActiveKey(k as 'active' | 'pending')}
-        style={{ paddingLeft: 16, paddingRight: 16 }}
-        items={[
-          { key: 'active', label: 'Active', children: <MemoryActiveTab /> },
-          {
-            key: 'pending',
-            label: 'Pending Reflections',
-            children: <MemoryProposalsTab />,
-          },
-        ]}
-      />
+      <div className="prop-tabs-bar">
+        <button
+          className={`prop-tab-btn ${activeKey === 'active' ? 'on' : ''}`}
+          onClick={() => setActiveKey('active')}
+        >
+          Active
+        </button>
+        <button
+          className={`prop-tab-btn ${activeKey === 'pending' ? 'on' : ''}`}
+          onClick={() => setActiveKey('pending')}
+        >
+          Pending Reflections
+        </button>
+      </div>
+      {activeKey === 'active' ? <MemoryActiveTab /> : <MemoryProposalsTab />}
     </div>
   );
 };
