@@ -2190,6 +2190,11 @@ html[data-density="spacious"] { --density: 1; }
   letter-spacing: -0.015em;
   color: var(--fg-1);
   margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  display: block;
 }
 .session-crumbs {
   font-family: var(--font-mono);
