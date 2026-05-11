@@ -681,8 +681,10 @@
   max-width: 400px;
 }
 
-/* Enhanced search input */
-.agents-search {
+/* Enhanced search input — scoped to eval-page / eval modals to avoid
+   leaking min-width into Agents / Skills / Tools sidebar. */
+.eval-page .agents-search,
+.sf-modal-scrim .agents-search {
   padding: 8px 14px;
   background: var(--bg-surface);
   border: 1px solid var(--border-1);
@@ -691,19 +693,21 @@
   color: var(--fg-1);
   transition: all var(--transition-base);
   outline: none;
-  min-width: 240px;
 }
 
-.agents-search::placeholder {
+.eval-page .agents-search::placeholder,
+.sf-modal-scrim .agents-search::placeholder {
   color: var(--fg-4);
 }
 
-.agents-search:focus {
+.eval-page .agents-search:focus,
+.sf-modal-scrim .agents-search:focus {
   border-color: var(--accent-primary, #d9633a);
   box-shadow: 0 0 0 3px rgba(217, 99, 58, 0.1);
 }
 
-.agents-search:hover {
+.eval-page .agents-search:hover,
+.sf-modal-scrim .agents-search:hover {
   border-color: var(--border-2);
 }
 

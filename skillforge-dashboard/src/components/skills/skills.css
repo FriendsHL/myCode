@@ -753,6 +753,7 @@
 
 .drafts-search-input {
   width: 100%;
+  box-sizing: border-box;
   padding: 8px 12px;
   background: var(--bg-surface);
   border: 1px solid var(--border-1);

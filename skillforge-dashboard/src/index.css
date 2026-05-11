@@ -76,7 +76,7 @@
   --sidebar-width: 220px;
   --chat-max-width: 740px;
   --tool-max-width: 960px;
-  --header-height: 44px;
+  --header-height: 52px;
 
   /* Typography */
   --font-family: 'Inter Tight', 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
@@ -1724,6 +1724,8 @@ html[data-density="spacious"] { --density: 1; }
   gap: 14px;
   background: var(--bg-base);
   z-index: 10;
+  min-width: 0;
+  overflow: hidden;
 }
 .topbar .brand {
   display: flex;
