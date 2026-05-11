@@ -189,7 +189,15 @@ class EvalTaskControllerTest {
         assertThat(resp.getBody().get(0).get("scenarioId")).isEqualTo("scenario-A");
         assertThat(resp.getBody().get(0).get("status")).isEqualTo("PASS");
         assertThat(resp.getBody().get(0).get("qualityScore")).isEqualTo(new BigDecimal("82.00"));
-        assertThat(resp.getBody().get(0).get("scoreFormulaVersion")).isEqualTo("M4_V1");
+        assertThat(resp.getBody().get(0).get("scoreFormulaVersion")).isEqualTo("M4_V2");
+        // M4_V2: dimensionStatus surfaced from score_breakdown_json so FE never falls back.
+        @SuppressWarnings("unchecked")
+        Map<String, String> dimStatus = (Map<String, String>) resp.getBody().get(0).get("dimensionStatus");
+        assertThat(dimStatus)
+                .containsEntry("quality", "measured")
+                .containsEntry("efficiency", "measured")
+                .containsEntry("latency", "not_measured")
+                .containsEntry("cost", "measured");
     }
 
     @Test
@@ -202,6 +210,25 @@ class EvalTaskControllerTest {
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(resp.getBody().get("id")).isEqualTo(99L);
+    }
+
+    @Test
+    @DisplayName("GET /api/eval/tasks/{id}/items: legacy M4_V1 row without dimensionStatus → field returned as null (FE fallback path)")
+    void listItems_legacyBreakdownJson_dimensionStatusNull() {
+        EvalTaskItemEntity legacy = makeItem(7L, "t-1", "scenario-Z", "PASS");
+        legacy.setScoreFormulaVersion("M4_V1");
+        legacy.setScoreBreakdownJson("{\"formulaVersion\":\"M4_V1\"}");
+        when(evalTaskRepository.existsById("t-1")).thenReturn(true);
+        when(evalTaskItemRepository.findByTaskIdOrderByCreatedAtAsc("t-1"))
+                .thenReturn(List.of(legacy));
+
+        ResponseEntity<List<Map<String, Object>>> resp = controller.listItems("t-1");
+
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
+        // Key present (so FE never crashes on missing-key access) but value is null
+        // so FE knows to fall back to inferring from null score columns.
+        assertThat(resp.getBody().get(0)).containsKey("dimensionStatus");
+        assertThat(resp.getBody().get(0).get("dimensionStatus")).isNull();
     }
 
     @Test
@@ -245,7 +272,11 @@ class EvalTaskControllerTest {
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> entries = (List<Map<String, Object>>) row.get("entries");
         assertThat(entries.get(0)).containsEntry("qualityScore", new BigDecimal("82.00"));
-        assertThat(entries.get(0)).containsEntry("scoreFormulaVersion", "M4_V1");
+        assertThat(entries.get(0)).containsEntry("scoreFormulaVersion", "M4_V2");
+        // M4_V2: A/B compare entries also surface dimensionStatus for chip rendering.
+        @SuppressWarnings("unchecked")
+        Map<String, String> entryDimStatus = (Map<String, String>) entries.get(0).get("dimensionStatus");
+        assertThat(entryDimStatus).containsEntry("latency", "not_measured");
     }
 
     @Test
@@ -411,8 +442,10 @@ class EvalTaskControllerTest {
         i.setLatencyScore(new BigDecimal("91.00"));
         i.setCostScore(new BigDecimal("77.00"));
         i.setCostUsd(new BigDecimal("0.004500"));
-        i.setScoreFormulaVersion("M4_V1");
-        i.setScoreBreakdownJson("{\"formulaVersion\":\"M4_V1\"}");
+        i.setScoreFormulaVersion("M4_V2");
+        i.setScoreBreakdownJson("{\"formulaVersion\":\"M4_V2\","
+                + "\"dimensionStatus\":{\"quality\":\"measured\",\"efficiency\":\"measured\","
+                + "\"latency\":\"not_measured\",\"cost\":\"measured\"}}");
         i.setLoopCount(2);
         i.setToolCallCount(3);
         i.setLatencyMs(1000L);

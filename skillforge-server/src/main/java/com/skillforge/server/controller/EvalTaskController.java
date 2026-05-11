@@ -410,6 +410,7 @@ public class EvalTaskController {
         map.put("costUsd", item.getCostUsd());
         map.put("scoreFormulaVersion", item.getScoreFormulaVersion());
         map.put("scoreBreakdownJson", item.getScoreBreakdownJson());
+        map.put("dimensionStatus", extractDimensionStatus(item.getScoreBreakdownJson()));
         map.put("status", item.getStatus());
         map.put("loopCount", item.getLoopCount());
         map.put("toolCallCount", item.getToolCallCount());
@@ -421,6 +422,44 @@ public class EvalTaskController {
         map.put("completedAt", item.getCompletedAt());
         map.put("createdAt", item.getCreatedAt());
         return map;
+    }
+
+    /**
+     * EVAL-V2 M4_V2: surface the {@code dimensionStatus} map produced by
+     * {@link com.skillforge.server.eval.EvalScoreFormula} so the FE can render
+     * "not_measured" chips directly instead of inferring from a null score.
+     *
+     * <p>Strategy: re-parse from {@code score_breakdown_json} (Option A). Keeps
+     * the persisted schema unchanged — no new column, no new transient field on
+     * the entity. The breakdown JSON is built once per scenario row by the
+     * formula and stored verbatim, so this parse is bounded (one shallow
+     * object lookup per row).
+     *
+     * <p>Resilience: any parse failure (legacy {@code M4_V1} row, malformed
+     * JSON, missing field) returns {@code null} so the FE falls back to the
+     * "infer from null score" path it already has. Never throws.
+     */
+    private Map<String, String> extractDimensionStatus(String scoreBreakdownJson) {
+        if (scoreBreakdownJson == null || scoreBreakdownJson.isBlank()) {
+            return null;
+        }
+        try {
+            Map<String, Object> parsed = objectMapper.readValue(scoreBreakdownJson, Map.class);
+            Object raw = parsed.get("dimensionStatus");
+            if (!(raw instanceof Map<?, ?> rawMap)) {
+                return null;
+            }
+            Map<String, String> out = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
+                if (entry.getKey() != null && entry.getValue() != null) {
+                    out.put(entry.getKey().toString(), entry.getValue().toString());
+                }
+            }
+            return out.isEmpty() ? null : out;
+        } catch (Exception e) {
+            log.debug("dimensionStatus parse failed for item — falling back to null (FE infers): {}", e.toString());
+            return null;
+        }
     }
 
     private Map<String, Object> toCompareRow(String scenarioId, List<EvalTaskItemEntity> items) {
@@ -438,6 +477,9 @@ public class EvalTaskController {
                     entry.put("costScore", item.getCostScore());
                     entry.put("costUsd", item.getCostUsd());
                     entry.put("scoreFormulaVersion", item.getScoreFormulaVersion());
+                    // M4_V2: same dimensionStatus contract as toItemMap; A/B compare
+                    // chips need this to render "not_measured" for the right side.
+                    entry.put("dimensionStatus", extractDimensionStatus(item.getScoreBreakdownJson()));
                     entry.put("attribution", item.getAttribution());
                     entry.put("latencyMs", item.getLatencyMs());
                     entry.put("loopCount", item.getLoopCount());

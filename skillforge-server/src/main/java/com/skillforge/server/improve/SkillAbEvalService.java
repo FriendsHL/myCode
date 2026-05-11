@@ -214,12 +214,7 @@ public class SkillAbEvalService {
 
         String runId = "baseline-" + UUID.randomUUID();
 
-        double sumComposite = 0.0;
-        double sumQuality = 0.0;
-        double sumEfficiency = 0.0;
-        double sumLatency = 0.0;
-        double sumCost = 0.0;
-        int counted = 0;
+        List<EvalScoreFormula.Result> scoreResults = new ArrayList<>();
         int errors = 0;
 
         for (EvalScenario scenario : scenarios) {
@@ -238,33 +233,17 @@ public class SkillAbEvalService {
                         runResult.getLoopCount(),
                         runResult.getToolCallCount());
 
-                sumComposite += scoreResult.compositeScore();
-                sumQuality += scoreResult.qualityScore();
-                sumEfficiency += scoreResult.efficiencyScore();
-                sumLatency += scoreResult.latencyScore();
-                sumCost += scoreResult.costScore();
-                counted++;
+                scoreResults.add(scoreResult);
             } catch (Exception e) {
                 errors++;
                 log.warn("runBaselineOnly scenario {} failed: {}", scenario.getId(), e.getMessage());
             }
         }
 
-        SkillEvalHistoryEntity history = new SkillEvalHistoryEntity();
+        int counted = scoreResults.size();
+        SkillEvalHistoryEntity history = aggregateBaselineHistory(scoreResults);
         history.setSkillId(skillId);
         history.setEvalRunId(runId);
-        if (counted == 0) {
-            // No scenarios succeeded — record 0 composite, leave dim scores null.
-            // INV-4 callers see a 0 score and (intentionally) trigger evolve next cron.
-            history.setCompositeScore(0.0);
-        } else {
-            double divisor = counted;
-            history.setCompositeScore(sumComposite / divisor);
-            history.setQualityScore(sumQuality / divisor);
-            history.setEfficiencyScore(sumEfficiency / divisor);
-            history.setLatencyScore(sumLatency / divisor);
-            history.setCostScore(sumCost / divisor);
-        }
         history.setTriggeredBy(triggeredBy);
         // createdAt set via @PrePersist on save (W4 r1).
         SkillEvalHistoryEntity saved = skillEvalHistoryRepository.save(history);
@@ -291,6 +270,64 @@ public class SkillAbEvalService {
                 .stream()
                 .map(SkillAbEvalService::toEvalHistoryMap)
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * Aggregate per-scenario {@link EvalScoreFormula.Result}s into a single
+     * {@link SkillEvalHistoryEntity}. Extracted from {@code runBaselineOnly} so
+     * the null-safe latency average (M4_V2) is unit-testable without mocking
+     * the full scenario runner pipeline.
+     *
+     * <p>Contract:
+     * <ul>
+     *   <li>Empty input → composite=0, all dimension scores null
+     *       (mirrors legacy "no scenarios succeeded" behaviour for INV-4
+     *       evolve-trigger).</li>
+     *   <li>{@code latencyScore == null} samples (not_measured) are excluded
+     *       from the latency average; if every sample is not_measured the
+     *       persisted latency average is itself null.</li>
+     *   <li>Quality / efficiency / cost / composite averages always use
+     *       {@code scoreResults.size()} as divisor — they are always measured.</li>
+     * </ul>
+     *
+     * <p>Package-private (no access modifier) so the same-package test class
+     * can drive it without touching the {@code @Transactional} entry point.
+     */
+    static SkillEvalHistoryEntity aggregateBaselineHistory(List<EvalScoreFormula.Result> scoreResults) {
+        SkillEvalHistoryEntity history = new SkillEvalHistoryEntity();
+        if (scoreResults == null || scoreResults.isEmpty()) {
+            // No scenarios succeeded — record 0 composite, leave dim scores null.
+            // INV-4 callers see a 0 score and (intentionally) trigger evolve next cron.
+            history.setCompositeScore(0.0);
+            return history;
+        }
+
+        double sumComposite = 0.0;
+        double sumQuality = 0.0;
+        double sumEfficiency = 0.0;
+        double sumLatency = 0.0;
+        double sumCost = 0.0;
+        int latencyMeasured = 0;
+
+        for (EvalScoreFormula.Result r : scoreResults) {
+            sumComposite += r.compositeScore();
+            sumQuality += r.qualityScore();
+            sumEfficiency += r.efficiencyScore();
+            Double latency = r.latencyScore();
+            if (latency != null) {
+                sumLatency += latency;
+                latencyMeasured++;
+            }
+            sumCost += r.costScore();
+        }
+
+        double divisor = scoreResults.size();
+        history.setCompositeScore(sumComposite / divisor);
+        history.setQualityScore(sumQuality / divisor);
+        history.setEfficiencyScore(sumEfficiency / divisor);
+        history.setLatencyScore(latencyMeasured == 0 ? null : sumLatency / latencyMeasured);
+        history.setCostScore(sumCost / divisor);
+        return history;
     }
 
     private static Map<String, Object> toEvalHistoryMap(SkillEvalHistoryEntity h) {

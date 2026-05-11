@@ -671,6 +671,13 @@ export interface EvalHistoryEntry {
   efficiencyScore: number | null;
   latencyScore: number | null;
   costScore: number | null;
+  /**
+   * EVAL-V2 M4_V2 — per-dimension measurement status. When a sub-dim is
+   * `'not_measured'` (e.g. latency without a configured threshold), its
+   * score is `null` and FE renders "not measured" rather than 100/0.
+   * Optional for backward compat with M4_V1 payloads.
+   */
+  dimensionStatus?: Record<string, 'measured' | 'not_measured'>;
   triggeredBy: 'manual' | 'scheduled';
   createdAt: string;
 }
@@ -687,6 +694,11 @@ export interface SkillEvaluateResult {
   efficiencyScore: number | null;
   latencyScore: number | null;
   costScore: number | null;
+  /** See {@link EvalTaskItem.dimensionStatus} — same M4_V2 semantics. Mirrored
+   *  here so the three score-bearing wire shapes (task item / compare entry /
+   *  history entry / evaluate result) carry the field consistently, even
+   *  though no current UI surface reads sub-dim status from this response. */
+  dimensionStatus?: Record<string, 'measured' | 'not_measured'>;
 }
 
 /**
@@ -1129,6 +1141,15 @@ export interface EvalTaskItem {
   efficiencyScore?: number | null;
   latencyScore?: number | null;
   costScore?: number | null;
+  /**
+   * EVAL-V2 M4_V2 — per-dimension measurement status. Sub-dims can return
+   * `'not_measured'` when no threshold/baseline was configured (latency
+   * without `latency_threshold_ms`, cost without `cost_threshold_usd`),
+   * in which case the score field is `null` and composite is normalized
+   * over the *measured* dims only. Optional for backward compat with
+   * pre-M4_V2 payloads (BE migration / legacy rows).
+   */
+  dimensionStatus?: Record<string, 'measured' | 'not_measured'>;
   costUsd?: number | null;
   scoreFormulaVersion?: string | null;
   scoreBreakdownJson?: string | null;
@@ -1165,6 +1186,8 @@ export interface EvalTaskCompareEntry {
   efficiencyScore?: number | null;
   latencyScore?: number | null;
   costScore?: number | null;
+  /** See {@link EvalTaskItem.dimensionStatus} — same M4_V2 semantics. */
+  dimensionStatus?: Record<string, 'measured' | 'not_measured'>;
   costUsd?: number | null;
   scoreFormulaVersion?: string | null;
   attribution?: string | null;

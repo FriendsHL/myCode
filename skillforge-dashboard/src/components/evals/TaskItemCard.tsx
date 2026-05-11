@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { EvalTaskItem } from '../../api';
 import type { EvalMetric } from './evalUtils';
-import { getMetricValue, formatMetricValue, scoreColor, TRACE_ICON, ANALYZE_ICON, ANNOTATE_ICON } from './evalUtils';
+import { getMetricValue, formatMetricValue, isDimensionNotMeasured, scoreColor, TRACE_ICON, ANALYZE_ICON, ANNOTATE_ICON } from './evalUtils';
 
 interface TaskItemCardProps {
   item: EvalTaskItem;
@@ -14,9 +14,26 @@ interface TaskItemCardProps {
 export default function TaskItemCard({ item, metric, onAnalyze, onAnnotate }: TaskItemCardProps) {
   const [showRationale, setShowRationale] = useState(false);
   const [showOutput, setShowOutput] = useState(false);
-  const score = getMetricValue(item, metric) ?? item.compositeScore ?? 0;
+
+  // EVAL-V2 M4_V2 — when the user-selected metric is a sub-dim (not
+  // composite) AND that dim is `not_measured` for this row, the header
+  // must NOT fall back to compositeScore — that would mislabel composite
+  // as the selected metric (e.g. "84% · latency"). Render "not measured"
+  // in the score position instead. Composite has no not_measured state
+  // (it's the renormalized aggregate), so the check is sub-dim-only.
+  // Generic across all 4 sub-dims, not hard-coded to latency, so future
+  // dims (e.g. cost without threshold) get the same treatment for free.
+  const subMetric = metric === 'composite' ? null : metric;
+  const headerNotMeasured = subMetric != null && isDimensionNotMeasured(item, subMetric);
+
+  const score = headerNotMeasured ? 0 : (getMetricValue(item, metric) ?? item.compositeScore ?? 0);
   const score01 = score / 100;
-  const tier = score >= 80 ? 'pass' : score >= 60 ? 'warn' : item.status === 'PASS' ? 'pass' : 'fail';
+  // Tier (drives card border color). When not_measured, the score is
+  // meaningless for tier — fall back to overall case status instead of
+  // letting score=0 paint everything red.
+  const tier = headerNotMeasured
+    ? (item.status === 'PASS' ? 'pass' : 'fail')
+    : (score >= 80 ? 'pass' : score >= 60 ? 'warn' : item.status === 'PASS' ? 'pass' : 'fail');
 
   const attribution = item.attribution ?? 'NONE';
   const isFailedAttr = attribution !== 'NONE';
@@ -36,8 +53,13 @@ export default function TaskItemCard({ item, metric, onAnalyze, onAnnotate }: Ta
             </span>
           )}
         </div>
-        <div className="scn-result-score" style={{ color: scoreColor(score01) }}>
-          {formatMetricValue(score)}<em>{metric === 'composite' ? '' : ` · ${metric}`}</em>
+        <div
+          className={`scn-result-score${headerNotMeasured ? ' na' : ''}`}
+          style={{ color: headerNotMeasured ? 'var(--fg-4, #8a8a93)' : scoreColor(score01) }}
+          title={headerNotMeasured ? `No ${metric} threshold/baseline configured for this scenario — dimension was not contributed to composite.` : undefined}
+        >
+          {headerNotMeasured ? 'not measured' : formatMetricValue(score)}
+          <em>{metric === 'composite' ? '' : ` · ${metric}`}</em>
         </div>
       </div>
 
@@ -47,7 +69,21 @@ export default function TaskItemCard({ item, metric, onAnalyze, onAnnotate }: Ta
         <span className={`kv-chip-sf ${metric === 'composite' ? 'on' : ''}`}>composite · {formatMetricValue(item.compositeScore)}</span>
         <span className={`kv-chip-sf ${metric === 'quality' ? 'on' : ''}`}>quality · {formatMetricValue(item.qualityScore)}</span>
         <span className={`kv-chip-sf ${metric === 'efficiency' ? 'on' : ''}`}>efficiency · {formatMetricValue(item.efficiencyScore)}</span>
-        <span className={`kv-chip-sf ${metric === 'latency' ? 'on' : ''}`}>latency · {formatMetricValue(item.latencyScore)}</span>
+        {/* EVAL-V2 M4_V2 — when latency is not_measured (no threshold configured),
+            render "not measured" + dimmed style instead of a misleading number.
+            Other 3 sub-dims are unchanged (intentional scope). */}
+        {(() => {
+          const latencyNotMeasured = isDimensionNotMeasured(item, 'latency');
+          const cls = `kv-chip-sf ${metric === 'latency' ? 'on' : ''} ${latencyNotMeasured ? 'dimmed' : ''}`.trim().replace(/\s+/g, ' ');
+          return (
+            <span
+              className={cls}
+              title={latencyNotMeasured ? 'No latency threshold configured for this scenario — score not contributed to composite.' : undefined}
+            >
+              latency · {latencyNotMeasured ? 'not measured' : formatMetricValue(item.latencyScore)}
+            </span>
+          );
+        })()}
         <span className={`kv-chip-sf ${metric === 'cost' ? 'on' : ''}`}>cost · {formatMetricValue(item.costScore)}</span>
         {item.costUsd != null && <span className="kv-chip-sf">cost · ${item.costUsd.toFixed(4)}</span>}
         {item.loopCount != null && <span className="kv-chip-sf">loops · {item.loopCount}</span>}

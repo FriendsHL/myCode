@@ -42,9 +42,16 @@ export const METRIC_OPTIONS: Array<{ value: EvalMetric; label: string }> = [
 ];
 
 export function getMetricValue(
-  item: Pick<EvalTaskItem, 'compositeScore' | 'qualityScore' | 'efficiencyScore' | 'latencyScore' | 'costScore'>,
+  item: Pick<EvalTaskItem, 'compositeScore' | 'qualityScore' | 'efficiencyScore' | 'latencyScore' | 'costScore' | 'dimensionStatus'>,
   metric: EvalMetric,
 ): number | null {
+  // EVAL-V2 M4_V2 — sub-dim marked 'not_measured' returns null even if the BE
+  // happens to forward a stale numeric (defensive: BE shouldn't, but the
+  // shape allows it). Composite is the normalized aggregate over the
+  // measured dims, so it doesn't have a 'not_measured' state itself.
+  if (metric !== 'composite' && item.dimensionStatus?.[metric] === 'not_measured') {
+    return null;
+  }
   switch (metric) {
     case 'quality': return item.qualityScore ?? null;
     case 'efficiency': return item.efficiencyScore ?? null;
@@ -55,12 +62,53 @@ export function getMetricValue(
   }
 }
 
+/**
+ * EVAL-V2 M4_V2 — true when a sub-dimension is explicitly flagged
+ * `dimensionStatus[metric] === 'not_measured'` by the BE, OR — for
+ * pre-M4_V2 payloads that don't carry `dimensionStatus` — when the
+ * sub-dim score is null. The fallback keeps the UI honest during the
+ * V1→V2 rollout (legacy rows had `latencyScore = 100` when no threshold
+ * was set, but freshly written rows return `null`).
+ */
+export function isDimensionNotMeasured(
+  item: {
+    // Keep the literal union here so the helper composes cleanly with
+    // `getMetricValue` (which Picks the same field off `EvalTaskItem`).
+    // Pre-M4_V2 callers without the field are still fine because the
+    // property is optional.
+    dimensionStatus?: Record<string, 'measured' | 'not_measured'>;
+    qualityScore?: number | null;
+    efficiencyScore?: number | null;
+    latencyScore?: number | null;
+    costScore?: number | null;
+    compositeScore?: number | null;
+  },
+  metric: 'quality' | 'efficiency' | 'latency' | 'cost',
+): boolean {
+  if (item.dimensionStatus?.[metric] === 'not_measured') return true;
+  if (item.dimensionStatus?.[metric] === 'measured') return false;
+  // dimensionStatus key absent (legacy / partial payload) → fall back to
+  // null score. Note `getMetricValue` short-circuits on dimensionStatus,
+  // so calling it here is safe even if dimensionStatus has *other* keys.
+  return getMetricValue(item, metric) == null;
+}
+
 export function formatMetricValue(value: number | null | undefined): string {
   return value == null || !Number.isFinite(value) ? '—' : `${Math.round(value)}%`;
 }
 
 export function computeMetricDelta(
-  entries: Array<{ compositeScore?: number | null; qualityScore?: number | null; efficiencyScore?: number | null; latencyScore?: number | null; costScore?: number | null }>,
+  entries: Array<{
+    compositeScore?: number | null;
+    qualityScore?: number | null;
+    efficiencyScore?: number | null;
+    latencyScore?: number | null;
+    costScore?: number | null;
+    // M4_V2 — carry dimensionStatus through so getMetricValue's not_measured
+    // short-circuit is visible to the type checker (and not_measured rows
+    // are correctly excluded from the delta range).
+    dimensionStatus?: Record<string, 'measured' | 'not_measured'>;
+  }>,
   metric: EvalMetric,
 ): number | null {
   const values = entries

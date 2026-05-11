@@ -947,6 +947,24 @@
   opacity: 0.6;
   margin-left: 2px;
 }
+
+/* EVAL-V2 M4_V2 — header score "not measured" variant. The full 32px
+   serif weight reads as a real number even at low opacity, so we shrink
+   to body text size + italic to make the absence-of-data visually
+   distinct from a small/zero score. Pairs with TaskItemCard.tsx
+   `headerNotMeasured` branch. */
+.scn-result-score.na {
+  font-size: 14px;
+  font-weight: 400;
+  font-style: italic;
+  letter-spacing: 0;
+  /* Keep the en-dash separator (em) at its existing relative size by
+     overriding the larger parent font-size collapse. */
+}
+.scn-result-score.na em {
+  font-size: 12px;
+  opacity: 0.55;
+}
 .scn-result-attr {
   display: inline-flex;
   align-items: center;
@@ -984,6 +1002,25 @@
   background: rgba(217, 99, 58, 0.08);
   color: var(--accent-primary, #d9633a);
   border: 1px solid rgba(217, 99, 58, 0.2);
+}
+
+/* EVAL-V2 M4_V2 — "not measured" dim chip (e.g. latency without a
+   configured threshold). Muted text + italic so it reads as "intentionally
+   skipped", distinct from a 0%/—. Pairs with `isDimensionNotMeasured()`
+   in evalUtils.tsx. Currently only applied to the latency chip in
+   TaskItemCard.tsx; quality / efficiency / cost are out of scope. */
+.scn-result-chips .kv-chip-sf.dimmed {
+  opacity: 0.55;
+  font-style: italic;
+  color: var(--fg-4, #8a8a93);
+}
+.scn-result-chips .kv-chip-sf.dimmed.on {
+  /* When the user filtered the view by latency AND latency is not measured,
+     keep the active outline but mute the fill so it still signals "selected
+     metric" without claiming a real number. */
+  background: transparent;
+  border-color: rgba(138, 138, 147, 0.35);
+  color: var(--fg-4, #8a8a93);
 }
 .scn-result-disclosure {
   background: transparent;

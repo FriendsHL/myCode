@@ -227,6 +227,9 @@ public class EvalOrchestrator {
                 scenarioResult.put("costUsd", observedCostUsd);
                 scenarioResult.put("scoreFormulaVersion", scoreResult.formulaVersion());
                 scenarioResult.put("scoreBreakdownJson", scoreResult.breakdownJson());
+                // M4_V2: top-level dimensionStatus map so FE doesn't have to
+                // re-parse scoreBreakdownJson or infer from a null latencyScore.
+                scenarioResult.put("dimensionStatus", scoreResult.dimensionStatus());
                 scenarioResult.put("pass", judgeOutput.isPass());
                 scenarioResult.put("attribution", judgeOutput.getAttribution().name());
                 scenarioResult.put("executionTimeMs", runResult.getExecutionTimeMs());
@@ -518,7 +521,17 @@ public class EvalOrchestrator {
         return observed ? total : null;
     }
 
-    private static BigDecimal toScaledDecimal(double value) {
+    /**
+     * M4_V2 ({@link EvalScoreFormula} V2): accepts {@link Double} so that a
+     * "not_measured" latency dimension ({@code scoreResult.latencyScore() == null})
+     * is propagated to the persisted column as SQL NULL rather than triggering
+     * an autoboxing NPE. Primitive {@code double} call sites (quality / efficiency
+     * / cost) autobox transparently.
+     */
+    private static BigDecimal toScaledDecimal(Double value) {
+        if (value == null) {
+            return null;
+        }
         return BigDecimal.valueOf(value).setScale(2, RoundingMode.HALF_UP);
     }
 

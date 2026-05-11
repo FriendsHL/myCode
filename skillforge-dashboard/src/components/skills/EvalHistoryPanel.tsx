@@ -8,6 +8,10 @@ import {
 } from '../../api';
 import { EvalHistoryChart } from './EvalHistoryChart';
 import { formatScore, visualForScore } from './evalScore';
+// Cross-module: reuse the canonical not-measured signal so the rule for
+// "is this dim measured?" lives in one place (evalUtils.tsx). Skill drawer
+// pulling from evals/ is fine — they share the same M4_V2 contract.
+import { isDimensionNotMeasured } from '../evals/evalUtils';
 import { EyeOutlined } from '@ant-design/icons';
 
 interface EvalHistoryPanelProps {
@@ -239,12 +243,22 @@ export const EvalHistoryPanel: React.FC<EvalHistoryPanelProps> = ({
         width={520}
       >
         {detailRecord && (() => {
-          const dims: Array<[string, number | null | undefined]> = [
-            ['Composite', detailRecord.compositeScore],
-            ['Quality', detailRecord.qualityScore],
-            ['Efficiency', detailRecord.efficiencyScore],
-            ['Latency', detailRecord.latencyScore],
-            ['Cost', detailRecord.costScore],
+          // EVAL-V2 M4_V2 — only the Latency cell can be "not measured" for
+          // now (no latency_threshold_ms configured). Quality / Efficiency /
+          // Cost / Composite displays unchanged per scope. Use the shared
+          // helper so the BE-vs-legacy fallback rule stays in one place.
+          const latencyNotMeasured = isDimensionNotMeasured(detailRecord, 'latency');
+          type DimEntry = {
+            label: string;
+            value: number | null | undefined;
+            notMeasured?: boolean;
+          };
+          const dims: DimEntry[] = [
+            { label: 'Composite', value: detailRecord.compositeScore },
+            { label: 'Quality', value: detailRecord.qualityScore },
+            { label: 'Efficiency', value: detailRecord.efficiencyScore },
+            { label: 'Latency', value: detailRecord.latencyScore, notMeasured: latencyNotMeasured },
+            { label: 'Cost', value: detailRecord.costScore },
           ];
           return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -258,8 +272,11 @@ export const EvalHistoryPanel: React.FC<EvalHistoryPanelProps> = ({
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                {dims.map(([label, val]) => {
-                  const visual = visualForScore(val ?? undefined);
+                {dims.map(({ label, value, notMeasured }) => {
+                  const visual = visualForScore(value ?? undefined);
+                  // Not-measured cells get a muted accent so the operator
+                  // doesn't read "—" as failure / 0.
+                  const accent = notMeasured ? 'var(--fg-4, #8a8a93)' : visual.stroke;
                   return (
                     <div
                       key={label}
@@ -267,14 +284,23 @@ export const EvalHistoryPanel: React.FC<EvalHistoryPanelProps> = ({
                         padding: '10px 12px',
                         background: 'var(--bg-hover, #1d1d22)',
                         borderRadius: 6,
-                        borderLeft: `3px solid ${visual.stroke}`,
+                        borderLeft: `3px solid ${accent}`,
+                        opacity: notMeasured ? 0.7 : 1,
                       }}
+                      title={notMeasured ? `No ${label.toLowerCase()} threshold/baseline configured — dimension was not contributed to composite.` : undefined}
                     >
                       <div style={{ fontSize: 10, color: 'var(--fg-4, #8a8a93)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
                         {label}
                       </div>
-                      <div style={{ fontSize: 22, fontWeight: 700, color: visual.stroke }}>
-                        {formatScore(val ?? undefined)}
+                      <div
+                        style={{
+                          fontSize: notMeasured ? 13 : 22,
+                          fontWeight: notMeasured ? 500 : 700,
+                          color: accent,
+                          fontStyle: notMeasured ? 'italic' : 'normal',
+                        }}
+                      >
+                        {notMeasured ? 'not measured' : formatScore(value ?? undefined)}
                       </div>
                     </div>
                   );

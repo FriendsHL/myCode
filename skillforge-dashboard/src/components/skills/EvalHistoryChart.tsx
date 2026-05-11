@@ -83,6 +83,14 @@ const EvalHistoryChartImpl: React.FC<EvalHistoryChartProps> = ({
       itemStyle: { color: spec.color },
       // emphasize composite by drawing it last (echarts paints in array order).
       z: spec.emphasis ? 10 : 1,
+      // EVAL-V2 M4_V2 — `null` data points (e.g. latency when no threshold
+      // was configured for that history row) MUST render as a gap, not as
+      // 0. Echarts default is `connectNulls: false` which already drops
+      // null points, but we set it explicitly so a future default flip
+      // can't silently make the line touch the bottom axis and mislead
+      // the operator into reading "0% latency score" instead of "not
+      // measured this run".
+      connectNulls: false,
       data: asc.map((e) => {
         const v = e[spec.key];
         return v == null ? null : Math.round(v * 10) / 10;
