@@ -285,7 +285,6 @@ const McpServers: React.FC = () => {
       {/* Header */}
       <header className="mcp-head">
         <div>
-          <h1 className="mcp-head-title">MCP Servers</h1>
           <p className="mcp-head-sub">
             External Model Context Protocol servers. Tools are auto-injected as{' '}
             <code>mcp_&lt;name&gt;_&lt;tool&gt;</code> for agents that opt-in.

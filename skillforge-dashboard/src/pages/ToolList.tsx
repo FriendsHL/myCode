@@ -124,7 +124,6 @@ const ToolList: React.FC = () => {
       <section className="agents-main">
         <header className="agents-head">
           <div>
-            <h1 className="agents-head-title">Tools</h1>
             <p className="agents-head-sub">{rows.length} of {all.length} · built-in capabilities agents can call</p>
           </div>
           {/* V2.5 — removed dead "Export registry" button (no handler, no BE

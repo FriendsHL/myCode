@@ -4,7 +4,7 @@ import Dashboard from './pages/Dashboard';
 import AgentList from './pages/AgentList';
 import SkillList from './pages/SkillList';
 import SkillDrafts from './pages/SkillDrafts';
-import ToolList from './pages/ToolList';
+import ToolsMcp from './pages/ToolsMcp';
 import SessionList from './pages/SessionList';
 import SessionDetail from './pages/SessionDetail';
 import Chat from './pages/Chat';
@@ -16,7 +16,6 @@ import Eval from './pages/Eval';
 import HookMethods from './pages/HookMethods';
 import Channels from './pages/Channels';
 import Schedules from './pages/Schedules';
-import McpServers from './pages/McpServers';
 import Login from './pages/Login';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { AuthProvider } from './contexts/AuthContext';
@@ -40,7 +39,7 @@ function App() {
             <Route path="agents" element={<ErrorBoundary context="Agents"><AgentList /></ErrorBoundary>} />
             <Route path="skills" element={<ErrorBoundary context="Skills"><SkillList /></ErrorBoundary>} />
             <Route path="skill-drafts" element={<ErrorBoundary context="Skill Drafts"><SkillDrafts /></ErrorBoundary>} />
-            <Route path="tools" element={<ErrorBoundary context="Tools"><ToolList /></ErrorBoundary>} />
+            <Route path="tools" element={<ErrorBoundary context="Tools"><ToolsMcp /></ErrorBoundary>} />
             <Route path="sessions" element={<ErrorBoundary context="Sessions"><SessionList /></ErrorBoundary>} />
             <Route path="sessions/:id" element={<ErrorBoundary context="SessionDetail"><SessionDetail /></ErrorBoundary>} />
             <Route path="memories" element={<ErrorBoundary context="Memories"><MemoryList /></ErrorBoundary>} />
@@ -51,7 +50,6 @@ function App() {
             <Route path="hooks" element={<ErrorBoundary context="Hook Methods"><HookMethods /></ErrorBoundary>} />
             <Route path="channels" element={<ErrorBoundary context="Channels"><Channels /></ErrorBoundary>} />
             <Route path="schedules" element={<ErrorBoundary context="Schedules"><Schedules /></ErrorBoundary>} />
-            <Route path="mcp-servers" element={<ErrorBoundary context="MCP Servers"><McpServers /></ErrorBoundary>} />
             <Route path="chat" element={<ErrorBoundary context="Chat"><Chat /></ErrorBoundary>} />
             <Route path="chat/:sessionId" element={<ErrorBoundary context="Chat"><Chat /></ErrorBoundary>} />
           </Route>

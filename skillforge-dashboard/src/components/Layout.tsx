@@ -22,17 +22,15 @@ const primaryNav: NavItem[] = [
   // SKILL-DASHBOARD-POLISH §E — Drafts top-level entry. Sits next to Skills
   // since the draft → skill approve flow is mostly a Skills-page sibling.
   { key: 'skill-drafts', path: '/skill-drafts', label: 'Drafts' },
-  { key: 'tools', path: '/tools', label: 'Tools' },
+  { key: 'tools', path: '/tools', label: 'Tools & MCP' },
   { key: 'teams', path: '/teams', label: 'Teams' },
   { key: 'sessions', path: '/sessions', label: 'Sessions' },
   { key: 'hooks', path: '/hooks', label: 'Hooks' },
   { key: 'evals', path: '/eval', label: 'Evals' },
   { key: 'memories', path: '/memories', label: 'Memory' },
-  { key: 'usage', path: '/usage', label: 'Usage' },
   { key: 'traces', path: '/traces', label: 'Traces' },
   { key: 'channels', path: '/channels', label: 'Channels' },
   { key: 'schedules', path: '/schedules', label: 'Schedules' },
-  { key: 'mcp-servers', path: '/mcp-servers', label: 'MCP' },
 ];
 
 const paletteItems: PaletteItem[] = primaryNav.map((i) => ({
