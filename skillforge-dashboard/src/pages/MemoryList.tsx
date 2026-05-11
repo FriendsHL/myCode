@@ -585,7 +585,7 @@ function MemoryDrawer({ memory, editVal, setEditVal, onClose, onSave, onRevert, 
 
 /**
  * MEMORY-LLM-SYNTHESIS — Wrap the existing memory list in a Tabs control so
- * the new "Pending Reflections" surface lives next to "Active" / "Stale" /
+ * the new "Dreaming Reflections" surface lives next to "Active" / "Stale" /
  * "Archived" lifecycle states. The existing single-page experience moves
  * under the `active` tab unchanged; everything LLM-synthesis-related lives
  * under `pending` and uses a separate cache namespace (`memoryProposals`).
@@ -605,7 +605,7 @@ const MemoryList: React.FC = () => {
           className={`prop-tab-btn ${activeKey === 'pending' ? 'on' : ''}`}
           onClick={() => setActiveKey('pending')}
         >
-          Pending Reflections
+          Dreaming Reflections
         </button>
       </div>
       {activeKey === 'active' ? <MemoryActiveTab /> : <MemoryProposalsTab />}

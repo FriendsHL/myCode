@@ -151,7 +151,7 @@ const MemoryProposalsTab: React.FC = () => {
       {/* ── Header ── */}
       <div className="prop-header">
         <div>
-          <h2 className="prop-header-title">Pending Reflections</h2>
+          <h2 className="prop-header-title">Dreaming Reflections</h2>
           <p className="prop-header-sub">
             LLM-proposed memory edits awaiting review
             {soonestArchive != null && (
@@ -164,6 +164,11 @@ const MemoryProposalsTab: React.FC = () => {
           loading={runOnceMutation.isPending}
           onClick={handleRunNow}
           data-testid="run-llm-synthesis-btn"
+          icon={
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <polygon points="5 3 13 8 5 13 5 3" fill="currentColor" />
+            </svg>
+          }
         >
           Run LLM Synthesis Now
         </Button>

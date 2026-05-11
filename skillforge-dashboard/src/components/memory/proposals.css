@@ -323,6 +323,93 @@
   gap: 4px;
 }
 
+/* ── Footer Actions ── */
+.prop-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.prop-btn-revert,
+.prop-btn-reject,
+.prop-btn-edit,
+.prop-btn-approve,
+.prop-audit-btn {
+  transition: all var(--transition-base) !important;
+  font-weight: 500 !important;
+  letter-spacing: -0.01em;
+}
+.prop-btn-revert {
+  color: var(--fg-3) !important;
+  border-color: var(--border-1) !important;
+}
+.prop-btn-revert:hover {
+  color: var(--accent) !important;
+  border-color: var(--accent) !important;
+  background: rgba(var(--accent-rgb, 99, 102, 241), 0.06) !important;
+}
+.prop-btn-reject {
+  background: transparent !important;
+  border-color: rgba(184, 65, 47, 0.35) !important;
+  color: #c0553e !important;
+}
+.prop-btn-reject:hover {
+  background: rgba(184, 65, 47, 0.08) !important;
+  border-color: rgba(184, 65, 47, 0.6) !important;
+  color: #a83a26 !important;
+}
+.prop-btn-edit {
+  border-color: var(--border-2) !important;
+  color: var(--fg-2) !important;
+}
+.prop-btn-edit:hover {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+  background: rgba(var(--accent-rgb, 99, 102, 241), 0.04) !important;
+}
+.prop-btn-approve {
+  box-shadow: 0 1px 3px rgba(99, 102, 241, 0.2) !important;
+}
+.prop-btn-approve:hover {
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3) !important;
+  transform: translateY(-0.5px);
+}
+
+/* ── Audit Button ── */
+.prop-audit-btn {
+  font-size: 11px !important;
+  color: var(--fg-3) !important;
+  border-color: var(--border-1) !important;
+  background: var(--bg-surface) !important;
+  padding: 0 8px !important;
+  height: 26px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+}
+.prop-audit-btn:hover {
+  color: var(--accent) !important;
+  border-color: var(--accent) !important;
+  background: rgba(var(--accent-rgb, 99, 102, 241), 0.06) !important;
+}
+
+/* ── Audit Drawer ── */
+.prop-audit-pre {
+  margin: 0;
+  background: var(--bg-surface-2, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--border-1);
+  border-radius: var(--radius-md, 6px);
+  padding: 12px 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--fg-2);
+  max-height: 400px;
+  overflow-y: auto;
+}
+
 /* ── Empty State ── */
 .prop-empty {
   display: flex;

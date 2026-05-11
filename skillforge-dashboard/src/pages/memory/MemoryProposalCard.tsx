@@ -8,6 +8,8 @@ import {
   Modal,
   Drawer,
   Tooltip,
+  Descriptions,
+  message as antMsg,
 } from 'antd';
 import type {
   ApproveProposalOptions,
@@ -195,9 +197,21 @@ const MemoryProposalCard: React.FC<MemoryProposalCardProps> = ({
         </div>
       }
       extra={
-        <Button size="small" type="link" onClick={() => setRawOpen(true)} style={{ fontSize: 11 }}>
-          Audit
-        </Button>
+        <Tooltip title="View raw LLM response & synthesis metadata">
+          <Button
+            size="small"
+            className="prop-audit-btn"
+            onClick={() => setRawOpen(true)}
+            icon={
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="7" cy="7" r="4.5" />
+                <path d="M10.5 10.5L14 14" />
+              </svg>
+            }
+          >
+            Audit
+          </Button>
+        </Tooltip>
       }
     >
       {/* Type stripe */}
@@ -273,14 +287,20 @@ const MemoryProposalCard: React.FC<MemoryProposalCardProps> = ({
           </svg>
           {impact}
         </span>
-        <Space size={8}>
+        <div className="prop-card-actions">
           {proposal.proposalType === 'optimize' && (
             <Tooltip title="Restore original_content into t_memory.content">
               <Button
                 size="small"
+                className="prop-btn-revert"
                 onClick={() => onRevert()}
                 loading={reverting}
                 data-testid={`revert-btn-${proposal.id}`}
+                icon={
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M2 6h12M2 6l3-3M2 6l3 3" />
+                  </svg>
+                }
               >
                 Revert
               </Button>
@@ -288,10 +308,16 @@ const MemoryProposalCard: React.FC<MemoryProposalCardProps> = ({
           )}
           <Button
             size="small"
+            danger
+            className="prop-btn-reject"
             onClick={() => onReject()}
             loading={rejecting}
             data-testid={`reject-btn-${proposal.id}`}
-            style={{ color: 'var(--fg-4)' }}
+            icon={
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                <path d="M4 4l8 8M12 4l-8 8" />
+              </svg>
+            }
           >
             Reject
           </Button>
@@ -299,8 +325,14 @@ const MemoryProposalCard: React.FC<MemoryProposalCardProps> = ({
             proposal.proposalType === 'optimize') && (
             <Button
               size="small"
+              className="prop-btn-edit"
               onClick={() => setEditOpen(true)}
               data-testid={`edit-btn-${proposal.id}`}
+              icon={
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M11.5 2.5l2 2L5 13H3v-2L11.5 2.5z" />
+                </svg>
+              }
             >
               Edit & Approve
             </Button>
@@ -309,8 +341,14 @@ const MemoryProposalCard: React.FC<MemoryProposalCardProps> = ({
             <Button
               type="primary"
               size="small"
+              className="prop-btn-approve"
               onClick={() => setPickerOpen(true)}
               data-testid={`pick-winner-btn-${proposal.id}`}
+              icon={
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="3 8 7 12 13 4" />
+                </svg>
+              }
             >
               Pick Winner
             </Button>
@@ -318,14 +356,20 @@ const MemoryProposalCard: React.FC<MemoryProposalCardProps> = ({
             <Button
               type="primary"
               size="small"
+              className="prop-btn-approve"
               onClick={handleApproveClick}
               loading={approving}
               data-testid={`approve-btn-${proposal.id}`}
+              icon={
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="3 8 7 12 13 4" />
+                </svg>
+              }
             >
               Approve
             </Button>
           )}
-        </Space>
+        </div>
       </div>
 
       {/* Modals */}
@@ -353,36 +397,91 @@ const MemoryProposalCard: React.FC<MemoryProposalCardProps> = ({
         />
       )}
 
+      {/* Audit Drawer */}
       <Drawer
         open={rawOpen}
         onClose={() => setRawOpen(false)}
-        title="Raw LLM response (audit)"
-        width={520}
+        title={
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="7" cy="7" r="4.5" />
+              <path d="M10.5 10.5L14 14" />
+            </svg>
+            Synthesis Audit
+          </span>
+        }
+        width={560}
         destroyOnHidden
+        styles={{ body: { padding: '16px 24px' } }}
       >
-        <div style={{ fontSize: 12 }}>
-          <Text strong>Synthesis run:</Text>{' '}
-          <Text code>{proposal.synthesisRunId}</Text>
-          <br />
-          <Text strong>Source memory IDs:</Text>{' '}
-          <Text code>{JSON.stringify(proposal.sourceMemoryIds)}</Text>
-          <br />
-          <Text strong>Auto archive after:</Text>{' '}
-          <Text>{proposal.autoArchiveAfter}</Text>
-          <br />
-          <Text strong style={{ display: 'block', marginTop: 12 }}>
-            Response excerpt (first 500 chars)
-          </Text>
-          <pre
-            style={{
-              marginTop: 4,
-              background: 'var(--bg-surface-2, rgba(255,255,255,0.03))',
-              padding: 8,
-              borderRadius: 4,
-              whiteSpace: 'pre-wrap',
-              fontSize: 11,
-            }}
-          >
+        {/* Proposal metadata */}
+        <Descriptions
+          column={1}
+          size="small"
+          labelStyle={{ width: 140, color: 'var(--fg-3)', fontSize: 13, fontWeight: 500 }}
+          contentStyle={{ fontSize: 13, color: 'var(--fg-1)' }}
+          style={{ marginBottom: 20 }}
+        >
+          <Descriptions.Item label="Proposal ID">
+            <Text code style={{ fontSize: 12 }}>{proposal.id}</Text>
+          </Descriptions.Item>
+          <Descriptions.Item label="Type">
+            <Tag color={meta.tag} style={{ margin: 0 }}>{meta.label}</Tag>
+          </Descriptions.Item>
+          <Descriptions.Item label="Synthesis Run">
+            <Text code style={{ fontSize: 12 }}>{proposal.synthesisRunId}</Text>
+            <Tooltip title="Copy run ID">
+              <Button
+                type="text"
+                size="small"
+                style={{ marginLeft: 4, padding: '0 2px' }}
+                onClick={() => {
+                  navigator.clipboard.writeText(proposal.synthesisRunId);
+                  antMsg.success('Copied');
+                }}
+                icon={
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="5" y="5" width="8" height="8" rx="1.5" />
+                    <path d="M3 11V3.5A1.5 1.5 0 0 1 4.5 2H11" />
+                  </svg>
+                }
+              />
+            </Tooltip>
+          </Descriptions.Item>
+          <Descriptions.Item label="Source Memory IDs">
+            <Space size={4} wrap>
+              {proposal.sourceMemoryIds.map((id) => (
+                <Tag key={id} style={{ margin: 0, fontSize: 12, fontFamily: 'var(--font-mono)' }}>#{id}</Tag>
+              ))}
+            </Space>
+          </Descriptions.Item>
+          <Descriptions.Item label="Created">
+            {proposal.createdAt ? new Date(proposal.createdAt).toLocaleString() : '—'}
+          </Descriptions.Item>
+          <Descriptions.Item label="Auto-archive after">
+            <span style={{ color: archiveUrgent ? 'var(--color-warn, #d49a3a)' : undefined }}>
+              {proposal.autoArchiveAfter ? new Date(proposal.autoArchiveAfter).toLocaleDateString() : '—'}
+              {archiveDays != null && (
+                <Text type="secondary" style={{ marginLeft: 6, fontSize: 12 }}>
+                  ({archiveDays}d remaining)
+                </Text>
+              )}
+            </span>
+          </Descriptions.Item>
+          {proposal.reasoning && (
+            <Descriptions.Item label="LLM Reasoning">
+              <span style={{ color: 'var(--fg-2)', lineHeight: 1.6 }}>{proposal.reasoning}</span>
+            </Descriptions.Item>
+          )}
+        </Descriptions>
+
+        {/* LLM response excerpt */}
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+            <Text strong style={{ fontSize: 13, color: 'var(--fg-2)' }}>LLM Response Excerpt</Text>
+            <Text type="secondary" style={{ fontSize: 11 }}>first 500 chars</Text>
+          </div>
+          <pre className="prop-audit-pre">
             {proposal.llmResponseExcerpt ?? '(no excerpt persisted)'}
           </pre>
         </div>
