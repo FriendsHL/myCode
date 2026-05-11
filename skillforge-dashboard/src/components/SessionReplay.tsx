@@ -98,7 +98,7 @@ const SessionReplay: React.FC<SessionReplayProps> = ({ sessionId }) => {
   // Auto-scroll and expand during playback
   const lastTurnRef = useRef(-1);
   useEffect(() => {
-    if (!playing || !turns.length) return;
+    if (!playing || !turns.length) { lastTurnRef.current = -1; return; }
     const id = setInterval(() => {
       setProgress((p) => {
         const n = p + 0.01;
@@ -111,6 +111,28 @@ const SessionReplay: React.FC<SessionReplayProps> = ({ sessionId }) => {
     }, 120);
     return () => clearInterval(id);
   }, [playing, turns.length]);
+
+  // Compute current turn from progress
+  const currentMs = Math.floor(totalMs * progress);
+  let acc = 0;
+  let currentTurn = 0;
+  for (let i = 0; i < turns.length; i++) {
+    acc += turns[i].durationMs ?? 0;
+    if (currentMs <= acc) {
+      currentTurn = i;
+      break;
+    }
+  }
+
+  // Auto-scroll and expand during playback
+  useEffect(() => {
+    if (!playing) { lastTurnRef.current = -1; return; }
+    if (currentTurn !== lastTurnRef.current) {
+      lastTurnRef.current = currentTurn;
+      setExpanded(currentTurn);
+      turnRefs.current[currentTurn]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [playing, currentTurn]);
 
   if (!sessionId) {
     return (
@@ -140,27 +162,6 @@ const SessionReplay: React.FC<SessionReplayProps> = ({ sessionId }) => {
       </div>
     );
   }
-
-  const currentMs = Math.floor(totalMs * progress);
-  let acc = 0;
-  let currentTurn = 0;
-  for (let i = 0; i < turns.length; i++) {
-    acc += turns[i].durationMs ?? 0;
-    if (currentMs <= acc) {
-      currentTurn = i;
-      break;
-    }
-  }
-
-  // Auto-scroll and expand during playback
-  useEffect(() => {
-    if (!playing) { lastTurnRef.current = -1; return; }
-    if (currentTurn !== lastTurnRef.current) {
-      lastTurnRef.current = currentTurn;
-      setExpanded(currentTurn);
-      turnRefs.current[currentTurn]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
-  }, [playing, currentTurn]);
 
   const totIters = turns.reduce((s, t) => s + t.iterationCount, 0);
   const totTools = turns.reduce(
