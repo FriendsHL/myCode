@@ -1,7 +1,10 @@
 package com.skillforge.server.repository;
 
 import com.skillforge.server.entity.MemoryEntity;
+import jakarta.persistence.LockModeType;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -137,4 +140,27 @@ public interface MemoryRepository extends JpaRepository<MemoryEntity, Long> {
           AND embedding IS NOT NULL
         """, nativeQuery = true)
     List<Object[]> findEmbeddingsForActiveByUser(@Param("userId") Long userId);
+
+    /**
+     * MEMORY-LLM-SYNTHESIS (V68): candidates for LLM synthesis pass.
+     *
+     * <p>Order by {@code lastScore DESC NULLS LAST}, then {@code updatedAt DESC} so the
+     * first-week-fallback (D5: when consolidation hasn't run yet and lastScore is uniformly
+     * null) still picks the most-recently-touched rows. {@code Pageable} caller controls
+     * the cap (e.g. 50).
+     */
+    @Query("SELECT m FROM MemoryEntity m "
+            + "WHERE m.userId = :userId AND m.status = 'ACTIVE' "
+            + "ORDER BY CASE WHEN m.lastScore IS NULL THEN 1 ELSE 0 END, "
+            + "m.lastScore DESC, m.updatedAt DESC")
+    List<MemoryEntity> findTopActiveByUserId(@Param("userId") Long userId, Pageable pageable);
+
+    /**
+     * MEMORY-LLM-SYNTHESIS (V68): B-4 fix — pessimistic-write lock on source memory rows
+     * during proposal approve. Prevents a concurrent approve / archive from racing the
+     * status transition.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT m FROM MemoryEntity m WHERE m.id IN :ids")
+    List<MemoryEntity> findAllByIdForUpdate(@Param("ids") List<Long> ids);
 }

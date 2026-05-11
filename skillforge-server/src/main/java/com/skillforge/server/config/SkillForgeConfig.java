@@ -69,6 +69,10 @@ import com.skillforge.server.service.MemoryService;
 import com.skillforge.server.service.ScheduledTaskService;
 import com.skillforge.server.service.SessionService;
 import com.skillforge.server.service.UserConfigService;
+import com.skillforge.server.tool.memorysynth.ClusterMemoriesTool;
+import com.skillforge.server.tool.memorysynth.CreateMemoryProposalTool;
+import com.skillforge.server.tool.memorysynth.ListActiveUsersTool;
+import com.skillforge.server.tool.memorysynth.ListMemoryCandidatesTool;
 import com.skillforge.server.tool.scheduling.CreateScheduledTaskTool;
 import com.skillforge.server.tool.scheduling.DeleteScheduledTaskTool;
 import com.skillforge.server.tool.scheduling.GetScheduledTaskTool;
@@ -514,9 +518,10 @@ public class SkillForgeConfig {
                                        @Lazy ChatService chatService,
                                        SubAgentRegistry subAgentRegistry,
                                        CancellationRegistry cancellationRegistry,
-                                       SkillRegistry skillRegistry) {
+                                       SkillRegistry skillRegistry,
+                                       AgentService agentService) {
         SubAgentTool tool = new SubAgentTool(targetResolver, sessionService, chatService,
-                subAgentRegistry, cancellationRegistry);
+                subAgentRegistry, cancellationRegistry, agentService);
         skillRegistry.registerTool(tool);
         log.info("Registered SubAgentTool into SkillRegistry");
         return tool;
@@ -629,6 +634,55 @@ public class SkillForgeConfig {
         GetScheduledTaskTool tool = new GetScheduledTaskTool(scheduledTaskService, objectMapper);
         skillRegistry.registerTool(tool);
         log.info("Registered GetScheduledTaskTool into SkillRegistry");
+        return tool;
+    }
+
+    // ---------- MEMORY-LLM-SYNTHESIS dogfood tools (D22 fan-out + per-user curator) ----------
+
+    @Bean
+    public ListActiveUsersTool listActiveUsersTool(
+            com.skillforge.server.repository.SessionRepository sessionRepository,
+            ObjectMapper objectMapper,
+            SkillRegistry skillRegistry) {
+        ListActiveUsersTool tool = new ListActiveUsersTool(sessionRepository, objectMapper);
+        skillRegistry.registerTool(tool);
+        log.info("Registered ListActiveUsersTool into SkillRegistry");
+        return tool;
+    }
+
+    @Bean
+    public ListMemoryCandidatesTool listMemoryCandidatesTool(
+            com.skillforge.server.repository.MemoryRepository memoryRepository,
+            ObjectMapper objectMapper,
+            SkillRegistry skillRegistry) {
+        ListMemoryCandidatesTool tool = new ListMemoryCandidatesTool(memoryRepository, objectMapper);
+        skillRegistry.registerTool(tool);
+        log.info("Registered ListMemoryCandidatesTool into SkillRegistry");
+        return tool;
+    }
+
+    @Bean
+    public ClusterMemoriesTool clusterMemoriesTool(
+            com.skillforge.server.memory.llmsynth.MemoryClusterer memoryClusterer,
+            com.skillforge.server.repository.MemoryRepository memoryRepository,
+            ObjectMapper objectMapper,
+            SkillRegistry skillRegistry) {
+        ClusterMemoriesTool tool = new ClusterMemoriesTool(memoryClusterer, memoryRepository, objectMapper);
+        skillRegistry.registerTool(tool);
+        log.info("Registered ClusterMemoriesTool into SkillRegistry");
+        return tool;
+    }
+
+    @Bean
+    public CreateMemoryProposalTool createMemoryProposalTool(
+            com.skillforge.server.repository.MemoryProposalRepository memoryProposalRepository,
+            com.skillforge.server.repository.MemoryRepository memoryRepository,
+            ObjectMapper objectMapper,
+            SkillRegistry skillRegistry) {
+        CreateMemoryProposalTool tool = new CreateMemoryProposalTool(
+                memoryProposalRepository, memoryRepository, objectMapper);
+        skillRegistry.registerTool(tool);
+        log.info("Registered CreateMemoryProposalTool into SkillRegistry");
         return tool;
     }
 

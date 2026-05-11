@@ -5,6 +5,7 @@ import com.skillforge.core.skill.SkillContext;
 import com.skillforge.core.skill.SkillResult;
 import com.skillforge.server.entity.AgentEntity;
 import com.skillforge.server.entity.SessionEntity;
+import com.skillforge.server.service.AgentService;
 import com.skillforge.server.service.AgentTargetResolver;
 import com.skillforge.server.service.ChatService;
 import com.skillforge.server.service.SessionService;
@@ -36,12 +37,15 @@ class SubAgentToolTest {
     private SubAgentRegistry registry;
     @Mock
     private CancellationRegistry cancellationRegistry;
+    @Mock
+    private AgentService agentService;
 
     private SubAgentTool tool;
 
     @BeforeEach
     void setUp() {
-        tool = new SubAgentTool(targetResolver, sessionService, chatService, registry, cancellationRegistry);
+        tool = new SubAgentTool(targetResolver, sessionService, chatService, registry,
+                cancellationRegistry, agentService);
     }
 
     @Test
@@ -81,6 +85,84 @@ class SubAgentToolTest {
         SkillResult result = tool.execute(Map.of(
                 "action", "dispatch",
                 "agentId", 1L,
+                "task", "call myself"
+        ), new SkillContext(null, "parent", 10L));
+
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.getError()).contains("recursive agent dispatch");
+        verify(registry, never()).registerRun(any(), any(), any(), any());
+    }
+
+    @Test
+    void detectRecursiveDispatch_systemAgentMasterFanout_allowed() {
+        // D22 master fan-out at depth=0: SYSTEM agent (ownerId==null) dispatches
+        // itself for per-user parallel work. The same-agentId guard must NOT
+        // false-positive on this single layer.
+        SessionEntity parent = session("parent", 6L, null, 0);
+        AgentEntity systemTarget = agent(6L, "memory-curator");
+        systemTarget.setOwnerId(null); // SYSTEM marker
+        SubAgentRegistry.SubAgentRun run = new SubAgentRegistry.SubAgentRun();
+        run.runId = "12345678-1234-1234-1234-123456789012";
+        SessionEntity child = session("child", 6L, "parent", 1);
+
+        when(sessionService.getSession("parent")).thenReturn(parent);
+        when(targetResolver.resolveVisibleTarget("parent", 6L, null)).thenReturn(systemTarget);
+        when(agentService.getAgent(6L)).thenReturn(systemTarget);
+        when(registry.registerRun(parent, 6L, "memory-curator", "consolidate user 1"))
+                .thenReturn(run);
+        when(sessionService.createSubSession(parent, 6L, run.runId)).thenReturn(child);
+
+        SkillResult result = tool.execute(Map.of(
+                "action", "dispatch",
+                "agentId", 6L,
+                "task", "consolidate user 1"
+        ), new SkillContext(null, "parent", 10L));
+
+        // SYSTEM agent master-layer fan-out is allowed despite same agentId in lineage.
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getOutput()).contains("memory-curator");
+        verify(registry).registerRun(parent, 6L, "memory-curator", "consolidate user 1");
+    }
+
+    @Test
+    void detectRecursiveDispatch_systemAgentSubFanout_denied() {
+        // D22 depth bound: a sub session (depth=1) trying to self-dispatch the SAME
+        // SYSTEM agent must be rejected. Without this, the SYSTEM exemption could
+        // chain unbounded; the lineage guard kicks back in at depth ≥ 1.
+        SessionEntity sub = session("sub", 6L, "master", 1);
+        AgentEntity systemTarget = agent(6L, "memory-curator");
+        systemTarget.setOwnerId(null);
+
+        when(sessionService.getSession("sub")).thenReturn(sub);
+        when(targetResolver.resolveVisibleTarget("sub", 6L, null)).thenReturn(systemTarget);
+        when(agentService.getAgent(6L)).thenReturn(systemTarget);
+
+        SkillResult result = tool.execute(Map.of(
+                "action", "dispatch",
+                "agentId", 6L,
+                "task", "deeper fan-out attempt"
+        ), new SkillContext(null, "sub", 10L));
+
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.getError()).contains("recursive agent dispatch");
+        verify(registry, never()).registerRun(any(), any(), any(), any());
+    }
+
+    @Test
+    void detectRecursiveDispatch_regularAgentSelfDispatch_stillDenied() {
+        // Regression: regular user-owned agents (ownerId != null) still hit the
+        // recursion guard. The SYSTEM exemption applies only when ownerId == null.
+        SessionEntity parent = session("parent", 7L, null, 0);
+        AgentEntity userOwned = agent(7L, "UserMain");
+        userOwned.setOwnerId(1L); // owned by user 1 — NOT a SYSTEM agent
+
+        when(sessionService.getSession("parent")).thenReturn(parent);
+        when(targetResolver.resolveVisibleTarget("parent", 7L, null)).thenReturn(userOwned);
+        when(agentService.getAgent(7L)).thenReturn(userOwned);
+
+        SkillResult result = tool.execute(Map.of(
+                "action", "dispatch",
+                "agentId", 7L,
                 "task", "call myself"
         ), new SkillContext(null, "parent", 10L));
 

@@ -7,6 +7,7 @@ import com.skillforge.core.skill.SkillContext;
 import com.skillforge.core.skill.SkillResult;
 import com.skillforge.server.entity.AgentEntity;
 import com.skillforge.server.entity.SessionEntity;
+import com.skillforge.server.service.AgentService;
 import com.skillforge.server.service.AgentTargetResolver;
 import com.skillforge.server.service.ChatService;
 import com.skillforge.server.service.SessionService;
@@ -40,17 +41,20 @@ public class SubAgentTool implements Tool {
     private final ChatService chatService;
     private final SubAgentRegistry registry;
     private final CancellationRegistry cancellationRegistry;
+    private final AgentService agentService;
 
     public SubAgentTool(AgentTargetResolver targetResolver,
                          SessionService sessionService,
                          ChatService chatService,
                          SubAgentRegistry registry,
-                         CancellationRegistry cancellationRegistry) {
+                         CancellationRegistry cancellationRegistry,
+                         AgentService agentService) {
         this.targetResolver = targetResolver;
         this.sessionService = sessionService;
         this.chatService = chatService;
         this.registry = registry;
         this.cancellationRegistry = cancellationRegistry;
+        this.agentService = agentService;
     }
 
     @Override
@@ -206,9 +210,36 @@ public class SubAgentTool implements Tool {
     }
 
     private String detectRecursiveDispatch(SessionEntity parent, Long targetAgentId) {
+        if (targetAgentId == null) {
+            return null;
+        }
+
+        // D22 fan-out exemption: SYSTEM agents (ownerId == null, seeded by migration)
+        // are trusted to use SubAgent for horizontal scale-out — e.g. memory-curator
+        // dispatching itself once per active user to consolidate per-user memory in
+        // parallel. The exemption is bounded to depth-0 → depth-1 only (master →
+        // sub layer); a sub trying to self-dispatch (depth ≥ 1) still trips the
+        // lineage guard below. SubAgentRegistry MAX_DEPTH + MAX_ACTIVE_CHILDREN_PER_PARENT
+        // bound any runaway recursion as the outer safety net.
+        try {
+            AgentEntity targetAgent = agentService.getAgent(targetAgentId);
+            if (targetAgent != null && targetAgent.getOwnerId() == null) {
+                int parentDepth = parent != null ? parent.getDepth() : 0;
+                if (parentDepth == 0) {
+                    return null; // master fan-out only
+                }
+                // depth ≥ 1 falls through to the strict lineage check below.
+            }
+        } catch (Exception e) {
+            // Agent lookup failure should not bypass the guard — fall through to the
+            // strict lineage check below.
+            log.debug("detectRecursiveDispatch: agent lookup failed for id={}: {}",
+                    targetAgentId, e.getMessage());
+        }
+
         SessionEntity cursor = parent;
         while (cursor != null) {
-            if (targetAgentId != null && targetAgentId.equals(cursor.getAgentId())) {
+            if (targetAgentId.equals(cursor.getAgentId())) {
                 return "SubAgent spawn rejected: recursive agent dispatch would call agentId="
                         + targetAgentId + " again in the current session lineage";
             }

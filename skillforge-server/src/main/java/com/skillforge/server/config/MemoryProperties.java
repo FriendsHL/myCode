@@ -37,6 +37,7 @@ public class MemoryProperties {
     private Dedup dedup = new Dedup();
     private Eviction eviction = new Eviction();
     private Consolidation consolidation = new Consolidation();
+    private LlmSynthesis llmSynthesis = new LlmSynthesis();
 
     public String getExtractionMode() {
         return extractionMode;
@@ -92,6 +93,14 @@ public class MemoryProperties {
 
     public void setConsolidation(Consolidation consolidation) {
         this.consolidation = consolidation != null ? consolidation : new Consolidation();
+    }
+
+    public LlmSynthesis getLlmSynthesis() {
+        return llmSynthesis;
+    }
+
+    public void setLlmSynthesis(LlmSynthesis llmSynthesis) {
+        this.llmSynthesis = llmSynthesis != null ? llmSynthesis : new LlmSynthesis();
     }
 
     public boolean isLlmMode() {
@@ -197,6 +206,59 @@ public class MemoryProperties {
 
         public void setScheduledEnabled(boolean scheduledEnabled) {
             this.scheduledEnabled = scheduledEnabled;
+        }
+    }
+
+    /**
+     * MEMORY-LLM-SYNTHESIS (V68): knobs for the LLM-synthesis daily cron.
+     * Configured under {@code skillforge.memory.llm-synthesis}.
+     */
+    public static class LlmSynthesis {
+        /** Optional override; falls back to {@code llm.default-provider} when blank. */
+        private String provider;
+
+        /**
+         * Default false — first-week observation period. Flip to true after Phase Final
+         * verification confirms LLM output quality.
+         */
+        private boolean scheduledEnabled = false;
+
+        /** Candidates considered per (user, run). Hard cap on token budget per user. */
+        private int maxCandidatesPerRun = 50;
+
+        /** Lookback window for picking active users (matches consolidation default). */
+        private int activeUserLookbackDays = 7;
+
+        public String getProvider() {
+            return provider;
+        }
+
+        public void setProvider(String provider) {
+            this.provider = provider;
+        }
+
+        public boolean isScheduledEnabled() {
+            return scheduledEnabled;
+        }
+
+        public void setScheduledEnabled(boolean scheduledEnabled) {
+            this.scheduledEnabled = scheduledEnabled;
+        }
+
+        public int getMaxCandidatesPerRun() {
+            return maxCandidatesPerRun;
+        }
+
+        public void setMaxCandidatesPerRun(int maxCandidatesPerRun) {
+            this.maxCandidatesPerRun = maxCandidatesPerRun;
+        }
+
+        public int getActiveUserLookbackDays() {
+            return activeUserLookbackDays;
+        }
+
+        public void setActiveUserLookbackDays(int activeUserLookbackDays) {
+            this.activeUserLookbackDays = activeUserLookbackDays;
         }
     }
 

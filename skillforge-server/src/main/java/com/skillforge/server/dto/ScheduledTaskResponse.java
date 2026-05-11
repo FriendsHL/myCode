@@ -34,7 +34,13 @@ public record ScheduledTaskResponse(
         Instant lastFireAt,
         String status,
         Instant createdAt,
-        Instant updatedAt
+        Instant updatedAt,
+        /**
+         * E2E-2: convenience flag — {@code true} when {@code creatorUserId == 0}
+         * (SYSTEM owner). FE renders a "System" chip + disables destructive actions
+         * for these rows. Derived in {@link #from} so the wire shape stays self-describing.
+         */
+        boolean isSystem
 ) {
     /**
      * Build a response from an entity. {@code channelTarget} is parsed from JSON
@@ -45,6 +51,7 @@ public record ScheduledTaskResponse(
      */
     public static ScheduledTaskResponse from(ScheduledTaskEntity e, ObjectMapper objectMapper) {
         Object channelTargetParsed = parseChannelTarget(e.getChannelTarget(), objectMapper);
+        boolean isSystem = e.getCreatorUserId() != null && e.getCreatorUserId() == 0L;
         return new ScheduledTaskResponse(
                 e.getId(),
                 e.getName(),
@@ -63,7 +70,8 @@ public record ScheduledTaskResponse(
                 e.getLastFireAt(),
                 e.getStatus(),
                 e.getCreatedAt(),
-                e.getUpdatedAt()
+                e.getUpdatedAt(),
+                isSystem
         );
     }
 

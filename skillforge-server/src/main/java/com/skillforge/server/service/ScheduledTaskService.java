@@ -121,12 +121,38 @@ public class ScheduledTaskService {
         return saved;
     }
 
+    /**
+     * E2E-2 fix: list both the caller's own scheduled tasks AND SYSTEM-owned tasks
+     * (creator_user_id=0, e.g. the memory-curator nightly seeded by
+     * {@code MemoryCuratorBootstrap}). Single-tenant SkillForge — every authenticated
+     * user can see system jobs so admin operators can monitor them from the dashboard.
+     *
+     * <p>SYSTEM tasks render at the top of the list (their ids are smaller in the
+     * typical seed → user flow); the FE can use {@code creatorUserId==0} or the
+     * derived {@code isSystem} field on the response to render a "System" chip and
+     * disable destructive actions (Delete) as a safety guard.
+     */
     @Transactional(readOnly = true)
     public List<ScheduledTaskEntity> listForUser(Long currentUserId) {
         if (currentUserId == null) {
             throw new IllegalArgumentException("currentUserId is required");
         }
-        return scheduledTaskRepository.findByCreatorUserIdOrderByIdDesc(currentUserId);
+        List<ScheduledTaskEntity> userTasks =
+                scheduledTaskRepository.findByCreatorUserIdOrderByIdDesc(currentUserId);
+        if (Long.valueOf(0L).equals(currentUserId)) {
+            // The SYSTEM user itself: don't double-count its own rows.
+            return userTasks;
+        }
+        List<ScheduledTaskEntity> systemTasks =
+                scheduledTaskRepository.findByCreatorUserIdOrderByIdDesc(0L);
+        if (systemTasks.isEmpty()) {
+            return userTasks;
+        }
+        List<ScheduledTaskEntity> merged =
+                new java.util.ArrayList<>(systemTasks.size() + userTasks.size());
+        merged.addAll(systemTasks);
+        merged.addAll(userTasks);
+        return merged;
     }
 
     @Transactional(readOnly = true)
@@ -144,6 +170,14 @@ public class ScheduledTaskService {
         }
         ScheduledTaskEntity existing = scheduledTaskRepository.findById(id)
                 .orElseThrow(() -> new ScheduledTaskNotFoundException(id));
+
+        // SYSTEM task partial-permission: any user may toggle `enabled` (so they can
+        // pause/resume the memory-curator nightly etc. from the dashboard); every other
+        // field is read-only via API. Edit storyboards / cron / prompts via DB or seed
+        // migration only.
+        if (isSystemTask(existing)) {
+            return updateSystemTask(existing, req, currentUserId);
+        }
         assertOwnership(existing, currentUserId);
 
         if (req.getName() != null) {
@@ -188,6 +222,12 @@ public class ScheduledTaskService {
     public void delete(Long id, Long currentUserId) {
         ScheduledTaskEntity existing = scheduledTaskRepository.findById(id)
                 .orElseThrow(() -> new ScheduledTaskNotFoundException(id));
+        // SYSTEM tasks are seeded by migration and own by the platform — they must
+        // not disappear via API. Operator removes via DB or a future admin tool.
+        if (isSystemTask(existing)) {
+            throw new ScheduledTaskAccessDeniedException(
+                    "SYSTEM scheduled task cannot be deleted via API; use DB or admin tool");
+        }
         assertOwnership(existing, currentUserId);
         scheduledTaskRepository.delete(existing);
         log.info("Scheduled task {} deleted by user {}", id, currentUserId);
@@ -198,12 +238,62 @@ public class ScheduledTaskService {
      * Manual trigger (INV-10): bypass the {@code enabled} flag and fire now.
      * This service does not actually run anything — it only verifies ownership
      * and publishes an event for BE-2's executor to consume.
+     *
+     * <p>SYSTEM tasks: any authenticated user may trigger (skip ownership check) so
+     * operators can fire the memory-curator nightly on demand from the dashboard.
      */
     @Transactional(readOnly = true)
     public ScheduledTaskEntity triggerNow(Long id, Long currentUserId) {
-        ScheduledTaskEntity task = get(id, currentUserId);
+        ScheduledTaskEntity task = scheduledTaskRepository.findById(id)
+                .orElseThrow(() -> new ScheduledTaskNotFoundException(id));
+        if (!isSystemTask(task)) {
+            assertOwnership(task, currentUserId);
+        }
         eventPublisher.publishEvent(new ScheduledTaskTriggerRequestedEvent(id));
         return task;
+    }
+
+    // -----------------------------------------------------------------------
+    // SYSTEM task partial-permission helpers
+    // -----------------------------------------------------------------------
+
+    /** A task is SYSTEM-owned when its creator user id is 0 (seeded by migration). */
+    private static boolean isSystemTask(ScheduledTaskEntity task) {
+        return task != null && task.getCreatorUserId() != null
+                && task.getCreatorUserId() == 0L;
+    }
+
+    /**
+     * SYSTEM tasks accept only the {@code enabled} flag from PUT requests. Every
+     * other field is rejected with 403 — operators must edit storyboards / cron /
+     * prompt via DB or seed migration to keep dashboard edits from silently
+     * breaking the seeded nightly contract.
+     */
+    private ScheduledTaskEntity updateSystemTask(ScheduledTaskEntity existing,
+                                                  ScheduledTaskRequest req,
+                                                  Long currentUserId) {
+        if (req.getName() != null
+                || req.getCronExpr() != null
+                || req.getOneShotAt() != null
+                || req.getPromptTemplate() != null
+                || req.getAgentId() != null
+                || req.getTimezone() != null
+                || req.getSessionMode() != null
+                || req.isChannelTargetPresent()) {
+            throw new ScheduledTaskAccessDeniedException(
+                    "SYSTEM scheduled task only allows enabled field editing; other fields are read-only");
+        }
+        if (req.getEnabled() == null) {
+            // No-op — caller sent a PUT with no recognized fields.
+            return existing;
+        }
+        existing.setEnabled(req.getEnabled());
+        ScheduledTaskEntity saved = scheduledTaskRepository.save(existing);
+        log.info("SYSTEM scheduled task {} enabled={} toggled by user {}",
+                saved.getId(), saved.isEnabled(), currentUserId);
+        // Re-publish upserted so BE-2 re-binds the cron with the new enabled flag.
+        eventPublisher.publishEvent(new ScheduledTaskUpsertedEvent(saved.getId()));
+        return saved;
     }
 
     // -----------------------------------------------------------------------

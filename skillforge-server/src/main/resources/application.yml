@@ -237,6 +237,34 @@ skillforge:
       active-user-lookback-days: 7
       # gate the cron without restart; default true
       scheduled-enabled: true
+    # MEMORY-LLM-SYNTHESIS — two paths exist; ENABLE AT MOST ONE to avoid dual-cron
+    # racing the same active-user set and producing duplicate proposals.
+    #
+    #   V1 (legacy Java)  : LlmMemorySynthesisScheduler @Scheduled(cron="0 30 4 * * *")
+    #                       Gated by `scheduled-enabled` below. Kept for fallback /
+    #                       debugging when the dogfood path is unavailable. Talks
+    #                       directly to the LLM via LlmMemorySynthesizer.
+    #
+    #   V2 (dogfood, V69) : memory-curator system agent + P12 ScheduledTask
+    #                       Configure / toggle in the dashboard /schedules page (the
+    #                       V69 migration seeds the row with enabled=false). Drives
+    #                       4 agent tools via the normal agent loop — same proposal
+    #                       table, just different orchestration. This is the
+    #                       preferred path going forward.
+    #
+    # Mutual exclusion: if you flip V1 `scheduled-enabled` true, ALSO disable the
+    # `memory-curator nightly` ScheduledTask row (or vice versa). The admin
+    # run-once endpoint /api/admin/memory/llm-synthesis/run-once auto-prefers the
+    # V2 dogfood path when the seed exists and falls back to V1 only when it doesn't.
+    llm-synthesis:
+      # optional override; blank → falls back to skillforge.llm.default-provider
+      # provider: bailian
+      # V1 LEGACY GATE — daily 04:30 cron driven by LlmMemorySynthesisScheduler.
+      # Default OFF (D12 first-week observation period). Keep OFF when the V2
+      # dogfood ScheduledTask is enabled.
+      scheduled-enabled: false
+      max-candidates-per-run: 50
+      active-user-lookback-days: 7
 
   # Embedding provider for memory vector search (disabled by default for dev)
   embedding:

@@ -101,22 +101,41 @@ public class ScheduledTaskExecutor {
      * @param manual {@code true} for REST manual trigger / fire-now (INV-10 — bypasses enabled)
      */
     public void fire(long taskId, boolean manual) {
+        fireForResult(taskId, manual);
+    }
+
+    /**
+     * Same as {@link #fire(long, boolean)} but returns the run/session ids of the
+     * launched run. Used by admin endpoints (V69 dogfood {@code AdminMemoryLlmSynthesisController.runOnce})
+     * that need to return the {@code sessionId} to the caller so the FE can jump
+     * to the live session trace.
+     *
+     * <p>Returns {@link Optional#empty()} for the no-op paths (task not found /
+     * disabled+!manual / skip-if-running) — caller can distinguish via the
+     * empty Optional whether anything actually ran.
+     *
+     * @param taskId task id
+     * @param manual {@code true} for REST manual trigger (bypasses enabled flag)
+     * @return outcome with runId + sessionId, or empty when the fire was a no-op
+     *         (task missing / disabled / already running).
+     */
+    public Optional<FireOutcome> fireForResult(long taskId, boolean manual) {
         ScheduledTaskEntity task = repository.findById(taskId).orElse(null);
         if (task == null) {
             log.warn("ScheduledTaskExecutor.fire: task {} not found — possibly deleted", taskId);
-            return;
+            return Optional.empty();
         }
         // INV-1: respect enabled. Manual trigger bypasses (INV-10).
         if (!manual && !task.isEnabled()) {
             log.debug("Skipping fire for disabled task {} (manual=false)", taskId);
-            return;
+            return Optional.empty();
         }
         UserTaskScheduler scheduler = userTaskSchedulerProvider.getObject();
         // INV-4: skip if already running.
         if (!scheduler.tryMarkRunning(taskId)) {
             log.info("Skipping fire for task {} — previous run still in flight (skip-if-running)", taskId);
             scheduledTaskService.markRunSkipped(taskId, manual);
-            return;
+            return Optional.empty();
         }
         boolean handedOff = false;
         try {
@@ -129,7 +148,7 @@ public class ScheduledTaskExecutor {
                 finishRun(run.getId(), task, null, ScheduledTaskRunEntity.STATUS_FAILURE,
                         "session open failed: " + e.getMessage());
                 handleOneShotCompletion(task);
-                return;
+                return Optional.empty();
             }
             // Persist sessionId on the run row so the FE history can link to it
             // (does NOT finalize — keeps run.status = running until the loop completes).
@@ -142,12 +161,21 @@ public class ScheduledTaskExecutor {
             // Hand off to ChatService — it submits to chatLoopExecutor (does not block).
             chatService.chatAsync(sessionId, task.getPromptTemplate(), task.getCreatorUserId(), false);
             handedOff = true;
+            return Optional.of(new FireOutcome(taskId, run.getId(), sessionId, manual));
         } finally {
             // If anything threw before chatAsync returned, clear running so future cron fires aren't blocked.
             if (!handedOff) {
                 scheduler.clearRunning(taskId);
             }
         }
+    }
+
+    /**
+     * Outcome of {@link #fireForResult(long, boolean)} — runId + sessionId of the
+     * launched run. Caller uses this to attach a synchronous response to an
+     * otherwise-async admin trigger.
+     */
+    public record FireOutcome(long taskId, long runId, String sessionId, boolean manual) {
     }
 
     /**

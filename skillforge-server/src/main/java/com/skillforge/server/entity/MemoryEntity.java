@@ -7,6 +7,8 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.LastModifiedDate;
 import org.springframework.data.jpa.domain.support.AuditingEntityListener;
@@ -75,6 +77,31 @@ public class MemoryEntity {
 
     @Column(name = "last_scored_at")
     private Instant lastScoredAt;
+
+    /**
+     * MEMORY-LLM-SYNTHESIS (V68): provenance / form of this memory row.
+     * <ul>
+     *   <li>{@code observation} (default) — originated from a user session via the existing rule/LLM extractor</li>
+     *   <li>{@code reflection} — synthesized by LlmMemorySynthesizer, see {@link #derivedFromMemoryIds}</li>
+     *   <li>{@code optimized} — content rewritten by LlmMemorySynthesizer, original preserved in {@link #originalContent}</li>
+     * </ul>
+     * Orthogonal to {@link #type} (business taxonomy: preference/feedback/knowledge/project/reference).
+     */
+    @Column(name = "memory_kind", length = 16)
+    private String memoryKind;
+
+    /** MEMORY-LLM-SYNTHESIS (V68): JSON array of source memory ids; only set when {@code memoryKind=reflection}. */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "derived_from_memory_ids", columnDefinition = "jsonb")
+    private String derivedFromMemoryIds;
+
+    /** MEMORY-LLM-SYNTHESIS (V68): pre-optimize content preserved for revert; only when {@code memoryKind=optimized}. */
+    @Column(name = "original_content", columnDefinition = "TEXT")
+    private String originalContent;
+
+    /** MEMORY-LLM-SYNTHESIS (V68): links back to the synthesis run that produced or modified this row. */
+    @Column(name = "synthesis_run_id", length = 64)
+    private String synthesisRunId;
 
     @CreatedDate
     private LocalDateTime createdAt;
@@ -203,6 +230,38 @@ public class MemoryEntity {
 
     public void setLastScoredAt(Instant lastScoredAt) {
         this.lastScoredAt = lastScoredAt;
+    }
+
+    public String getMemoryKind() {
+        return memoryKind;
+    }
+
+    public void setMemoryKind(String memoryKind) {
+        this.memoryKind = memoryKind;
+    }
+
+    public String getDerivedFromMemoryIds() {
+        return derivedFromMemoryIds;
+    }
+
+    public void setDerivedFromMemoryIds(String derivedFromMemoryIds) {
+        this.derivedFromMemoryIds = derivedFromMemoryIds;
+    }
+
+    public String getOriginalContent() {
+        return originalContent;
+    }
+
+    public void setOriginalContent(String originalContent) {
+        this.originalContent = originalContent;
+    }
+
+    public String getSynthesisRunId() {
+        return synthesisRunId;
+    }
+
+    public void setSynthesisRunId(String synthesisRunId) {
+        this.synthesisRunId = synthesisRunId;
     }
 
     public LocalDateTime getCreatedAt() {

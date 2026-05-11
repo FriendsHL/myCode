@@ -343,7 +343,126 @@ class ScheduledTaskServiceTest {
 
         var rows = service.listForUser(7L);
 
+        // 2 user rows + 0 system rows (default Mockito returns empty list for system query)
         assertThat(rows).hasSize(2);
+    }
+
+    @Test
+    @DisplayName("E2E-2: listForUser merges user tasks + SYSTEM (creatorUserId=0) tasks")
+    void listForUser_mergesSystemTasks() {
+        ScheduledTaskEntity userTask = baseExisting(10L, 7L);
+        ScheduledTaskEntity systemTask = baseExisting(99L, 0L);
+        systemTask.setName("memory-curator-nightly");
+        when(scheduledTaskRepository.findByCreatorUserIdOrderByIdDesc(7L))
+                .thenReturn(java.util.List.of(userTask));
+        when(scheduledTaskRepository.findByCreatorUserIdOrderByIdDesc(0L))
+                .thenReturn(java.util.List.of(systemTask));
+
+        var rows = service.listForUser(7L);
+
+        assertThat(rows).hasSize(2);
+        // SYSTEM tasks render first
+        assertThat(rows.get(0).getId()).isEqualTo(99L);
+        assertThat(rows.get(0).getCreatorUserId()).isZero();
+        assertThat(rows.get(1).getId()).isEqualTo(10L);
+        assertThat(rows.get(1).getCreatorUserId()).isEqualTo(7L);
+    }
+
+    // ----- SYSTEM task partial-permission -----
+
+    @Test
+    @DisplayName("SYSTEM task: any user may toggle enabled (no ownership check)")
+    void updateSystemTask_enabledOnly_allowedForAnyUser() {
+        ScheduledTaskEntity systemTask = baseExisting(3L, 0L);
+        systemTask.setEnabled(false);
+        when(scheduledTaskRepository.findById(3L)).thenReturn(Optional.of(systemTask));
+        when(scheduledTaskRepository.save(any(ScheduledTaskEntity.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        ScheduledTaskRequest req = new ScheduledTaskRequest();
+        req.setEnabled(true);
+
+        // user 1 is NOT the SYSTEM owner (0) but should be allowed for enabled-only update
+        ScheduledTaskEntity result = service.update(3L, 1L, req);
+
+        assertThat(result.isEnabled()).isTrue();
+        verify(scheduledTaskRepository).save(systemTask);
+        ArgumentCaptor<ScheduledTaskUpsertedEvent> evt = ArgumentCaptor.forClass(ScheduledTaskUpsertedEvent.class);
+        verify(eventPublisher).publishEvent(evt.capture());
+        assertThat(evt.getValue().taskId()).isEqualTo(3L);
+    }
+
+    @Test
+    @DisplayName("SYSTEM task: non-enabled field edit denied with AccessDeniedException")
+    void updateSystemTask_nonEnabledField_deniedForAnyUser() {
+        ScheduledTaskEntity systemTask = baseExisting(3L, 0L);
+        when(scheduledTaskRepository.findById(3L)).thenReturn(Optional.of(systemTask));
+
+        ScheduledTaskRequest req = new ScheduledTaskRequest();
+        req.setCronExpr("0 0 5 * * *"); // attempting to rewrite the cron
+
+        assertThatThrownBy(() -> service.update(3L, 1L, req))
+                .isInstanceOf(com.skillforge.server.exception.ScheduledTaskAccessDeniedException.class)
+                .hasMessageContaining("only allows enabled field editing");
+        verify(scheduledTaskRepository, never()).save(any(ScheduledTaskEntity.class));
+    }
+
+    @Test
+    @DisplayName("SYSTEM task: delete always denied (even by SYSTEM user itself)")
+    void deleteSystemTask_alwaysDenied() {
+        ScheduledTaskEntity systemTask = baseExisting(3L, 0L);
+        when(scheduledTaskRepository.findById(3L)).thenReturn(Optional.of(systemTask));
+
+        assertThatThrownBy(() -> service.delete(3L, 1L))
+                .isInstanceOf(com.skillforge.server.exception.ScheduledTaskAccessDeniedException.class)
+                .hasMessageContaining("cannot be deleted via API");
+        verify(scheduledTaskRepository, never()).delete(any(ScheduledTaskEntity.class));
+        verify(eventPublisher, never()).publishEvent(any(ScheduledTaskDeletedEvent.class));
+    }
+
+    @Test
+    @DisplayName("SYSTEM task: any user may manually trigger (skip ownership check)")
+    void triggerSystemTask_allowedByAnyUser() {
+        ScheduledTaskEntity systemTask = baseExisting(3L, 0L);
+        when(scheduledTaskRepository.findById(3L)).thenReturn(Optional.of(systemTask));
+
+        ScheduledTaskEntity result = service.triggerNow(3L, 1L);
+
+        assertThat(result.getId()).isEqualTo(3L);
+        ArgumentCaptor<ScheduledTaskTriggerRequestedEvent> evt =
+                ArgumentCaptor.forClass(ScheduledTaskTriggerRequestedEvent.class);
+        verify(eventPublisher).publishEvent(evt.capture());
+        assertThat(evt.getValue().taskId()).isEqualTo(3L);
+    }
+
+    @Test
+    @DisplayName("regression: regular task cross-user update still requires ownership (AccessDenied)")
+    void updateRegularTask_crossUser_stillRequiresOwnership() {
+        // user 1's task, user 2 trying to edit
+        ScheduledTaskEntity userTask = baseExisting(10L, 1L);
+        when(scheduledTaskRepository.findById(10L)).thenReturn(Optional.of(userTask));
+
+        ScheduledTaskRequest req = new ScheduledTaskRequest();
+        req.setEnabled(true);
+
+        assertThatThrownBy(() -> service.update(10L, 2L, req))
+                .isInstanceOf(com.skillforge.server.exception.ScheduledTaskAccessDeniedException.class);
+        verify(scheduledTaskRepository, never()).save(any(ScheduledTaskEntity.class));
+    }
+
+    @Test
+    @DisplayName("E2E-2: SYSTEM user (userId=0) queries don't double-count SYSTEM rows")
+    void listForUser_systemUser_noDuplicate() {
+        ScheduledTaskEntity systemTask = baseExisting(99L, 0L);
+        when(scheduledTaskRepository.findByCreatorUserIdOrderByIdDesc(0L))
+                .thenReturn(java.util.List.of(systemTask));
+
+        var rows = service.listForUser(0L);
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).getId()).isEqualTo(99L);
+        // Verify only one repository call (no SYSTEM merge for SYSTEM user itself)
+        verify(scheduledTaskRepository, times(1))
+                .findByCreatorUserIdOrderByIdDesc(0L);
     }
 
     // ----- triggerNow -----

@@ -78,6 +78,17 @@ public class UserWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
+    /**
+     * MEMORY-LLM-SYNTHESIS (V69 dogfood): currently-connected userIds. Used by
+     * {@code MemoryProposalReadyBroadcaster} SESSION_END hook to fan-out a
+     * "proposals pending" notification — SkillForge today has no admin-role
+     * concept (single-tenant dev/internal system), so every currently-connected
+     * user is treated as an admin candidate.
+     */
+    public java.util.Set<Long> connectedUserIds() {
+        return java.util.Set.copyOf(sessions.keySet());
+    }
+
     /** 把任意 payload 广播给某个 userId 的所有连接。线程安全。 */
     public void broadcast(Long userId, Map<String, Object> payload) {
         if (userId == null) return;

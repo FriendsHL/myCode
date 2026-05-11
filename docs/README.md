@@ -35,6 +35,7 @@
 
 | ID | 标题 | 需求包 | 技术方案 |
 | --- | --- | --- | --- |
+| MEMORY-LLM-SYNTHESIS | LLM 驱动梦境系统（完全 dogfood option A / 4 类 proposal + 人审 gate / V68+V69） | [需求包](requirements/archive/2026-05-11-MEMORY-LLM-SYNTHESIS/index.md) | [方案](requirements/archive/2026-05-11-MEMORY-LLM-SYNTHESIS/tech-design.md) |
 | OBS-2 | Trace 数据模型统一（`t_llm_trace` / `t_llm_span` 单轨 + `t_trace_span` drop） | [需求包](requirements/archive/2026-05-02-OBS-2-trace-data-model-unification/index.md) | [方案](requirements/archive/2026-05-02-OBS-2-trace-data-model-unification/tech-design.md) |
 | SKILL-DASHBOARD-POLISH-V2 | Skill Dashboard Polish V2（概览卡 + draft merge UX + version tree） | [需求包](requirements/archive/2026-05-08-SKILL-DASHBOARD-POLISH-V2/index.md) | — (Lite, decisions in index.md) |
 | SKILL-DASHBOARD-POLISH | Skill Dashboard Polish V1（同名聚合 + evolution detail + A/B 手动操作 + Drafts 入口） | [需求包](requirements/archive/2026-05-08-SKILL-DASHBOARD-POLISH/index.md) | — (Lite, decisions in index.md) |

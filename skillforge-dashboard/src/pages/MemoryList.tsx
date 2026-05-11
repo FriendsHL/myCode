@@ -16,7 +16,8 @@ import {
   triggerMemoryConsolidation,
 } from '../api';
 import { useAuth } from '../contexts/AuthContext';
-import { message } from 'antd';
+import { message, Tabs } from 'antd';
+import MemoryProposalsTab from './memory/MemoryProposalsTab';
 import '../components/agents/agents.css';
 import '../components/memory/memory.css';
 import '../components/skills/skills.css';
@@ -99,7 +100,7 @@ function FilterItem({ label, count, active, onClick }: { label: string; count: n
 const TAB_ORDER: MemoryTab[] = ['ACTIVE', 'STALE', 'ARCHIVED'];
 const TAB_LABEL: Record<MemoryTab, string> = { ACTIVE: 'Active', STALE: 'Stale', ARCHIVED: 'Archived' };
 
-const MemoryList: React.FC = () => {
+const MemoryActiveTab: React.FC = () => {
   const queryClient = useQueryClient();
   const { userId } = useAuth();
   const [q, setQ] = useState('');
@@ -580,5 +581,33 @@ function MemoryDrawer({ memory, editVal, setEditVal, onClose, onSave, onRevert, 
     </>
   );
 }
+
+/**
+ * MEMORY-LLM-SYNTHESIS — Wrap the existing memory list in a Tabs control so
+ * the new "Pending Reflections" surface lives next to "Active" / "Stale" /
+ * "Archived" lifecycle states. The existing single-page experience moves
+ * under the `active` tab unchanged; everything LLM-synthesis-related lives
+ * under `pending` and uses a separate cache namespace (`memoryProposals`).
+ */
+const MemoryList: React.FC = () => {
+  const [activeKey, setActiveKey] = useState<'active' | 'pending'>('active');
+  return (
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <Tabs
+        activeKey={activeKey}
+        onChange={(k) => setActiveKey(k as 'active' | 'pending')}
+        style={{ paddingLeft: 16, paddingRight: 16 }}
+        items={[
+          { key: 'active', label: 'Active', children: <MemoryActiveTab /> },
+          {
+            key: 'pending',
+            label: 'Pending Reflections',
+            children: <MemoryProposalsTab />,
+          },
+        ]}
+      />
+    </div>
+  );
+};
 
 export default MemoryList;
