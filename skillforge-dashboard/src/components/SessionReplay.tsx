@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { getSessionReplay } from '../api';
 import { useAuth } from '../contexts/AuthContext';
 import { IconPause, IconPlay } from './chat/ChatIcons';
@@ -63,6 +63,7 @@ const SessionReplay: React.FC<SessionReplayProps> = ({ sessionId }) => {
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [expanded, setExpanded] = useState<number>(-1);
+  const turnRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   useEffect(() => {
     if (!sessionId) {
@@ -94,8 +95,10 @@ const SessionReplay: React.FC<SessionReplayProps> = ({ sessionId }) => {
     [turns],
   );
 
+  // Auto-scroll and expand during playback
+  const lastTurnRef = useRef(-1);
   useEffect(() => {
-    if (!playing) return;
+    if (!playing || !turns.length) return;
     const id = setInterval(() => {
       setProgress((p) => {
         const n = p + 0.01;
@@ -107,7 +110,7 @@ const SessionReplay: React.FC<SessionReplayProps> = ({ sessionId }) => {
       });
     }, 120);
     return () => clearInterval(id);
-  }, [playing]);
+  }, [playing, turns.length]);
 
   if (!sessionId) {
     return (
@@ -148,6 +151,16 @@ const SessionReplay: React.FC<SessionReplayProps> = ({ sessionId }) => {
       break;
     }
   }
+
+  // Auto-scroll and expand during playback
+  useEffect(() => {
+    if (!playing) { lastTurnRef.current = -1; return; }
+    if (currentTurn !== lastTurnRef.current) {
+      lastTurnRef.current = currentTurn;
+      setExpanded(currentTurn);
+      turnRefs.current[currentTurn]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [playing, currentTurn]);
 
   const totIters = turns.reduce((s, t) => s + t.iterationCount, 0);
   const totTools = turns.reduce(
@@ -241,7 +254,7 @@ const SessionReplay: React.FC<SessionReplayProps> = ({ sessionId }) => {
           );
           const isOpen = expanded === i;
           return (
-            <div key={turn.turnIndex} className="turn-card">
+            <div key={turn.turnIndex} className="turn-card" ref={el => { turnRefs.current[i] = el; }}>
               <div className="turn-card-inner">
                 <button
                   type="button"
