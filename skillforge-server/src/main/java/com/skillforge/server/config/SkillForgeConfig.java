@@ -43,6 +43,7 @@ import com.skillforge.server.skill.ImportSkillTool;
 import com.skillforge.server.skill.SkillImportProperties;
 import com.skillforge.server.skill.SkillImportService;
 import com.skillforge.server.skill.TodoStore;
+import com.skillforge.server.reminder.TodoListSource;
 import com.skillforge.server.tool.TodoWriteTool;
 import com.skillforge.server.tool.MemoryDetailTool;
 import com.skillforge.server.tool.MemorySearchTool;
@@ -219,6 +220,16 @@ public class SkillForgeConfig {
     }
 
     @Bean
+    public TodoListSource todoListSource(
+            TodoStore todoStore,
+            ObjectMapper objectMapper,
+            @Value("${skillforge.reminder.todo-list.enabled:true}") boolean enabled,
+            @Value("${skillforge.reminder.todo-list.interval-turns:1}") int intervalTurns,
+            @Value("${skillforge.reminder.todo-list.max-todos:20}") int maxTodos) {
+        return new TodoListSource(todoStore, objectMapper, enabled, intervalTurns, maxTodos);
+    }
+
+    @Bean
     public com.skillforge.core.reminder.FileActivitySource fileActivitySource(
             FileStateCache fileStateCache,
             @Value("${skillforge.reminder.file-activity.enabled:true}") boolean enabled,
@@ -232,13 +243,14 @@ public class SkillForgeConfig {
     @Bean
     public com.skillforge.core.reminder.ReminderBuilder reminderBuilder(
             com.skillforge.core.reminder.ContextUsageSource contextUsageSource,
+            TodoListSource todoListSource,
             com.skillforge.core.reminder.MemoryAgeSource memoryAgeSource,
             com.skillforge.core.reminder.FileActivitySource fileActivitySource,
             @Value("${skillforge.reminder.enabled:true}") boolean globalEnabled,
             @Value("${skillforge.reminder.total-budget-tokens:5000}") int totalBudgetTokens) {
-        // PRD D7 ordered: most-actionable first → ContextUsage → MemoryAge → FileActivity.
+        // Ordered: most-actionable first → ContextUsage → TodoList → MemoryAge → FileActivity.
         return new com.skillforge.core.reminder.ReminderBuilder(
-                List.of(contextUsageSource, memoryAgeSource, fileActivitySource),
+                List.of(contextUsageSource, todoListSource, memoryAgeSource, fileActivitySource),
                 totalBudgetTokens,
                 globalEnabled);
     }
