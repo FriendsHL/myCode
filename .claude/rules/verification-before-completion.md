@@ -36,6 +36,25 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 | 数据真落库 | `curl /api/...` 或 SQL 查实际值 | "UI 按钮变绿了" |
 | 整批需求做完 | 对照 `prd.md` / `tech-design.md` 验收点逐条 ✓ | "测试过了 = 完成" |
 | 前端功能能用 | `npx agent-browser goto <url>` + `eval "document.body.innerText"` 断言 DOM | "build 过了 / 看截图对" |
+| 新加 / 改 FE-BE 契约（API DTO / WS event payload） | grep BE DTO 字段名 == FE TS interface 字段名；roundtrip IT 跑过（ObjectMapper write → FE 期望 JSON 比对） | "我对照了名字 / BE/FE 单测分别过了" — 跨栈不匹配单测抓不到 |
+
+> **FE-BE 契约 footgun**：DTO 字段重命名 / 类型变更（如 `ExecuteRequest.commandLine` vs FE `command/args`）本地 BE 单测 + FE tsc 都过得了，但跨栈调用时反序列化 silent 失败 / 字段 null。**新加 / 改 DTO 字段必须按上表 grep + roundtrip 双重验证**。详见 [`java.md` known footgun #6](java.md)。
+
+## Completion Gate（声明任务完成前必跑）
+
+Agent / Claude 主会话报告"任务完成"之前，**三件套必须全绿**：
+
+| 改动类型 | 必跑命令 | 必须报告 |
+|---|---|---|
+| BE 改动 | `mvn -pl skillforge-server -am test`（或 `mvn -pl skillforge-core,skillforge-tools,skillforge-server -am test` 跨模块）| `Tests run: N, Failures: 0, Errors: 0, Skipped: M → BUILD SUCCESS` |
+| FE 改动 | `cd skillforge-dashboard && npx tsc --noEmit && npm run build` | tsc 0 错 + `npm run build` EXIT=0 |
+| BE + FE 跨栈 | 上面两套都跑 | 双绿 |
+
+**规则**：
+- 跑测试前先 `git status` 看有没有 untracked 漏 stage
+- 报"完成"必须**贴当次输出**（不要"应该 baseline 过"，必须本 message 真跑过）
+- 出现 regression 先核实**是否 pre-existing**（`git stash && mvn test` 对照）—— 不是 pre-existing 才算回归
+- 跨栈契约改动还需 grep + roundtrip 验证（上表）
 
 ## Red Flags（看到立刻停）
 

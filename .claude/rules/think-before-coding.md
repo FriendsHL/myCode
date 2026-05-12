@@ -43,12 +43,31 @@
 
 发现问题 **inline 改**，不需要再过一轮 review，改完给用户。
 
-## 任务进行中 1 条
+## 任务进行中 2 条（Scope Discipline）
 
 5. **不顺手清理无关 dead code** —— 任务过程中发现 unused import / 过期注释 / dead branch / 看着别扭的命名，**mention 给用户，不要顺手删进 commit**（除非用户原始任务就是清理）
    - 你的改动**自己造成的**孤儿（imports / vars / functions）：删
    - **本来就在那里**的孤儿：mention，不删
    - 专门的死代码清理走 `refactor-cleaner` agent 或 `/refactor-clean` 命令
+
+6. **多文件改动前先列 intended file list；scope 外文件不动**（来自 2026-05 insights 反复出现的越界改 Layout.tsx / index.css / 误删 Schedules.tsx tasks query 痛点）
+
+   开工前 self-check：
+   - 列出本次任务**计划要改的文件清单**，每个文件一句话写改什么
+   - 任务边界**外**的文件即使顺手发现可改也**不改** —— surface 成 backlog item / 加注释 mention 给用户，**不要 inline edit**
+
+   **scope 外典型文件**（这些被改要警觉）：
+   - `Layout.tsx` / `index.css` / 全局 CSS / 路由配置 / `App.tsx`
+   - `tsconfig.json` / `package.json` / build 配置
+   - 公共 hook / 公共 utils 函数（除非任务原意就是改它）
+   - 别的 feature 的 page 文件（哪怕只是 "顺手统一一下"）
+   - 其它需求包对应的 entity / service（哪怕只是 "刚好看到 typo"）
+
+   **真要改 scope 外**：先 SendMessage 主会话 / 问用户确认，再动。不要 silent edit 等 reviewer 抓。
+
+   **反面案例**：
+   - FE-Dev 在做 EVAL-LATENCY 时顺手改了 `Layout.tsx` 配色 → reviewer 发现要求 stash → 浪费一轮
+   - dev 改 Schedules.tsx 时误把 `tasks` 查询替换成空对象 → Claude 主会话事后才察觉
 
 ## 与现有规则的关系
 

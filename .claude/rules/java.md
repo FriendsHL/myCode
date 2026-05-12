@@ -96,6 +96,50 @@ AgentLoopEngine.run(AgentDef, String, Message userMessageBlock, List, ..., LoopC
 
 完整列分类表 + Light compact index-alignment limitation 见 [`identity-column-on-rewrite.md`](identity-column-on-rewrite.md)。
 
+### 6. FE-BE Jackson 契约字段名 / 类型漂移
+
+**来源**：2026-05 insights 反复出现的痛点 —— DTO 字段重命名 / 类型变更（如 `ExecuteRequest.commandLine` vs FE `command/args`）本地 BE 单测 + FE tsc 都过得了，但**跨栈调用时反序列化 silent 失败 / 字段 null**。
+
+新加 / 改 `dto/*Request.java` / `*Response.java` / WS event payload 字段时必经 3 步：
+
+1. **字段名 grep 对照** — BE Java 字段名 → FE TS interface 同名字段（kebab vs camel 转换若有 ObjectMapper PropertyNamingStrategy 设置要核对）
+
+   ```bash
+   grep -rn "private.*<fieldName>" skillforge-server/src/main/java/com/skillforge/server/dto/
+   grep -rn "<fieldName>:" skillforge-dashboard/src/api/
+   ```
+
+2. **类型一致性 grep** — Java 类型对应 TS 类型表：
+
+   | Java | TS |
+   |---|---|
+   | `String` | `string` |
+   | `String` (nullable) | `string \| null` |
+   | `Long` / `long` / `Integer` / `int` | `number` |
+   | `Instant` | `string` (ISO) |
+   | `boolean` (primitive) | `boolean` |
+   | `Boolean` (nullable) | `boolean \| null` |
+   | `Map<String, X>` | `Record<string, X>` |
+   | `List<X>` | `X[]` |
+   | `enum` | `'A' \| 'B' \| 'C'` 字符串字面量 union |
+
+3. **roundtrip IT** — 用 `ObjectMapper.writeValueAsString(BE 对象)` 跟 FE TS 类型 expected JSON 比对：
+
+   ```java
+   @Test
+   void <X>Request_jsonRoundtrip_matchesFeContract() {
+       <X>Request req = new <X>Request("v1", "v2", ...);
+       String json = objectMapper.writeValueAsString(req);
+       // 断言含 FE 期望的字段 + 不含多余字段
+       assertThat(json).contains("\"<feField1>\":");
+       assertThat(json).doesNotContain("\"<oldFieldName>\":");
+   }
+   ```
+
+**反例**：P10 斜杠命令 `ExecuteRequest.commandLine` 字段，FE 发的是 `{command, args}` → BE 反序列化 `commandLine` null → silent 失败，r2 才暴露。
+
+**触碰路径**：`skillforge-server/src/main/java/com/skillforge/server/dto/**/*.java` / WebSocket payload 类型 / Controller `@RequestBody` / `@ResponseBody`。
+
 ---
 
 ## 依赖注入
