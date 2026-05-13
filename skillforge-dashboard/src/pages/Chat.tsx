@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, message } from 'antd';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import ChatWindow from '../components/ChatWindow';
 import SessionReplay from '../components/SessionReplay';
 import CompactionHistoryModal from '../components/CompactionHistoryModal';
@@ -70,12 +70,28 @@ const DEFAULT_CONTEXT_WINDOW_TOKENS = 200000;
 
 const Chat: React.FC = () => {
   const { sessionId: urlSessionId } = useParams<{ sessionId?: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const { userId } = useAuth();
   const [agents, setAgents] = useState<z.infer<typeof AgentSchema>[]>([]);
   const [parentSessionId, setParentSessionId] = useState<string | null>(null);
   const [sessionDepth, setSessionDepth] = useState<number>(0);
-  const [selectedAgent, setSelectedAgent] = useState<number | undefined>();
+  // Read selectedAgent from URL ?agent= param (per-tab independent)
+  const selectedAgent = useMemo(() => {
+    const agentParam = searchParams.get('agent');
+    return agentParam ? Number(agentParam) : undefined;
+  }, [searchParams]);
+  const setSelectedAgent = useCallback((agentId: number | undefined) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (agentId != null) {
+        next.set('agent', String(agentId));
+      } else {
+        next.delete('agent');
+      }
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
   const [sessions, setSessions] = useState<z.infer<typeof SessionSchema>[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | undefined>(

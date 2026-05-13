@@ -1,4 +1,5 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useNavigate } from 'react-router-dom';
+import { useEffect } from 'react';
 import AppLayout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import AgentList from './pages/AgentList';
@@ -20,11 +21,22 @@ import Login from './pages/Login';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { AuthProvider } from './contexts/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
+import { setApiNavigate } from './api';
+
+/** Connects React Router's navigate to the API layer for client-side 401 redirects */
+function NavigateInitializer() {
+  const navigate = useNavigate();
+  useEffect(() => {
+    setApiNavigate((path) => navigate(path, { replace: true }));
+  }, [navigate]);
+  return null;
+}
 
 function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
+        <NavigateInitializer />
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route
@@ -50,8 +62,7 @@ function App() {
             <Route path="hooks" element={<ErrorBoundary context="Hook Methods"><HookMethods /></ErrorBoundary>} />
             <Route path="channels" element={<ErrorBoundary context="Channels"><Channels /></ErrorBoundary>} />
             <Route path="schedules" element={<ErrorBoundary context="Schedules"><Schedules /></ErrorBoundary>} />
-            <Route path="chat" element={<ErrorBoundary context="Chat"><Chat /></ErrorBoundary>} />
-            <Route path="chat/:sessionId" element={<ErrorBoundary context="Chat"><Chat /></ErrorBoundary>} />
+            <Route path="chat/:sessionId?" element={<ErrorBoundary context="Chat"><Chat /></ErrorBoundary>} />
           </Route>
         </Routes>
       </BrowserRouter>
