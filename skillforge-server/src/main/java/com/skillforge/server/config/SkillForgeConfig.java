@@ -43,6 +43,7 @@ import com.skillforge.server.skill.ImportSkillTool;
 import com.skillforge.server.skill.SkillImportProperties;
 import com.skillforge.server.skill.SkillImportService;
 import com.skillforge.server.skill.TodoStore;
+import com.skillforge.server.security.skill.SkillSecurityScanProperties;
 import com.skillforge.server.reminder.TodoListSource;
 import com.skillforge.server.tool.TodoWriteTool;
 import com.skillforge.server.tool.MemoryDetailTool;
@@ -105,7 +106,8 @@ import java.util.concurrent.TimeUnit;
         LifecycleHooksScriptProperties.class,
         SessionMessageStoreProperties.class,
         MemoryProperties.class,
-        SkillImportProperties.class
+        SkillImportProperties.class,
+        SkillSecurityScanProperties.class
 })
 public class SkillForgeConfig {
 

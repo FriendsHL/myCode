@@ -6,6 +6,7 @@ import com.skillforge.core.model.ToolSchema;
 import com.skillforge.core.skill.SkillContext;
 import com.skillforge.core.skill.SkillResult;
 import com.skillforge.core.skill.Tool;
+import com.skillforge.server.security.skill.SkillSecurityException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -60,6 +61,9 @@ public class ImportSkillTool implements Tool {
         properties.put("source", Map.of(
                 "type", "string",
                 "description", "Skill 来源：clawhub | github | skillhub | filesystem"));
+        properties.put("allowMediumRisk", Map.of(
+                "type", "boolean",
+                "description", "仅当用户明确理解并接受中风险扫描结果时设为 true；HIGH 风险不能用此参数绕过。默认 false"));
 
         Map<String, Object> schema = new LinkedHashMap<>();
         schema.put("type", "object");
@@ -101,9 +105,15 @@ public class ImportSkillTool implements Tool {
             return SkillResult.validationError("sourcePath is not a valid path: " + sourcePathStr);
         }
 
+        boolean allowMediumRisk = Boolean.TRUE.equals(input.get("allowMediumRisk"));
+
         try {
-            ImportResult result = importService.importSkill(sourcePath, sourceEnum, ownerId);
+            ImportResult result = importService.importSkill(sourcePath, sourceEnum, ownerId, allowMediumRisk);
             return SkillResult.success(objectMapper.writeValueAsString(result));
+        } catch (SkillSecurityException e) {
+            log.warn("ImportSkill blocked by security scan sourcePath={} source={}: {}",
+                    sourcePathStr, sourceStr, e.getMessage());
+            return SkillResult.error(e.getMessage());
         } catch (IllegalArgumentException e) {
             log.warn("ImportSkill rejected request sourcePath={} source={}: {}",
                     sourcePathStr, sourceStr, e.getMessage());

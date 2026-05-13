@@ -132,6 +132,13 @@ skillforge:
   skill-import:
     allowed-source-roots:
       - "~/.openclaw/workspace/skills"
+  # SKILL-SECURITY-SCAN — fast static scan at ImportSkill / batch import time.
+  # No network calls and no model audit in the default path.
+  skill-security-scan:
+    enabled: true
+    allow-medium-risk-by-default: false
+    max-file-bytes: 262144
+    max-total-bytes: 1048576
   # Skill packages storage path.
   # P1-D (2026-04-30): runtime path is now resolved by SkillForgeHomeResolver
   # (env var SKILLFORGE_HOME or auto-detect project root → <projectRoot>/skillforge-server).

@@ -7,6 +7,11 @@ import com.skillforge.core.skill.SkillPackageLoader;
 import com.skillforge.core.skill.SkillRegistry;
 import com.skillforge.server.entity.SkillEntity;
 import com.skillforge.server.repository.SkillRepository;
+import com.skillforge.server.security.skill.SkillScanFinding;
+import com.skillforge.server.security.skill.SkillScanResult;
+import com.skillforge.server.security.skill.SkillScanSeverity;
+import com.skillforge.server.security.skill.SkillSecurityException;
+import com.skillforge.server.security.skill.SkillSecurityScanner;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -50,6 +55,7 @@ public class SkillImportService {
     private final SkillPackageLoader packageLoader;
     private final SkillCatalogReconciler reconciler;
     private final ObjectMapper objectMapper;
+    private final SkillSecurityScanner securityScanner;
 
     public SkillImportService(SkillImportProperties properties,
                               SkillStorageService storageService,
@@ -57,7 +63,8 @@ public class SkillImportService {
                               SkillRegistry skillRegistry,
                               SkillPackageLoader packageLoader,
                               SkillCatalogReconciler reconciler,
-                              ObjectMapper objectMapper) {
+                              ObjectMapper objectMapper,
+                              SkillSecurityScanner securityScanner) {
         this.properties = properties;
         this.storageService = storageService;
         this.skillRepository = skillRepository;
@@ -65,6 +72,7 @@ public class SkillImportService {
         this.packageLoader = packageLoader;
         this.reconciler = reconciler;
         this.objectMapper = objectMapper;
+        this.securityScanner = securityScanner;
     }
 
     /**
@@ -92,6 +100,11 @@ public class SkillImportService {
      */
     @Transactional
     public ImportResult importSkill(Path sourcePath, SkillSource source, Long ownerId) {
+        return importSkill(sourcePath, source, ownerId, false);
+    }
+
+    @Transactional
+    public ImportResult importSkill(Path sourcePath, SkillSource source, Long ownerId, boolean allowMediumRisk) {
         Objects.requireNonNull(sourcePath, "sourcePath");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(ownerId, "ownerId");
@@ -99,7 +112,11 @@ public class SkillImportService {
         // 1. Resolve symlinks first, then enforce whitelist.
         Path realSource = validateSourcePath(sourcePath);
 
-        // 2. Validate SKILL.md presence + parse definition.
+        // 2. Scan before parsing/copy/upsert/register so blocked packages leave no side effects.
+        SkillScanResult scanResult = securityScanner.scan(realSource);
+        List<SkillScanFinding> scanWarnings = enforceSecurityScan(scanResult, allowMediumRisk);
+
+        // 3. Validate SKILL.md presence + parse definition.
         Path skillMd = realSource.resolve("SKILL.md");
         Path skillMdLower = realSource.resolve("skill.md");
         if (!Files.isRegularFile(skillMd) && !Files.isRegularFile(skillMdLower)) {
@@ -117,15 +134,15 @@ public class SkillImportService {
                     "Skill package at " + realSource + " has no usable 'name' (frontmatter or directory)");
         }
 
-        // 3. _meta.json best-effort overlay (slug + version).
+        // 4. _meta.json best-effort overlay (slug + version).
         SkillMeta meta = readMetaJsonOrFallback(realSource, def);
 
-        // 4. Allocate destination on disk.
+        // 5. Allocate destination on disk.
         AllocationContext ctx = buildAllocationContext(source, ownerId, meta);
         Path target = storageService.allocate(source, ctx);
         storageService.ensureDirectories(target);
 
-        // 5. Copy recursively (overwrite existing files for the same-version override path).
+        // 6. Copy recursively (overwrite existing files for the same-version override path).
         try {
             copyDirectoryReplacing(realSource, target);
         } catch (IOException e) {
@@ -133,10 +150,10 @@ public class SkillImportService {
                     "Failed to copy skill package " + realSource + " → " + target, e);
         }
 
-        // 6. Compute content_hash via the reconciler's exact algorithm.
+        // 7. Compute content_hash via the reconciler's exact algorithm.
         String hash = reconciler.hashSkillMd(target);
 
-        // 7. UPSERT t_skill row.
+        // 8. UPSERT t_skill row.
         SkillDefinition reloaded;
         try {
             reloaded = packageLoader.loadFromDirectory(target);
@@ -146,7 +163,7 @@ public class SkillImportService {
         }
         UpsertOutcome outcome = upsertSkillRow(reloaded, source, target, hash, ownerId, meta);
 
-        // 8. Register into SkillRegistry so subsequent agent turns can dispatch the new skill.
+        // 9. Register into SkillRegistry so subsequent agent turns can dispatch the new skill.
         reloaded.setSystem(false);
         reloaded.setOwnerId(String.valueOf(ownerId));
         skillRegistry.registerSkillDefinition(reloaded);
@@ -161,7 +178,22 @@ public class SkillImportService {
                 outcome.row.getName(),
                 target.toString(),
                 source.wireName(),
-                outcome.conflictResolved);
+                outcome.conflictResolved,
+                scanWarnings);
+    }
+
+    private List<SkillScanFinding> enforceSecurityScan(SkillScanResult result, boolean allowMediumRisk) {
+        if (result == null || result.findings().isEmpty()) {
+            return List.of();
+        }
+        if (result.highestSeverity() == SkillScanSeverity.HIGH) {
+            throw SkillSecurityException.blocked(result, false);
+        }
+        boolean mediumAllowed = allowMediumRisk || securityScanner.allowMediumRiskByDefault();
+        if (result.highestSeverity() == SkillScanSeverity.MEDIUM && !mediumAllowed) {
+            throw SkillSecurityException.blocked(result, true);
+        }
+        return result.findings();
     }
 
     /**

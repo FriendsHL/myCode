@@ -6,6 +6,8 @@ import com.skillforge.core.skill.SkillRegistry;
 import com.skillforge.server.AbstractPostgresIT;
 import com.skillforge.server.entity.SkillEntity;
 import com.skillforge.server.repository.SkillRepository;
+import com.skillforge.server.security.skill.SkillSecurityScanProperties;
+import com.skillforge.server.security.skill.SkillSecurityScanner;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -76,7 +78,8 @@ class SkillRescanMarketplaceIT extends AbstractPostgresIT {
         SkillRegistry skillRegistry = new SkillRegistry();
 
         service = new SkillImportService(properties, storageService, skillRepository,
-                skillRegistry, packageLoader, reconciler, new ObjectMapper());
+                skillRegistry, packageLoader, reconciler, new ObjectMapper(),
+                new SkillSecurityScanner(new SkillSecurityScanProperties()));
         batchImporter = new SkillBatchImporter(service, properties);
     }
 

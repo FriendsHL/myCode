@@ -10,6 +10,8 @@ import com.skillforge.core.skill.SkillRegistry;
 import com.skillforge.server.AbstractPostgresIT;
 import com.skillforge.server.entity.SkillEntity;
 import com.skillforge.server.repository.SkillRepository;
+import com.skillforge.server.security.skill.SkillSecurityScanProperties;
+import com.skillforge.server.security.skill.SkillSecurityScanner;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -86,7 +88,8 @@ class SkillImportIT extends AbstractPostgresIT {
         skillRegistry = new SkillRegistry();
 
         service = new SkillImportService(properties, storageService, skillRepository,
-                skillRegistry, packageLoader, reconciler, new ObjectMapper());
+                skillRegistry, packageLoader, reconciler, new ObjectMapper(),
+                new SkillSecurityScanner(new SkillSecurityScanProperties()));
 
         serviceLogger = (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(SkillImportService.class);
         logAppender = new ListAppender<>();

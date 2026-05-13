@@ -1,5 +1,9 @@
 package com.skillforge.server.skill;
 
+import com.skillforge.server.security.skill.SkillScanFinding;
+
+import java.util.List;
+
 /**
  * SKILL-IMPORT — return value of {@link SkillImportService#importSkill}.
  *
@@ -12,11 +16,21 @@ package com.skillforge.server.skill;
  * @param source          {@link SkillSource#wireName()} of the originating marketplace
  * @param conflictResolved {@code true} when an existing row was overwritten;
  *                        {@code false} when a new row was created
+ * @param scanWarnings     low/medium scan findings that did not block import
  */
 public record ImportResult(
         Long id,
         String name,
         String skillPath,
         String source,
-        boolean conflictResolved) {
+        boolean conflictResolved,
+        List<SkillScanFinding> scanWarnings) {
+
+    public ImportResult(Long id, String name, String skillPath, String source, boolean conflictResolved) {
+        this(id, name, skillPath, source, conflictResolved, List.of());
+    }
+
+    public ImportResult {
+        scanWarnings = scanWarnings == null ? List.of() : List.copyOf(scanWarnings);
+    }
 }

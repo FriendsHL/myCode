@@ -3,6 +3,7 @@ package com.skillforge.server.skill;
 import com.skillforge.server.skill.BatchImportResult.FailedItem;
 import com.skillforge.server.skill.BatchImportResult.ImportedItem;
 import com.skillforge.server.skill.BatchImportResult.SkippedItem;
+import com.skillforge.server.security.skill.SkillSecurityException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -137,6 +138,9 @@ public class SkillBatchImporter {
             // Validation failure inside importSkill (whitelist mismatch,
             // unparseable SKILL.md, blank name, etc.).
             skipped.add(new SkippedItem(name, e.getMessage()));
+        } catch (SkillSecurityException e) {
+            failed.add(new FailedItem(name, e.getMessage()));
+            log.warn("batch rescan: subdir={} blocked by security scan: {}", sub, e.getMessage());
         } catch (RuntimeException e) {
             failed.add(new FailedItem(name,
                     e.getClass().getSimpleName() + ": " + e.getMessage()));
