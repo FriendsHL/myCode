@@ -55,10 +55,25 @@ public class SkillDraftController {
             @PathVariable Long agentId,
             @RequestParam(name = "userId", required = true) Long userId) {
 
-        if (skillDraftService.hasPendingDrafts(userId)) {
+        long pending = skillDraftService.countPendingDraftsForAgent(userId, agentId);
+        if (pending > 0) {
             return ResponseEntity.ok(Map.of(
                     "status", "already_has_drafts",
-                    "message", "Review or discard existing drafts first"
+                    "agentId", agentId,
+                    "count", pending,
+                    "message", "Review or discard existing drafts for this agent first"
+            ));
+        }
+        // Legacy safeguard: drafts written before sourceSessionId was populated
+        // can't be linked to an agent. Block all extractions until they're cleared
+        // so they don't get drowned by new per-agent batches.
+        long unattached = skillDraftService.countUnattachedPendingDrafts(userId);
+        if (unattached > 0) {
+            return ResponseEntity.ok(Map.of(
+                    "status", "already_has_drafts",
+                    "agentId", agentId,
+                    "count", unattached,
+                    "message", "Clear " + unattached + " legacy draft(s) (no agent link) before extracting"
             ));
         }
 

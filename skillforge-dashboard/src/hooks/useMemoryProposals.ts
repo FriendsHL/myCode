@@ -48,7 +48,6 @@ function memoriesKey(userId: number) {
 export function useMemoryProposals({
   userId,
   status = 'proposed',
-  proposalType,
   enabled = true,
 }: UseMemoryProposalsArgs) {
   const queryClient = useQueryClient();

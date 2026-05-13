@@ -40,6 +40,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -55,6 +56,13 @@ public class SkillDraftService {
 
     private static final int MAX_SESSIONS = 10;
     private static final int MAX_MESSAGE_CHARS = 4000;
+
+    // Localized provider+model override for skill draft extraction (2026-05-13).
+    // bailian token went stale and there isn't a UI model picker yet; future
+    // direction is per-call configurability (FE picker or agent-based extraction).
+    // Falls back to the configured default-provider when xiaomi-mimo isn't registered.
+    private static final String EXTRACT_PROVIDER_NAME = "xiaomi-mimo";
+    private static final String EXTRACT_MODEL = "mimo-v2.5-pro";
 
     /** Plan r2 §9 — dedupe similarity thresholds. */
     static final double DEDUP_HIGH = 0.85;
@@ -158,7 +166,13 @@ public class SkillDraftService {
                     "Here are the recent session histories. Extract reusable skills.%n%n%s",
                     sessionSummaries);
 
-            LlmProvider provider = llmProviderFactory.getProvider(defaultProviderName);
+            LlmProvider provider = llmProviderFactory.getProvider(EXTRACT_PROVIDER_NAME);
+            boolean preferredAvailable = provider != null;
+            if (!preferredAvailable) {
+                log.warn("Preferred skill draft provider '{}' not available, falling back to default '{}'",
+                        EXTRACT_PROVIDER_NAME, defaultProviderName);
+                provider = llmProviderFactory.getProvider(defaultProviderName);
+            }
             if (provider == null) {
                 log.error("No LLM provider available for skill draft extraction");
                 return 0;
@@ -171,6 +185,11 @@ public class SkillDraftService {
             request.setMessages(messages);
             request.setMaxTokens(3000);
             request.setTemperature(0.3);
+            // Only pin the model when we resolved the preferred provider; otherwise leave
+            // it unset so the fallback provider picks its own default-model.
+            if (preferredAvailable) {
+                request.setModel(EXTRACT_MODEL);
+            }
 
             LlmResponse response = provider.chat(request);
             String content = response.getContent();
@@ -193,6 +212,14 @@ public class SkillDraftService {
             }
 
             Long resolvedOwnerId = userId != null ? userId : 0L;
+
+            // Anchor session id — used by the per-(owner, agent) pending-draft gate
+            // (SkillDraftController.triggerExtraction) to resolve drafts back to
+            // their originating agent via sourceSessionId → t_session.agent_id.
+            // Picking the most-recent eligible session is a heuristic (a draft is
+            // derived from multiple sessions); good enough since all sessions in
+            // this batch belong to the same agent.
+            String anchorSessionId = eligibleSessions.get(0).getId();
 
             // Plan r2 §9 — pre-save dedupe scoring against existing skills + drafts of this owner.
             List<SkillEntity> existingSkills = skillRepository.findByOwnerId(resolvedOwnerId);
@@ -227,6 +254,7 @@ public class SkillDraftService {
                 SkillDraftEntity entity = new SkillDraftEntity();
                 entity.setId(UUID.randomUUID().toString());
                 entity.setOwnerId(resolvedOwnerId);
+                entity.setSourceSessionId(anchorSessionId);
                 entity.setName(name);
                 entity.setDescription(description);
                 entity.setTriggers(item.get("triggers"));
@@ -257,21 +285,25 @@ public class SkillDraftService {
                     agentId, resolvedOwnerId, toSave.size(), high, merge);
 
             if (userId != null) {
-                userWebSocketHandler.broadcast(userId, Map.of(
-                        "type", "skill_draft_extracted",
-                        "count", toSave.size(),
-                        "highSimilarityFlagged", high,
-                        "mergeFlagged", merge
-                ));
+                // agentId included so the FE TaskTracker can match the running
+                // task entry by relatedId when multiple extractions run in parallel.
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("type", "skill_draft_extracted");
+                payload.put("count", toSave.size());
+                payload.put("highSimilarityFlagged", high);
+                payload.put("mergeFlagged", merge);
+                if (agentId != null) payload.put("agentId", agentId);
+                userWebSocketHandler.broadcast(userId, payload);
             }
             return toSave.size();
         } catch (Exception e) {
             log.error("Skill draft extraction failed for agent {}: {}", agentId, e.getMessage(), e);
             if (userId != null) {
-                userWebSocketHandler.broadcast(userId, Map.of(
-                        "type", "skill_draft_failed",
-                        "error", e.getMessage() != null ? e.getMessage() : "unknown error"
-                ));
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("type", "skill_draft_failed");
+                payload.put("error", e.getMessage() != null ? e.getMessage() : "unknown error");
+                if (agentId != null) payload.put("agentId", agentId);
+                userWebSocketHandler.broadcast(userId, payload);
             }
             return 0;
         }
@@ -600,6 +632,19 @@ public class SkillDraftService {
 
     public boolean hasPendingDrafts(Long ownerId) {
         return skillDraftRepository.countByOwnerIdAndStatus(ownerId, "draft") > 0;
+    }
+
+    public long countPendingDraftsForAgent(Long ownerId, Long agentId) {
+        return skillDraftRepository.countByOwnerIdAndStatusForAgent(ownerId, "draft", agentId);
+    }
+
+    public boolean hasPendingDraftsForAgent(Long ownerId, Long agentId) {
+        return countPendingDraftsForAgent(ownerId, agentId) > 0;
+    }
+
+    /** Legacy drafts with null sourceSessionId — block all extractions until cleared. */
+    public long countUnattachedPendingDrafts(Long ownerId) {
+        return skillDraftRepository.countByOwnerIdAndStatusAndSourceSessionIdIsNull(ownerId, "draft");
     }
 
     /**

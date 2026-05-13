@@ -13,6 +13,7 @@ import {
   type EvalHistoryEntry,
 } from '../api';
 import { useAuth } from '../contexts/AuthContext';
+import { useTaskTracker, newTaskId } from '../contexts/TaskTrackerContext';
 import { useNavigate } from 'react-router-dom';
 import '../components/agents/agents.css';
 import '../components/skills/skills.css';
@@ -33,6 +34,7 @@ const SkillList: React.FC = () => {
   const queryClient = useQueryClient();
   const { userId: currentUserId } = useAuth();
   const navigate = useNavigate();
+  const { addTask, updateTask } = useTaskTracker();
   const [selectedAgentId, setSelectedAgentId] = useState<number | null>(null);
   const [view, setView] = useState<'grid' | 'table'>('grid');
   const [q, setQ] = useState('');
@@ -109,17 +111,34 @@ const SkillList: React.FC = () => {
       return;
     }
     setExtracting(true);
+    // Pre-register a running task keyed by agentId so the panel survives
+    // the navigate('/skill-drafts') below; the WS event handler in Layout
+    // resolves it by `relatedId === String(agentId)`.
+    const taskId = newTaskId();
+    const agentName =
+      agentRows.find((a) => a.id === selectedAgentId)?.name ??
+      `agent ${selectedAgentId}`;
+    addTask({
+      id: taskId,
+      type: 'skill-extract',
+      label: `Skill 抽取 (${agentName})`,
+      state: 'running',
+      detail: '正在分析最近会话…',
+      relatedId: String(selectedAgentId),
+    });
     try {
       const res = await triggerSkillExtraction(selectedAgentId, currentUserId);
       if (res.data.status === 'already_has_drafts') {
-        message.info(`${res.data.count ?? 0} pending draft(s) already waiting for review`);
-      } else {
-        message.success('Extraction started — check back in a moment');
+        // No async work — resolve the task immediately so the panel doesn't
+        // sit running forever waiting for a WS event that won't come.
+        updateTask(taskId, {
+          state: 'info',
+          detail: `${res.data.count ?? 0} 条 draft 已在 review 队列`,
+        });
       }
-      // Navigate to drafts page after extraction
       navigate('/skill-drafts');
     } catch {
-      message.error('Failed to start skill extraction');
+      updateTask(taskId, { state: 'failed', detail: '请求失败' });
     } finally {
       setExtracting(false);
     }

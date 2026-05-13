@@ -4,6 +4,11 @@ import { Badge } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
+import {
+  TaskTrackerProvider,
+  useTaskTracker,
+} from '../contexts/TaskTrackerContext';
+import TaskPanel from './TaskPanel';
 import { getSkillDrafts } from '../api';
 import CmdKPalette, { type PaletteItem } from './CmdKPalette';
 import TweaksPanel from './chat/TweaksPanel';
@@ -45,12 +50,13 @@ const navItemActive = (item: NavItem, pathname: string): boolean => {
   return pathname === rootPath || pathname.startsWith(rootPath + '/');
 };
 
-const AppLayout: React.FC = () => {
+const AppLayoutInner: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { theme, toggleTheme } = useTheme();
   const { userId } = useAuth();
   const queryClient = useQueryClient();
+  const { addTask, resolveByMatch } = useTaskTracker();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [tweaksOpen, setTweaksOpen] = useState(false);
 
@@ -82,11 +88,104 @@ const AppLayout: React.FC = () => {
     );
     ws.onmessage = (ev) => {
       try {
-        const msg = JSON.parse(ev.data) as { type?: string };
+        const msg = JSON.parse(ev.data) as {
+          type?: string;
+          count?: number;
+          error?: string;
+          failureReason?: string;
+          agentId?: number | string;
+          abRunId?: string;
+          status?: string;
+          promoted?: boolean;
+          deltaPassRate?: number;
+        };
         if (msg.type === 'skill_draft_extracted') {
           queryClient.invalidateQueries({ queryKey: ['skill-drafts'] });
+          const count = msg.count ?? 0;
+          const agentKey =
+            msg.agentId !== undefined && msg.agentId !== null
+              ? String(msg.agentId)
+              : null;
+          const resolved = resolveByMatch(
+            'skill-extract',
+            (t) => agentKey === null || t.relatedId === agentKey,
+            {
+              state: count === 0 ? 'info' : 'success',
+              detail:
+                count === 0
+                  ? '未发现可抽取的新技能'
+                  : `抽出 ${count} 条 draft`,
+            },
+          );
+          if (!resolved) {
+            // No local task to resolve (cron-triggered / different tab) —
+            // still surface so the user sees the activity.
+            addTask({
+              id: `extract-${Date.now()}`,
+              type: 'skill-extract',
+              label: agentKey
+                ? `Skill 抽取 (agent ${agentKey})`
+                : 'Skill 抽取',
+              state: count === 0 ? 'info' : 'success',
+              detail:
+                count === 0
+                  ? '未发现可抽取的新技能'
+                  : `抽出 ${count} 条 draft`,
+              relatedId: agentKey ?? undefined,
+            });
+          }
+        } else if (msg.type === 'skill_draft_failed') {
+          const agentKey =
+            msg.agentId !== undefined && msg.agentId !== null
+              ? String(msg.agentId)
+              : null;
+          const errText = msg.error ?? '未知错误';
+          const resolved = resolveByMatch(
+            'skill-extract',
+            (t) => agentKey === null || t.relatedId === agentKey,
+            { state: 'failed', detail: errText },
+          );
+          if (!resolved) {
+            addTask({
+              id: `extract-${Date.now()}`,
+              type: 'skill-extract',
+              label: agentKey
+                ? `Skill 抽取 (agent ${agentKey})`
+                : 'Skill 抽取',
+              state: 'failed',
+              detail: errText,
+              relatedId: agentKey ?? undefined,
+            });
+          }
+        } else if (msg.type === 'ab_skill_run_completed') {
+          const abId = msg.abRunId ?? null;
+          const isFailed = msg.status === 'FAILED';
+          const promoted = msg.promoted === true;
+          const delta = msg.deltaPassRate;
+          const detail = isFailed
+            ? msg.failureReason ?? msg.error ?? 'A/B 评估失败'
+            : promoted
+              ? `已晋升 (Δ${delta?.toFixed?.(1) ?? '?'}pp)`
+              : `未晋升 (Δ${delta?.toFixed?.(1) ?? '?'}pp)`;
+          const resolved = resolveByMatch(
+            'skill-ab-eval',
+            (t) => abId === null || t.relatedId === abId,
+            { state: isFailed ? 'failed' : 'success', detail },
+          );
+          if (!resolved) {
+            addTask({
+              id: `ab-${abId ?? Date.now()}`,
+              type: 'skill-ab-eval',
+              label: 'Skill A/B 评估',
+              state: isFailed ? 'failed' : 'success',
+              detail,
+              relatedId: abId ?? undefined,
+            });
+          }
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     };
     return () => { try { ws.close(); } catch { /* ignore */ } };
   }, [userId, queryClient]);
@@ -213,8 +312,15 @@ const AppLayout: React.FC = () => {
       )}
 
       <TweaksPanel open={tweaksOpen} onClose={() => setTweaksOpen(false)} />
+      <TaskPanel />
     </div>
   );
 };
+
+const AppLayout: React.FC = () => (
+  <TaskTrackerProvider>
+    <AppLayoutInner />
+  </TaskTrackerProvider>
+);
 
 export default AppLayout;
