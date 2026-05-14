@@ -303,40 +303,76 @@ Agent loop 跑（用 allocator 拿到的 version 组合）
 
 ---
 
-### V2 — Skill 闭环最后一公里：灰度 + 生产指标回流
+### V2 — Skill 闭环最后一公里：灰度（架构保留）+ 生产指标回流
 
 **档**：Full（触碰 AgentLoopEngine 核心 + 加 schema）
 **ID**：`SKILL-CANARY-ROLLOUT`
-**前置**：V0 完成（skill A/B 多轮跑通）+ V1 完成（生产标注已经有 outcome 标签可对比）
-**目标**：飞轮第⑦⑧⑨步对 skill 这一条 surface 落地。
+**前置**：V0 SKILL-AB-MULTITURN-FIX + V1 PROD-LABEL-CLUSTER 都完成 + **V1 跑 1 周 dogfood 看 outcome 标签信号准不准**（V1 §8 决策 8）
+**目标**：飞轮第⑦⑧⑨步对 skill 这一条 surface 落地。**默认一刀切**（rolloutPercentage=100 等于现行），灰度作 opt-in 模式保留为多用户阶段用。
 
 **功能范围**：
-- `t_canary_rollout` + `t_canary_metric_snapshot` 表
-- SkillEntity 加列：`rolloutStage`（disabled / canary / production / rolled_back）+ `rolloutPercentage`
-- `CanaryRolloutService`：启停 canary、调整 percentage、auto-rollback signal
+- `t_canary_rollout`（状态机：disabled / canary / production / rolled_back）+ `t_canary_metric_snapshot` 表
+- `SkillEntity` 加 2 列：`rolloutStage`、`rolloutPercentage`（默认 100，等价现行行为）
+- `CanaryRolloutService`：启停 + 调档 + auto-rollback 信号
 - `CanaryAllocator`：sessionId hash % percentage → 决定本次 session 用 active 还是 candidate skill
-- 改 AgentLoopEngine / SkillRegistry 路径：按 allocator 结果挂载 skill（**红灯 + Full pipeline**）
-- `ProdMetricsCollector`：hourly cron 聚合 t_session_annotation（control 组 vs candidate 组的 outcome 标签），写 t_canary_metric_snapshot
-- Dashboard skill 详情页加 canary panel：rollout gauge / 24h 指标 / promote 按钮 / rollback 按钮
-- Auto-rollback：candidate fail_rate / control fail_rate > 1.5 且样本 > 50 触发，立刻 percentage=0
+- 改 AgentLoopEngine / SkillRegistry skill 加载入口前挂一层 allocator 查询（**核心文件红灯**）
+- `ProdMetricsCollector` hourly cron：聚合 t_session_annotation 的 outcome 标签，按 sessionId 反查 canary group → 写 t_canary_metric_snapshot
+- Dashboard skill 详情页加 canary panel：rollout gauge / 24h 指标 / publish 按钮 / rollback 按钮
+- 配置项 `auto_promote_after_ab`（默认 false = A/B 通过等人按 publish；true = 自动）
+- Auto-rollback：仅在 opt-in 灰度模式下生效（一刀切不触发）
 
-**已 ratify 决策（建议）**：
-1. 同一 agent 同时只能有 1 个 surface 在 canary（V2 仅 skill，互斥保留给 V4）
-2. canary 默认起步 5%；用户手动调档 5/20/50/100
-3. session 一旦进 canary 组，整个 session 生命周期用同一版本（不中途切）
-4. auto-rollback 触发后必须人工 reset 才能再起 canary（防 oscillation）
+**复用清单（V1 经验 + 项目现有）**：
+- ✅ `SkillAbEvalService` 全套（createAndTrigger / runAbTestAsync / promoteCandidate / manualPromote / delta 阈值）不动
+- ✅ `SandboxSkillRegistryFactory.buildSandboxRegistryWithSkills` skill sandbox 注入零改动
+- ✅ `EvalScoreFormula` M4_V2 4 维分数 + dimensionStatus → 直接是 canary control vs candidate 指标对比轴
+- ✅ V1 `t_session_annotation` outcome 标签 → ProdMetricsCollector 唯一数据来源
+- ✅ V1 `t_session_pattern` → 如果 canary group 整体掉进某个 fail pattern，强信号触发 auto-rollback
+- ✅ 现有 `SkillEntity`（parent_skill_id / artifact_status / version）→ 只加 2 列
+- ✅ `SkillEvolutionPanel.tsx` / `SkillAbPanel.tsx` → canary panel 嵌入扩展，不重写
+- ✅ V1 落地的 `OptimizableSurface<V>` 空接口骨架 → V2 给 skill 填第一个实现类（不抽 Template Method，等 V4）
 
-**不做**：
-- 不接 attribution agent（V3）
-- 不做 prompt / behavior rule 的 canary（V4）
+**新建清单**：
+- 2 张表 + Entity / Repository（标准三件套）
+- `CanaryAllocator`（核心运行时分流）
+- `CanaryRolloutService`（状态机操作 + auto-rollback 触发）
+- `ProdMetricsCollector` 走 P12 ScheduledTask（**复用 V1 ScheduledTask 模式，不写 @Scheduled**）
+- Skill 详情页 canary panel 组件 + Publish/Rollback 按钮
+- 2 个 Flyway migration（schema + ScheduledTask seed）
 
-**验收**：
-- 把一个 skill 上 canary 5% → 24h → 指标看板能看到 control vs candidate
-- 人工触发 promote → percentage 100% + active 切换
-- 人工注入坏 candidate → auto-rollback 触发 + dashboard 告警
-- 现有 SkillAbEvalService promoteCandidate 全量路径不退化（rolloutPercentage 默认 100）
+**待 ratify 决策（开工前拍）**：
+1. **canary 默认起步比例（多用户阶段）**：5% / 10% / 20% —— 看 V1 dogfood 跑出多少 prod session/天再定（推荐 10% 但要数据支撑）
+2. **session canary 组绑定持久化**：每次 dispatch 现算 hash % pct（无状态）vs 写 `t_session_annotation` (annotationType="canary_group")（有状态可追溯）—— 推荐**有状态写到 t_session_annotation**（V1 表已 ready 直接复用，不另开表）
+3. **Auto-rollback 阈值**：candidate fail_rate / control fail_rate > 1.5 且样本 > 50 —— 这两个值跟 V1 实际 outcome 标签准确率挂钩，等 V1 dogfood spot-check 20 条准确率后再定
+4. **同 agent canary 互斥**：advisory lock vs DB unique constraint —— 推荐 unique constraint on (agent_id, surface_type, rolloutStage='canary')，简单 + 持久 + 重启不丢
+5. **CanaryAllocator 注入点**：AgentLoopEngine spawn skill 之前 vs SkillRegistry 查 skill 时 —— **推荐前者**（AgentLoopEngine 已是核心文件，多一处分流逻辑加在那里集中），但要 reviewer 显式审 persistence-shape-invariant
+6. **ProdMetricsCollector 频率**：hourly / 6-hourly / daily —— hourly 跟 V1 同步省脑（推荐）
 
-**预估**：~1500 行后端 + ~600 行前端 + Flyway 2 个 migration，2-3 周
+**已知 footgun（V1 踩过 + 项目特点）**：
+- ⚠️ **Flyway 版本号占用**：开工前 grep `ls db/migration/V*.sql` 找下一个可用号（V1 经验：V72/V73 被 multimodal 占用）
+- ⚠️ **TIMESTAMPTZ not TIMESTAMP**（V1 经验，跟 V70+ 一致）
+- ⚠️ **per-row saveAndFlush + catch DIVE 在 PG aborted-tx 静默丢数据**（V1 Phase 2 修过）—— 任何写多行操作用 `INSERT ... ON CONFLICT DO NOTHING RETURNING id`
+- ⚠️ **AgentLoopEngine 触碰双红灯**：identity-column-on-rewrite + persistence-shape-invariant 两条 Iron Law 必须 reviewer 显式审，commit message acknowledge
+- ⚠️ **CanaryAllocator 决策必须 per-session 锁死**（同 session 不能中途切版本，否则 prompt cache 失效 + agent 状态错乱）—— ratify 决策 2 的方案选择会决定怎么持久化
+- ⚠️ **ProdMetricsCollector 跑空数据时不能崩**：V1 开始头 24h pattern 可能 0 条，canary group 还没 sample → 指标计算注意 divide-by-zero
+- ⚠️ **promoteCandidate 现行行为不能破坏**：rolloutPercentage 默认 100 = 现行一刀切。reviewer 必须 regression 测现有 skill evolution 自动 promote 路径
+
+**不锁的具体（等开工时按数据决定）**：
+- canary panel 24h 指标图表的具体维度组合（quality / efficiency / latency / cost / outcome rate？）
+- ProdMetricsCollector 写 t_canary_metric_snapshot 的字段精度（DECIMAL 几位？）
+- Auto-rollback 触发后的 alert 渠道（dashboard toast / email / 不发？）
+- 默认配置 `auto_promote_after_ab=false` vs `true`（看用户偏好）
+
+**前置依赖关键检查**：
+- V1 dogfood 后 outcome 标签人工 spot-check 准确率 > 70%（PRD 验收标准）—— 不达标 ratify #3 阈值就没基础
+
+**验收（迁移自原版 + 加细节）**：
+- 把一个 skill 上 canary 10% → 24h → 指标看板能看到 control vs candidate 4 维分数对比
+- 人工触发 publish → percentage 100% + active 切换 + 现有 promote 路径同步
+- 人工注入坏 candidate → auto-rollback 触发 + dashboard 告警 + 状态机置 rolled_back
+- 现有 SkillAbEvalService promoteCandidate 全量路径不退化（rolloutPercentage 默认 100）+ 现有 SkillEvolutionPanel 正常显示
+- AgentLoopEngine 加 allocator 路径不破 persistence-shape / identity-column 两条 Iron Law
+
+**预估**：~1500 行后端 + ~600 行前端 + 2 Flyway migration，2-3 周
 
 ---
 
@@ -344,77 +380,147 @@ Agent loop 跑（用 allocator 拿到的 version 组合）
 
 **档**：Full（新 system agent + SubAgent 集成 + 新表）
 **ID**：`ATTRIBUTION-AGENT`
-**前置**：V1 完成（pattern 可读）+ V2 完成（canary 可写 metrics）
-**目标**：飞轮第③⑤⑥步打通自动化通路：从 pattern → "改哪个 surface 改成什么" → 自动起 candidate → 自动发起 A/B + canary。
+**前置**：V1 完成（pattern 可读）+ V2 完成（canary 可写 metrics） + **V1 跑数据后实际 pattern 列表能挑出至少 1-2 个值得 attribute 的真实失败 pattern**（不然 V3 没 input）
+**目标**：飞轮第③⑤⑥步打通自动化通路 —— 从 pattern → "改哪个 surface 改成什么" → 自动起 candidate → 自动发起 A/B + canary，**半自动**（人工 approve proposal 才起 candidate，per V1 ratify 决策 5）
 
 **功能范围**：
-- `t_optimization_event`（因果链表）
-- 新 system agent `attribution-curator`（参考 memory-curator 模式）：
-  - 有 tool：`SessionAnnotationRead` / `PatternRead` / `SessionMessageRead` / `TraceRead` / `ProposeOptimization` / `WriteOptimizationEvent`
-  - prompt 工程：让它读 pattern + 抽样 session → 输出"改哪个 surface（skill/prompt/rule）+ 怎么改 + 期望效果"的结构化 proposal
-- `AttributionDispatcher`：cron / 手动触发，对一个 pattern 派发一次 attribution-curator
-- 接入现有 candidate 生成器：
-  - surface=skill → trigger SkillDraftService
-  - surface=prompt → trigger PromptImproverService
-  - surface=behavior_rule → 暂留 stub（V4 才有 generator）
-- 起完 candidate 自动发起 A/B run，A/B 通过自动发起 canary（接 V2）
-- 每个阶段转换写 t_optimization_event
-- Dashboard：optimization event 时间轴页（pattern → attribution → candidate → ab → canary → verified 的链路视图）
+- `t_optimization_event` 因果链表（stages: pattern → attribution_proposed → proposal_approved → candidate_created → ab_run → canary_started → canary_verified → promoted）
+- 新 system agent `attribution-curator`（参考 memory-curator + V1 session-annotator 双模板，**同款 ScheduledTask + 1 agent + 多 tool orchestrate**）
+- `AttributionDispatcher`（cron / 手动 trigger，对未 attribute 的 pattern 派发一次 attribution-curator）
+- Dashboard：
+  - optimization event 时间轴页（pattern → attribution → candidate → ab → canary → verified 全链路）
+  - Pending Approval 队列（attribution-curator 产出的 proposal 等人按 approve 才起 candidate）
 
-**已 ratify 决策（建议）**：
-1. attribution-curator 默认不全自动 promote（"产出 proposal → 人工 review 通过才起 candidate"），P2 再考虑全自动
-2. 一个 pattern 只能起一次 active optimization event（防重复占用 candidate quota）
-3. 跨 surface 同时 propose（同一 pattern 同时建议改 skill 和 prompt）保留为 V5 议题
+**复用清单（V1+V2 经验）**：
+- ✅ V1 `t_session_pattern` + `t_pattern_session_member` → attribution agent 直接读
+- ✅ V1 `t_session_annotation` → attribution agent 取 session 怀疑根因细节
+- ✅ V1 `SessionAnnotatorBootstrap` + classpath prompt + V69 dogfood 模式 → attribution-curator agent 完全照搬模板
+- ✅ V1 `GetTraceTool`（V76 接入）→ attribution agent 复用，看 trace 细节
+- ✅ V1 P12 ScheduledTask + concurrency_policy='skip-if-running' → 同款触发模式
+- ✅ V1 `EvalAnalysisSessionEntity` 模型 → 扩 analysisType enum 加 `PATTERN_LEVEL`，不新建表
+- ✅ V1 `AnalyzeEvalTaskTool` 写 attributionSummary 模式 → attribution-curator 的 ProposeOptimization tool 直接 copy 形态
+- ✅ V1 `SubAgentRegistry` / `SubAgentTool` → 零改动派发
+- ✅ V2 `CanaryAllocator` / `CanaryRolloutService` → attribution 自动通过后自动起 canary
+- ✅ 现有 `SkillDraftService.extractFromRecentSessions` → attribution proposal 触发它，**不开第二条 skill 抽取路径**
+- ✅ 现有 `PromptImproverService.startImprovement` → attribution proposal 触发它，**不开第二条 prompt 改进路径**
+- ✅ 现有 `SkillEvolutionPanel` timeline UI 模式 → optimization event timeline 同款渲染
 
-**不做**：
-- 不做 behavior rule 的 candidate generator（V4）
-- 不做 user simulator 多轮 prove-better（V5）
+**新建清单**：
+- `t_optimization_event` 表 + state machine service（Spring `ApplicationEventPublisher` 监听 stage 转换 atomic 写 event）
+- `attribution-curator` system agent + 5-6 个 tool：
+  - `PatternRead`（读 t_session_pattern + members）
+  - `SessionAnnotationRead`（读 t_session_annotation by sessionId）
+  - `ProposeOptimization`（产出 surface + 改法 + 期望效果的结构化 JSON）
+  - `WriteOptimizationEvent`（写状态机转换）
+  - 复用 `GetTrace`（V76 已注册，加到 attribution-curator 的 tool_ids）
+- `AttributionDispatcher`（cron / 手动触发）
+- `OptimizationEventService` + REST `/api/insights/optimization-events`
+- Dashboard 时间轴页 + Pending Approval 列表
+
+**待 ratify 决策（开工前拍）**：
+1. **半自动 vs 全自动**：V1 ratify 决策 5 已锁定 **半自动**（proposal 等人 approve）—— V3 复用，不改
+2. **同一 pattern 触发 attribution 冷却**：attribute 失败后多久允许重试（防重复 spend token）—— 推荐 24h cooldown 字段 + manual override
+3. **跨 surface proposal**：同 pattern 是否允许同时建议改 skill + prompt？—— V3 推荐 **单 surface only**（agent 必须选 1 个 best surface），跨 surface 留 V4 或 V5
+4. **attribution-curator 输出格式**：JSON schema 该长啥样（surface + change_type + description + confidence + risk）—— 等 V1 pattern 真长出来再定结构（**不锁**）
+5. **A/B 通过后自动 canary** vs **A/B 通过后等人按 publish**：V1 ratify #4 已锁 publish 按钮 → V3 同步（A/B 通过 → 写 event stage=ab_passed，**人工按 canary 按钮才进 V2 canary**）
+6. **attribution agent 用哪个 model**：runtime t_agent.llm_model 用户配置（不锁）；seed 默认推荐 sonnet（attribute reasoning 需要 carefulness）
+
+**已知 footgun（V1+V2 经验 + 项目特点）**：
+- ⚠️ 复用 V1 dogfood 经验：V72-V76 占用后下个 migration 至少 V77+（开工前 grep 确认）
+- ⚠️ `ApplicationEventPublisher` 同步事件 vs 异步：写 stage 转换 atomic 要求事务内同步发布 + 监听器同事务，否则可能 stage 写漂移
+- ⚠️ system agent owner_id=1 + is_public=TRUE（V1 ratify 决策 7，V3 继承）
+- ⚠️ tool_ids JSON 顺序 = agent prompt 调用顺序（V1 经验：[SignalDetect, GetTrace, Annotate, RecomputeClusters]）
+- ⚠️ Bootstrap classpath:* + SEE_FILE: sentinel 重新加载机制（V1 V76 经验）
+- ⚠️ attribution-curator 跑出 proposal 可能**很贵**（要看 pattern + 多个 member session + 写 reasoning）→ 单次 invocation 限 max_loops + 单批 pattern 数限 cap
+- ⚠️ ProposeOptimization tool 不写 candidate（不直接调 SkillDraftService / PromptImproverService）→ 只写 t_optimization_event proposal stage 等人 approve；approve 触发 candidate 生成
+
+**不锁的具体（等开工时按 V1 数据决定）**：
+- attribution-curator system prompt 的 heuristics 细节（"什么样的 pattern 该指向 prompt vs skill"）—— 看 V1 跑出来 pattern 形态再写
+- proposal JSON schema 字段（surface / change_type / description / expected_metric_delta）
+- Pending Approval UI 设计（卡片式 / 列表式 / drawer）
+- cooldown 字段 ratify #2 的具体小时数
+
+**前置依赖关键检查**：
+- V1 dogfood 后 dashboard `/insights/patterns` 至少能挑出 1-2 个真实 pattern 适合 attribute
+- V2 canary 通路至少跑通 1 次 skill end-to-end（不然 V3 自动接 canary 拿不到数据）
 
 **验收**：
-- 给一个真实 pattern 跑 attribution-curator → 输出可读 proposal
-- proposal 被 approve 后能自动串完 candidate → A/B → canary → verified 全链路
-- t_optimization_event 时间轴 dashboard 能完整还原一次飞轮跑
+- 给一个真实 pattern 跑 attribution-curator → 输出可读 proposal（人工评估 reasonable）
+- proposal approve 后能自动触发 SkillDraftService 或 PromptImproverService，进 A/B
+- A/B 通过 → 推 publish 按钮 → 自动进 V2 canary → canary 通过 → 写 event stage=promoted
+- Dashboard 时间轴能完整还原一次飞轮跑
+- 失败回滚也写 event（rolled_back stage）
 
-**预估**：~1200 行后端（agent prompt + 6 个新 tool + dispatcher）+ ~500 行前端，3 周
+**预估**：~1200 行后端（agent prompt + 5-6 个 tool + dispatcher + state machine）+ ~500 行前端，3 周
 
 ---
 
-### V4 — Behavior Rule + Lifecycle Hook 纳入飞轮
+### V4 — Behavior Rule + Lifecycle Hook 纳入飞轮（OptimizableSurface 抽象提取）
 
-**档**：Full（多 surface 统一抽象 + 改两个核心配置路径）
+**档**：Full（多 surface 统一抽象 + 重构 SkillAbEvalService + AbEvalPipeline 共用骨架 + 改两个核心配置路径）
 **ID**：`MULTI-SURFACE-FLYWHEEL`
-**前置**：V2 + V3 完成（skill 这一路完整闭环 → 已验证模式）
-**目标**：把 behavior rule（必做）和 lifecycle hook（视使用率决定）接入同一飞轮。
+**前置**：V2 + V3 完成（skill 一路完整闭环 = 第一个 surface 验证）+ V3 attribution agent 真跑出过指向 behavior_rule 的 proposal（不然 V4 没切入信号）
+**目标**：把 **behavior rule 必做** + **lifecycle hook 视使用率决定**接入同一飞轮。**第二、三个 surface 出现触发 V1 留的 `OptimizableSurface<V>` 空骨架填实 + 抽 `AbstractAbEvalRunner` Template Method 收口**。
 
 **功能范围**：
-- 新表 `t_behavior_rule_version` + `t_behavior_rule_ab_run`，类比 PromptVersionEntity 模式
-- 新 service `BehaviorRuleImproverService`：candidate 生成（LLM 写规则文本）
-- 新 service `BehaviorRuleAbEvalService` 或 generic `AbEvalRunner<BehaviorRule>`
-- 抽 `OptimizableSurface<V>` 接口：SkillAbEvalService / AbEvalPipeline / BehaviorRuleAbEvalService 共用骨架
-- 抽 `AbEvalRunner<V>` 把三处 sandbox 注入 + judge + 阈值 promote 收口
-- BehaviorRuleRegistry 改 active version 查表（active_version_id 字段加到 AgentEntity 或独立表）
-- CanaryAllocator 扩 surface 维度（V2 只支持 skill）
-- AttributionAgent 的 ProposeOptimization tool 接 behavior_rule 分支
-- Dashboard：behavior rule 详情页加 canary panel（复用 V2 组件）
+- `t_behavior_rule_version` + `t_behavior_rule_ab_run` 表（模仿 `PromptVersionEntity` + `PromptAbRunEntity`）
+- 可选：`t_lifecycle_hook_version` + `t_lifecycle_hook_ab_run`（视 V1-V3 实际 lifecycle hook 演进频率）
+- `BehaviorRuleImproverService` + `BehaviorRuleAbEvalService`（复用 `PromptImproverService` + `SkillAbEvalService` 模板）
+- 抽 `AbstractAbEvalRunner<V>` Template Method（**重构现有两个 service，不是新写第三个**）—— hook: extractBaseline / buildCandidateSandbox / runJudge / aggregateScore / promoteOnThreshold
+- `OptimizableSurface<V>` 三个实现类（V1 骨架填实）：`SkillSurface` / `PromptSurface` / `BehaviorRuleSurface`
+- `SurfaceRegistry`（Spring `@Component` 自动注入；按 SurfaceType enum 分发）
+- `CanaryAllocator` 扩 surface 维度（V2 只支 skill，V4 改泛型）
+- AttributionAgent 的 `ProposeOptimization` tool 接 behavior_rule 分支（V3 已留 stub）
+- `BehaviorRuleRegistry` 改 active version 查表
+- Dashboard：behavior rule 详情页加 canary panel（**复用 V2 组件**）
 
-**可选纳入（视用户使用频率决定）**：
-- Lifecycle Hook 同样套路（LifecycleHookVersionEntity / LifecycleHookAbRunEntity / LifecycleHookImproverService）
+**复用清单（V1+V2+V3 经验 + 项目现有）**：
+- ✅ 现有 `PromptVersionEntity` + `PromptAbRunEntity` + `PromptImproverService` + `PromptPromotionService` → behavior rule 表 + service 完全照抄模板
+- ✅ 现有 `BehaviorRuleRegistry`（N2 已落地）+ `behavior-rules.json` 内置规则库 → baseline v0
+- ✅ V2 `t_canary_rollout` + `t_canary_metric_snapshot` + `CanaryAllocator` + `CanaryRolloutService` + `ProdMetricsCollector` → 全部泛化为 surface 维度，不重写
+- ✅ V3 `t_optimization_event` 状态机 → 不动，attribution agent 输出 surface=behavior_rule 时进 V4 流程
+- ✅ V3 attribution-curator agent → 加 ProposeOptimization tool 一个 enum 分支即可
+- ✅ V1 `OptimizableSurface<V>` 空接口骨架 → V4 才填三个实现类（**Strategy + Registry 模式**正式落地）
+- ✅ 现有 `SkillAbEvalService` + `AbEvalPipeline`（prompt A/B）→ 重构提取共同骨架，不是丢弃重写
+- ✅ 现有 `SandboxSkillRegistryFactory` → 模式扩展为 `SandboxSurfaceFactory<V>` 泛型
 
-**已 ratify 决策（建议）**：
-1. tool 不纳入（重构成本太高，单独 V6+）
-2. 同 agent 同时只能 1 个 surface canary 的限制保留
-3. OptimizableSurface 抽象**只在 V4 真有第二个 surface 时落地**（不提前抽）
+**新建清单**：
+- 2 张表（behavior_rule_version + behavior_rule_ab_run；可选 +2 张 lifecycle_hook）
+- `AbstractAbEvalRunner<V>` Template Method（**重构核心**，收口现有 2 个 service）
+- `OptimizableSurface<V>` + 3 个实现 + `SurfaceRegistry`
+- `BehaviorRuleImproverService` + `BehaviorRuleAbEvalService`
+- 1 Flyway migration（schema）+ 可能 1 个 seed migration
 
-**不做**：
-- 不做 tool registry versioning
-- 不做 prod metric 反向 train tagger（V5）
+**待 ratify 决策（开工前拍）**：
+1. **lifecycle hook 是否纳入 V4** —— 看 V1-V3 跑下来 hook 改动频率：>1/月 纳入，<1/月 推 V5。**等 V1-V3 数据**
+2. **OptimizableSurface 接口的具体方法签名** —— 等 V2 SkillSurface + V3 PromptSurface 真接入跑过后才知道接口长啥样（**不锁，开工时按 V2/V3 实际经验抽**）
+3. **AbstractAbEvalRunner Template Method hook 顺序** —— 等 V2 V3 完成时实际 service 长啥样再抽（**不锁**）
+4. **canary 互斥**：V2 限制"同 agent 1 个 surface canary" 是否保留？—— V4 推荐保留（防 confounding），但加新 ratify "同 agent 不同 surface 顺序 canary" 的协调
+5. **behavior rule candidate 生成的 LLM model** —— runtime t_agent 配置，不锁
+
+**已知 footgun（V1+V2+V3 经验 + 项目）**：
+- ⚠️ **过早抽象 = 大失败**：必须等 V2 + V3 真接入跑过才抽 Template Method（V1 plan.md 第四节已明确这点）
+- ⚠️ 重构 `SkillAbEvalService` + `AbEvalPipeline` 时**现有测试必须保持绿**（V1 经验：refactor 零行为漂移 + 现有 test 锁）
+- ⚠️ `behavior_rules.json` 内置规则库改为 v0 baseline 时，**老 agent.behaviorRules JSON 字段处理**（migration 把现有 customRules 转为 v0 version row？或留向后兼容？）
+- ⚠️ V2 `CanaryAllocator` 改泛型时，现有 skill canary 路径不退化
+- ⚠️ 现有 N2 `BehaviorRuleRegistry` 是 application-startup 加载内置规则，改 DB-driven active version 不能让启动变慢
+
+**不锁的具体**：
+- behavior rule candidate 生成 prompt 工程（看 V1-V3 实际 attribution proposal 形态再写）
+- 是否纳入 lifecycle hook
+- `OptimizableSurface<V>` 具体方法签名（依赖 V2/V3 实际 service 抽象）
+
+**前置依赖关键检查**：
+- V2 + V3 已 commit + dogfood 1-2 周
+- V3 attribution agent 跑出 ≥ 1 个真实 behavior_rule proposal（不然 V4 没触发信号）
 
 **验收**：
 - 给一个 agent 起 behavior rule canary → 跑完 canary → promote
-- 抽象提取后 skill / prompt / behavior rule 三条 A/B 路径都走同一 AbEvalRunner
-- 现有 skill 和 prompt 路径不退化
+- 抽象提取后 skill / prompt / behavior rule 三条 A/B 路径**都走同一 `AbstractAbEvalRunner` 骨架**
+- 现有 skill / prompt 路径不退化（regression test 全绿）
+- V5 user simulator 接入时**只新加一个 surface handler**（不改主框架，验证扩展性）
 
-**预估**：~1500 行重构 + ~800 行新 + ~500 前端，3-4 周
+**预估**：~1500 行重构（核心，跨现有 2 service）+ ~800 行新（behavior rule 全栈）+ ~500 行前端，3-4 周
 
 ---
 
@@ -422,16 +528,39 @@ Agent loop 跑（用 allocator 拿到的 version 组合）
 
 **档**：Full
 **ID**：`EVAL-DYNAMIC-USER-SIM`（已在 backlog）
-**前置**：V1-V4 全完成
-**目标**：把 "重新跑一次证明效果比之前好" 从"在 held-out 静态 dataset 上更好"升级为"在动态 user simulator + 真生产数据回流上都更好"。
+**前置**：V1-V4 全完成 + V4 OptimizableSurface 抽象已稳定（V5 接入 user sim 作为新 surface eval 维度）
+**目标**：把"重新跑一次证明效果比之前好"从"held-out 静态 dataset 上更好"升级为"动态 user simulator + 真生产数据回流都更好"。
 
 **功能范围**（已在 backlog 中描述）：
-- 增强 SessionScenarioExtractorService：抽 businessGoal / successCriteria / userPersona / userConstraints / failureSignals / expectedOutcome
+- 增强 `SessionScenarioExtractorService`：抽 businessGoal / successCriteria / userPersona / userConstraints / failureSignals / expectedOutcome
 - 新 system agent `UserSimulatorAgent`：按 goal + persona 动态生成下一轮用户输入
 - process-level judge：对完整 transcript 评分
-- 把 prod metric backflow 接进 A/B 通过 gate：A/B 通过 + canary 通过 + 动态 sim 通过 = "真的更好"
+- 把 V2 prod metric backflow + V3 optimization event 接进新 A/B 通过 gate：**A/B 通过 + canary 通过 + 动态 sim 通过 = 真的更好**
 
-**已 ratify 决策**：留至 V5 真开工时决定（动态模拟成本控制 / 是否参与 auto-promote / 多 trial 平均等）
+**复用清单**：
+- ✅ V1 outcome 标签 + pattern → user sim seed scenarios
+- ✅ V2 canary metric → 跟 user sim 结果交叉验证
+- ✅ V3 optimization event 加 stage=user_sim_verified
+- ✅ V4 OptimizableSurface 抽象 → user sim 作为 "eval 维度" 而不是 "surface"，挂在 AbEvalRunner judge 阶段后增强
+- ✅ 现有 SessionScenarioExtractorService → 扩字段不重写
+- ✅ 现有 EvalJudgeTool / multi-turn judge → 扩 process-level judge
+
+**新建清单**：
+- 新 system agent `UserSimulatorAgent` + tool
+- `SessionScenarioExtractorService` 扩字段 + Flyway migration（t_eval_scenario 加列）
+- process-level judge service
+- A/B gate 三因子合成：A/B + canary + user_sim
+
+**待 ratify 决策（V5 开工时拍）**：
+1. **user simulator 成本控制**：每个 candidate 跑多少 trial？随机 persona vs fixed？
+2. **是否参与 auto-promote**：dynamic sim 通过是否进 auto_promote_after_ab 默认 true 路径？或仍要人工 publish？
+3. **multi trial 平均**：simulator 非确定，>1 trial 取均值 / 取最差？
+4. **是否纳入 tau-bench**：v3 backlog 提过，跟 user sim 重叠度？
+
+**已知 footgun**：
+- ⚠️ user simulator agent 也是 system agent → owner_id=1 + ScheduledTask 模式（V1 经验）
+- ⚠️ 动态对话**很贵**（user sim agent 跑完 N 轮，候选 agent 也跑 N 轮，process judge 1 轮 = 2N+1 LLM call/trial）→ cost budget 必须显式
+- ⚠️ user sim 输出不能影响生产数据（写专门 t_session.origin='user_sim'）
 
 **预估**：3-4 周，按 backlog 描述
 
@@ -441,11 +570,24 @@ Agent loop 跑（用 allocator 拿到的 version 组合）
 
 **档**：Full
 **ID**：`TOOL-REGISTRY-VERSIONING`
+**前置**：V1-V5 全完成 + 实际看到 tool description / output schema 改动**真的需要 A/B**（不是想象需要）
+
 **理由暂不做**：
-- Tool 是 Java interface，dynamically instantiate 复杂
+- Tool 是 Java interface，dynamically instantiate 复杂（不像 prompt text / behavior rule 是字符串）
 - AgentLoopEngine runtime 依赖 tool 对象方法调用，sandbox override description 容易但 override execute 困难
-- Tool 改动频次低（季度级），A/B ROI 低
-- 真有需求时再评估"轻量 description-only A/B"方案
+- Tool 改动频次低（季度级），A/B ROI 低（一年 4 次 vs prompt 一周 N 次）
+- 真有需求时再评估**轻量 description-only A/B 方案**（不动 execute 逻辑，只改 description 文本 + 让 agent 看不同 tool spec 选择是否调用）
+
+**如果真做（V6+ 评估时）**：
+- `ToolDescriptionVersionEntity`（仅 description / parameter schema，不动 Tool 接口实现）
+- ToolRegistry decorator 模式包装 description override
+- 不动 execute / runtime / AgentLoopEngine
+- 复用 V4 抽好的 OptimizableSurface 框架
+
+**不锁的具体（V6 真评估时）**：
+- 是否做（看实际 tool 改动是否产生 A/B 需求）
+- 范围（description-only vs schema vs execute）
+- 接入飞轮 vs 单独流程
 
 ---
 
@@ -594,3 +736,5 @@ V5 复用 V4 全套 + 现有 `SessionScenarioExtractor`；V6 押后。
 - 2026-05-14：ratify 决策 + 复用 vs 新建清单嵌入，V1 需求包 PROD-LABEL-CLUSTER 起包
 - 2026-05-14：批量 rename labeler→annotator + 锁 V1 ratify（hourly cron / 10/batch / owner_id=1）；术语统一到 SessionAnnotation*
 - 2026-05-14：Phase 1.0 完成 + 3 push back 修：(a) V72/V73→V74/V75；(b) dispatch 改 ScheduledTask + 1 agent + 3 tool；(c) V75 INSERT 补 lifecycle_hooks NULL
+- 2026-05-14：V1 Phase 1.1-1.5 全部 commit + Phase 2 Review 1 轮对抗（java/ts/db 3 reviewer 并行）+ Judge 主会话升 W2 为 Blocker（PG aborted-tx 静默丢数据）+ BE-Dev 一次修完（ON CONFLICT DO NOTHING RETURNING id）。V1 BE+FE 闭环完成，剩 Phase Final dogfood + delivery-index 归档
+- 2026-05-14：V2-V6 升级到 B 级细节（复用 vs 新建清单 + 待 ratify 决策 + 已知 footgun + 不锁的具体 + 前置依赖检查），全部基于 V1 实际经验补强。V2 最详细（最快开工），V3-V4 中等，V5-V6 浅。具体细节等 V1 dogfood 数据 / V2-V3 接入后再 ratify
