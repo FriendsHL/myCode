@@ -8,7 +8,8 @@
 
 | 顺序  | ID        | 标题                                | 模式   | 状态        | 优先级 | 风险   | 文档                                                        | 下一步                                   |
 | --- | --------- | --------------------------------- | ---- | --------- | --- | ---- | --------------------------------------------------------- | ------------------------------------- |
-| 1 | SKILL-AB-MULTITURN-FIX | Skill A/B 多轮评测修复 | Mid | design-draft | P1 | Mid | [需求包](requirements/active/SKILL-AB-MULTITURN-FIX/index.md) | 评审 Phase 1-only 方案；先证伪 fallback warning + 红测试，不开始实现 |
+| 1 | PROD-LABEL-CLUSTER | 生产 Session 标注 + 失败聚类（飞轮 V1） | Mid | **ratified** | P1 | Mid | [需求包](requirements/active/PROD-LABEL-CLUSTER/index.md) / [整体方案](plans/PROD-OPTIMIZATION-FLYWHEEL/plan.md) | TeamCreate + BE-Dev Phase 1.0 证伪起步（默认值：cron hourly / 单批 10 session） |
+| 2 | SKILL-AB-MULTITURN-FIX | Skill A/B 多轮评测修复 | Mid | design-draft | P1 | Mid | [需求包](requirements/active/SKILL-AB-MULTITURN-FIX/index.md) | **可与 V1 并行**（代码不重叠）；评审 Phase 1-only 方案；先证伪 fallback warning + 红测试，不开始实现 |
 
 ## 阻塞 / 待决策
 
