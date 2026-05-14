@@ -111,7 +111,7 @@ CREATE TABLE t_session_annotation (
     source          VARCHAR(16) NOT NULL,  -- signal / llm / human
     confidence      DECIMAL(3,2) NOT NULL DEFAULT 1.00,
     reasoning       TEXT,
-    created_at      TIMESTAMP NOT NULL DEFAULT NOW(),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_session_annotation UNIQUE (session_id, annotation_type, annotation_value, source)
 );
 CREATE INDEX idx_session_annotation_session ON t_session_annotation(session_id);
@@ -127,10 +127,10 @@ CREATE TABLE t_session_pattern (
     agent_id            BIGINT,
     member_count        INT NOT NULL DEFAULT 0,
     suggested_surface   VARCHAR(32),  -- V3 attribution 写，V1 = suspect_surface
-    first_seen_at       TIMESTAMP NOT NULL,
-    last_seen_at        TIMESTAMP NOT NULL,
-    created_at          TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMP NOT NULL DEFAULT NOW()
+    first_seen_at       TIMESTAMPTZ NOT NULL,
+    last_seen_at        TIMESTAMPTZ NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX idx_session_pattern_outcome ON t_session_pattern(outcome);
 CREATE INDEX idx_session_pattern_agent ON t_session_pattern(agent_id);
@@ -139,7 +139,7 @@ CREATE INDEX idx_session_pattern_last_seen ON t_session_pattern(last_seen_at);
 CREATE TABLE t_pattern_session_member (
     pattern_id  BIGINT NOT NULL REFERENCES t_session_pattern(id) ON DELETE CASCADE,
     session_id  VARCHAR(36) NOT NULL,
-    added_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+    added_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (pattern_id, session_id)
 );
 CREATE INDEX idx_pattern_member_session ON t_pattern_session_member(session_id);
@@ -149,7 +149,7 @@ CREATE INDEX idx_pattern_member_session ON t_pattern_session_member(session_id);
 - `session_id` 是 VARCHAR(36) 跟 t_session.id 类型对齐
 - 没加 FK 到 t_session 避免迁移期复杂性；通过应用层校验
 - `signature` UNIQUE 保证聚类重跑幂等
-- 所有时间戳走 `TIMESTAMP` 类型（与现有迁移风格一致）
+- **时间戳走 `TIMESTAMPTZ`**（aligned with V70/V73 multimodal 系列；Instant roundtrip 现役惯例）—— Phase 1.1 BE-Dev 校对发现 tech-design 初稿写 `TIMESTAMP` 与现行惯例不一致，已修正
 
 ### 2.2 Seed migration `V75__seed_session_annotator_agent.sql`
 
@@ -192,28 +192,42 @@ SELECT
     NOW()
 WHERE NOT EXISTS (SELECT 1 FROM t_agent WHERE name = 'session-annotator');
 
--- ② ScheduledTask 触发 cron (V69 dogfood 同款 pattern)
+-- ② ScheduledTask 触发 cron (V69 dogfood 同款 pattern — 字段已对照 V69 实际 schema)
 INSERT INTO t_scheduled_task (
     name,
-    cron_expression,
-    target_agent_name,   -- 字段名以 V69 实际 schema 为准；Phase 1.1 校对
+    creator_user_id,
+    agent_id,             -- ← FK 到 t_agent.id（不是 agent_name 字符串）
+    cron_expr,            -- ← V59 schema 实际字段名（不是 cron_expression）
+    timezone,             -- NOT NULL
+    prompt_template,      -- NOT NULL
+    session_mode,         -- NOT NULL，V69 取值 'new'
     enabled,
     concurrency_policy,
-    creator_user_id,
+    status,               -- NOT NULL，V69 取值 'idle'
     created_at,
     updated_at
 )
 SELECT
     'session-annotator-hourly',
-    '0 0 * * * *',       -- hourly at minute 0
-    'session-annotator',
-    TRUE,                -- ← V1 默认 enabled（dogfood 阶段直接跑；用户随时可在 dashboard /schedules 关）
+    0,                                                                    -- SYSTEM marker
+    (SELECT id FROM t_agent WHERE name = 'session-annotator'),            -- FK 子查询拿 agent.id
+    '0 0 * * * *',                                                        -- 6-field Spring cron: hourly at top
+    'Asia/Shanghai',
+    'Hourly orchestration: run DetectSignalAnnotations → AnnotateSession × N → RecomputeClusters',
+    'new',
+    TRUE,                                                                 -- V1 默认 enabled (dogfood)；V69 是 FALSE
     'skip-if-running',
-    0,                    -- SYSTEM marker，跟 V69 同
+    'idle',
     NOW(),
     NOW()
 WHERE NOT EXISTS (SELECT 1 FROM t_scheduled_task WHERE name = 'session-annotator-hourly');
 ```
+
+**字段校对结果（Phase 1.1 BE-Dev 落地后回写）**：
+- `cron_expr` ≠ `cron_expression`（V59 schema 实际是 cron_expr）
+- `agent_id`（BIGINT FK，用子查询填）≠ `target_agent_name`（字符串）
+- 4 个 NOT NULL 字段必填：`timezone` / `prompt_template` / `session_mode` / `status`
+- V69 实际 SQL：`skillforge-server/src/main/resources/db/migration/V69__memory_curator_dogfood.sql:85-110`
 
 **约定决策（2026-05-14 ratify）**：
 - **新 system agent 默认 `owner_id = 1` + `is_public = TRUE`**（"admin 拥有 / 系统共用"模式）
@@ -226,7 +240,7 @@ WHERE NOT EXISTS (SELECT 1 FROM t_scheduled_task WHERE name = 'session-annotator
 
 prompt 文件 `classpath:session-annotator-system-prompt.md` 由 `SessionAnnotatorBootstrap` 启动时加载（复用 MemoryCuratorBootstrap 模板，避免长 prompt 转义到 SQL string 里）。
 
-**⚠️ Phase 1.1 必须校对**：`t_scheduled_task` 字段名、`concurrency_policy` 取值、`creator_user_id` 是否仍是 0 SYSTEM marker —— 实际开工前读 `V69__memory_curator_dogfood.sql` 第二段 INSERT 抄准字段，**绝对不可瞎猜**。
+**✅ Phase 1.1 校对完成（2026-05-14）**：BE-Dev 读 V69 line 85-110 实际 SQL 后回写 §2.2 的 12 个字段名，与 V69 字段顺序完全一致；4 个原 placeholder 漏掉的 NOT NULL 字段（timezone / prompt_template / session_mode / status）已补全。V75 文件 `skillforge-server/src/main/resources/db/migration/V75__seed_session_annotator_agent.sql` 与本节同步。
 
 ## 3. 后端组件清单
 
@@ -382,13 +396,14 @@ signature = outcome + "|" + suspect_surface + "|" + top_failing_tool + "|" + age
   - ✅ TraceScenarioImportService reason 检测内联在 `suggestImportCandidates`，需先抽 `detectReasons` helper
   - ✅ 红测试已落地 `skillforge-server/src/test/java/com/skillforge/server/sessionlabel/SignalAnnotationJobRedTest.java`（@Disabled placeholder）
   - **3 个 push back 已修**：Flyway V72/V73 占用 → 改 V74/V75；dispatch 模式 → ScheduledTask + 1 agent + 3 tool；V75 INSERT 补 `lifecycle_hooks` 列
-- [ ] **Phase 1.1：DB schema + Entity + Repository + IT**
-  - V74 migration（3 张新表 + 索引 + UNIQUE）
-  - V75 migration（t_agent + t_scheduled_task 双 INSERT）
-  - 3 个 Entity + Repository + JPA IT
-  - `SessionAnnotatorBootstrap` 启动加载 prompt
-  - `classpath:session-annotator-system-prompt.md`
-  - **校对 V69 实际 `t_scheduled_task` 字段名 + concurrency_policy 取值 + creator_user_id**（绝对不可瞎猜）
+- [x] **Phase 1.1：DB schema + Entity + Repository + IT** ✅ 2026-05-14
+  - ✅ V74 migration（3 张新表 + 3 INDEX + UNIQUE + FK CASCADE，TIMESTAMPTZ）
+  - ✅ V75 migration（t_agent + t_scheduled_task 双 INSERT，字段已对照 V69 line 85-110 实际 schema）
+  - ✅ 3 Entity (`SessionAnnotationEntity` / `SessionPatternEntity` / `PatternSessionMemberEntity` + `PatternSessionMemberId` IdClass) + 3 Repository
+  - ✅ `SessionAnnotatorBootstrap` 启动加载 prompt（照抄 MemoryCuratorBootstrap，仅改 2 个常量）
+  - ✅ `session-annotator-system-prompt.md`（resources/ 根目录，verbatim copy §4.1）
+  - ✅ `SessionAnnotationPersistenceIT` 4 测试（save + UNIQUE 约束 + findBySignature + CASCADE delete）
+  - ⚠️ **本机 Docker 未安装 → 4 个 IT skip**（与项目其它 14+ AbstractPostgresIT 子类同款行为，CI 真跑）。代码层 regression 验证：`mvn -pl skillforge-server -am test` **1402 / 0 / 0 / 72 → BUILD SUCCESS in 27.7s**，无 modified existing files
 - [ ] **Phase 1.2：Signal Service + DetectSignalAnnotationsTool**
   - 重构 `TraceScenarioImportService.detectReasons` package-private（零行为漂移 + TraceScenarioImportServiceTest:102 保持绿色）
   - `SessionAnnotationSignalService.detectAndPersist(window)` + 单测
