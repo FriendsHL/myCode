@@ -491,15 +491,15 @@ V0 (SKILL-AB-MULTITURN-FIX, in queue)
 - `TraceScenarioImportService.java:136-151` 6 reason 检测逻辑 → V1 signal stage **直接调，不重写**
 - `LlmTraceRepository` / `LlmSpanRepository` → 所有 trace/span 查询
 - `SubAgentRegistry` + `SubAgentTool` + `memory-curator` 模板（`MemoryCuratorBootstrap` + classpath prompt + V69 seed + 4 tool 组织方式）→ V1 `session-annotator` agent 同模式
-- `LlmMemorySynthesisScheduler` 模板 → V1 三个 hourly cron 照抄
+- **P12 ScheduledTask + V69 memory-curator dogfood 模式**（`t_scheduled_task` 表 + 1 cron + 1 agent + 多 tool orchestrate）→ V1 同款，不写 Spring @Scheduled
 - 现有 `Traces.tsx` 深链接（OBS-2）→ Pattern member 跳转目标零改动
 
 **新建**：
-- 3 张新表（`t_session_annotation` / `t_session_pattern` / `t_pattern_session_member`）+ V72 + V73 migration
-- Entity / Repository / Service 标准三件套
+- 3 张新表（`t_session_annotation` / `t_session_pattern` / `t_pattern_session_member`）+ **V74 (schema) + V75 (seed t_agent + t_scheduled_task) migration**（V72/V73 已被 multimodal 系列占用）
+- Entity / Repository 标准三件套 + `SessionAnnotationService` / `SessionAnnotationSignalService` / `SessionPatternClusterService`
 - `SessionAnnotatorBootstrap` + `classpath:session-annotator-system-prompt.md`
-- 2 个新 Tool（`SessionFetchTool` / `SessionAnnotateTool`）
-- 3 个 cron job（`SignalAnnotationJob` / `LlmAnnotationJob` / `PatternClusteringJob`）
+- **3 个新 Tool（`DetectSignalAnnotationsTool` / `AnnotateSessionTool` / `RecomputeClustersTool`）** —— 都是薄包装，业务逻辑在 service 层
+- **1 个 ScheduledTask seed row**（`session-annotator-hourly`，concurrency_policy='skip-if-running'，default enabled=TRUE）—— 不写独立 cron job 类
 - `InsightsController` 2 endpoint
 - Dashboard `/insights/patterns` 1 个页面 + 2 个组件
 - **`SurfaceType` enum + `OptimizableSurface<V>` 空接口骨架**（V4 才有实现）
@@ -561,7 +561,7 @@ V5 复用 V4 全套 + 现有 `SessionScenarioExtractor`；V6 押后。
 ## 九、本方案的"什么不在范围内"
 
 - **不打算重构 ChatService / SessionService / CompactionService 核心路径**：所有新能力通过新表 + 异步队列接入
-- **不打算上 Kafka / RabbitMQ**：cron + Postgres advisory lock 即可满足 hourly batch
+- **不打算上 Kafka / RabbitMQ**：项目自有 P12 ScheduledTask + `concurrency_policy='skip-if-running'` 即可满足 hourly batch（V69 dogfood 同款）
 - **不打算上 ML 聚类 / embedding-based pattern detection**：V1 简单 bucket 够用，复杂度延后
 - **不打算改 Flyway migration 治理**：每个 V 自带 1-2 个 migration
 - **不打算并行做 V1+V2**：建议 V1 跑一周 dogfood 收集标注信号再开 V2，否则 V2 的 canary metric 没有可靠 baseline
@@ -574,9 +574,11 @@ V5 复用 V4 全套 + 现有 `SessionScenarioExtractor`；V6 押后。
 
 ### V1 已 ratify（2026-05-14）
 
-- [x] **V1 三个 cron 频率：hourly**
-- [x] **V1 session-annotator 单批 10 session / batch**（agent 内 max_loops 限制）
+- [x] **V1 dispatch 模式**：P12 ScheduledTask（V69 dogfood 同款 1 cron + 1 agent + 3 tool orchestrate），不写 Spring @Scheduled
+- [x] **V1 ScheduledTask 频率**：hourly（`0 0 * * * *`）
+- [x] **V1 session-annotator 单 invocation 最多标注**：10 session（agent 内 max_loops + DetectSignalAnnotations cap）
 - [x] **新 system agent owner 约定**：`owner_id = 1 + is_public = TRUE`；V69 memory-curator 留 `owner_id = NULL` 不动
+- [x] **V1 Flyway 版本号**：V74 (schema) + V75 (seed t_agent + t_scheduled_task)（V72/V73 已被 multimodal 系列占用，Phase 1.0 BE-Dev 验证）
 
 ### 待 V2 / V3 / V4 拍板
 
@@ -591,3 +593,4 @@ V5 复用 V4 全套 + 现有 `SessionScenarioExtractor`；V6 押后。
 - 2026-05-14：claude 初稿（draft）
 - 2026-05-14：ratify 决策 + 复用 vs 新建清单嵌入，V1 需求包 PROD-LABEL-CLUSTER 起包
 - 2026-05-14：批量 rename labeler→annotator + 锁 V1 ratify（hourly cron / 10/batch / owner_id=1）；术语统一到 SessionAnnotation*
+- 2026-05-14：Phase 1.0 完成 + 3 push back 修：(a) V72/V73→V74/V75；(b) dispatch 改 ScheduledTask + 1 agent + 3 tool；(c) V75 INSERT 补 lifecycle_hooks NULL

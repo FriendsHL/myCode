@@ -19,7 +19,7 @@ updated: 2026-05-14
 | Span 查询 | `skillforge-server/src/main/java/com/skillforge/server/repository/LlmSpanRepository.java` | 取 traceId → span 集（tool span 的 error/errorType） |
 | Memory-curator agent 模板 | `skillforge-server/src/main/java/com/skillforge/server/memory/llmsynth/MemoryCuratorBootstrap.java:43`<br>`+ classpath:memory-curator-system-prompt.md`<br>`+ V69 Flyway seed t_agent` | V1 session-annotator agent 完全照抄此模板 |
 | Memory-curator 工具模板 | `skillforge-server/src/main/java/com/skillforge/server/tool/memorysynth/{ClusterMemoriesTool,CreateMemoryProposalTool,ListActiveUsersTool,ListMemoryCandidatesTool}.java` | V1 session-annotator 的 SessionAnnotationWrite / SessionFetch 复制此 4 工具组织方式 |
-| Memory synthesis scheduler | `skillforge-server/src/main/java/com/skillforge/server/memory/llmsynth/LlmMemorySynthesisScheduler.java` | V1 三个 hourly cron 照此模板 + advisory lock 模式 |
+| **P12 ScheduledTask 框架 + V69 memory-curator dogfood 模式** | `t_scheduled_task` 表 + V69 seed row（concurrency_policy='skip-if-running'，hourly cron 表达式 + agent_id 指向 session-annotator）| V1 走 **1 cron + 1 agent + 多 tool orchestrate pipeline** 模式（跟 V69 同款），不用 Spring @Scheduled。优势：用户可在 dashboard `/schedules` 关 / 调频 / skip-if-running 内建 |
 | SubAgent dispatch | `skillforge-server/src/main/java/com/skillforge/server/subagent/SubAgentRegistry.java`<br>`+ tool/SubAgentTool.java` | session-annotator 派发走它，**不开新 dispatch 路径** |
 | Traces dashboard 详情页 | `skillforge-dashboard/src/components/.../Traces.tsx`（含 query param 深链接，OBS-2 已实现） | Pattern member 跳转目标，零改动 |
 | EvalAnnotationEntity 模型形态 | `skillforge-server/src/main/java/com/skillforge/server/entity/EvalAnnotationEntity.java` | 人工修标 V3 复用，本包不动 |
@@ -34,7 +34,7 @@ updated: 2026-05-14
 | `skillforge-server/.../service/SessionService.java` | 核心文件 |
 | `skillforge-server/.../service/CompactionService.java` | 核心文件 |
 | `skillforge-core/.../engine/AgentLoopEngine.java` | 核心文件 |
-| `skillforge-server/.../service/TraceScenarioImportService.java` | 只**复用其内部 reason 检测方法**，不改其签名或行为 |
+| `skillforge-server/.../service/TraceScenarioImportService.java` | 复用 line 134-152 reason 检测逻辑（**需先抽 package-private `detectReasons(LlmTraceEntity, List<LlmSpanEntity>, ...)` helper，零行为漂移；现有 `TraceScenarioImportServiceTest:102` 保留绿色**）。其它公共方法签名与行为不动 |
 
 **Phase 1.0 证伪步骤**（dev 开工第一步必跑）：
 1. 跑一遍 memory-curator 当前 dispatch 链路，确认 SubAgentRegistry 接 system agent 不需要 hack
@@ -44,57 +44,63 @@ updated: 2026-05-14
 
 ---
 
-## 1. 总体架构
+## 1. 总体架构（V69 memory-curator dogfood 同款 pattern）
 
 ```
-                ┌─────────────────────────────────────┐
-                │ Hourly cron 1: signal-annotation-cron  │
-                │                                       │
-                │ 扫 t_session 上 1h completed_at       │
-                │  └→ 调 TraceScenarioImportService     │
-                │       现有 reason 检测                 │
-                │  └→ Upsert t_session_annotation (source=  │
-                │       signal)                         │
-                └─────────────────────────────────────┘
-                                  │
-                                  ▼
-                ┌─────────────────────────────────────┐
-                │ Hourly cron 2: llm-annotation-cron     │
-                │                                       │
-                │ 扫上 1h completed_at 且 signal 已跑   │
-                │  └→ 按 user/agent 分组分批             │
-                │  └→ 对每批派 session-annotator agent   │
-                │       (SubAgentDispatch + 4 tool)    │
-                │  └→ agent 输出 outcome/suspect_      │
-                │     surface 写 t_session_annotation        │
-                │       (source=llm)                    │
-                └─────────────────────────────────────┘
-                                  │
-                                  ▼
-                ┌─────────────────────────────────────┐
-                │ Hourly cron 3: clustering-cron       │
-                │                                       │
-                │ 扫过去 7d 有新 label 的 session       │
-                │  └→ bucket on (outcome,               │
-                │      suspect_surface, top_failing_    │
-                │      tool, agent_id)                  │
-                │  └→ ≥3 member upsert t_session_      │
-                │      pattern + member rows            │
-                └─────────────────────────────────────┘
-                                  │
-                                  ▼
-                ┌─────────────────────────────────────┐
-                │ Dashboard /insights/patterns        │
-                │                                       │
-                │ GET /api/insights/patterns           │
-                │ GET /api/insights/patterns/{id}/      │
-                │     members                          │
-                └─────────────────────────────────────┘
+        ┌─────────────────────────────────────────┐
+        │  P12 ScheduledTask (hourly cron)         │
+        │  seeded in V75 migration                 │
+        │  concurrency_policy='skip-if-running'    │
+        │  target_agent = session-annotator        │
+        └────────────────┬────────────────────────┘
+                         │ 触发
+                         ▼
+        ┌─────────────────────────────────────────┐
+        │  session-annotator agent run             │
+        │  (system_prompt orchestrates pipeline)   │
+        │                                          │
+        │  agent loop 内按需调用 3 个 tool：       │
+        │                                          │
+        │  ① DetectSignalAnnotations(window=1h)   │
+        │     → 调 TraceScenarioImportService     │
+        │       package-private detectReasons     │
+        │     → 写 source=signal 标注              │
+        │     → 返回需 LLM 标注的 session 列表     │
+        │                                          │
+        │  ② AnnotateSession(sessionId)            │
+        │     → 拿 trace + message tail            │
+        │     → LLM 推理 outcome + suspect_surface │
+        │     → 写 source=llm 标注                 │
+        │     → 一次 tool call 处理一条 session    │
+        │                                          │
+        │  ③ RecomputeClusters(window=7d)         │
+        │     → bucket on (outcome ×              │
+        │        suspect_surface × top_failing_    │
+        │        tool × agent_id)                  │
+        │     → ≥3 member upsert t_session_       │
+        │        pattern + member rows             │
+        └────────────────┬────────────────────────┘
+                         │
+                         ▼
+        ┌─────────────────────────────────────────┐
+        │  Dashboard /insights/patterns           │
+        │  GET /api/insights/patterns             │
+        │  GET /api/insights/patterns/{id}/        │
+        │      members                            │
+        └─────────────────────────────────────────┘
 ```
+
+**关键设计点**：
+- **不是 3 个独立 cron**，而是 1 个 ScheduledTask 触发 1 次 agent run，agent 内部 orchestrate 3 个 tool（V69 memory-curator 同款）
+- **signal 检测 + clustering 是纯 Java 逻辑**，但通过 Tool wrap 让 agent 决定调用顺序（一致的 V69 dogfood 模式 + 未来 attribution agent V3 可扩展同样调这些 tool）
+- **agent 不做 LLM 推理也能跑** —— `DetectSignalAnnotations` 和 `RecomputeClusters` 是 deterministic tool；只有 `AnnotateSession` 让 agent 用 LLM 判断 outcome / suspect_surface
+- **没有 advisory lock** —— ScheduledTask `concurrency_policy='skip-if-running'` 内建防重入
 
 ## 2. 数据库 Schema
 
-### 2.1 Flyway migration `V72__create_session_annotation_and_pattern.sql`
+### 2.1 Flyway migration `V74__create_session_annotation_and_pattern.sql`
+
+> **版本号 ratify (2026-05-14)**：Phase 1.0 BE-Dev 验证 V72/V73 已被 multimodal 系列占用，本包改用 **V74 (schema) + V75 (seed)**。
 
 ```sql
 CREATE TABLE t_session_annotation (
@@ -145,11 +151,12 @@ CREATE INDEX idx_pattern_member_session ON t_pattern_session_member(session_id);
 - `signature` UNIQUE 保证聚类重跑幂等
 - 所有时间戳走 `TIMESTAMP` 类型（与现有迁移风格一致）
 
-### 2.2 Seed migration `V73__seed_session_annotator_agent.sql`
+### 2.2 Seed migration `V75__seed_session_annotator_agent.sql`
 
-参考 V69（memory-curator）模式 seed 一个 system agent，**采用新约定**：`owner_id = 1` + `is_public = TRUE`（V69 memory-curator 留 `owner_id = NULL` 不动）。
+参考 V69（memory-curator）模式 seed **system agent + ScheduledTask 双 INSERT**，agent 用新约定 `owner_id = 1` + `is_public = TRUE`（V69 memory-curator 留 `owner_id = NULL` 不动）。
 
 ```sql
+-- ① system agent
 INSERT INTO t_agent (
     name,
     description,
@@ -158,8 +165,9 @@ INSERT INTO t_agent (
     skill_ids,
     tool_ids,
     config,
-    owner_id,        -- ← 新约定：=1（admin user），非 V69 的 NULL
-    is_public,       -- ← 新约定：TRUE（系统共用）
+    lifecycle_hooks,   -- ← Phase 1.0 BE-Dev push back: 显式 NULL，V1 不需要 hook
+    owner_id,          -- ← 新约定：=1（admin user），非 V69 的 NULL
+    is_public,         -- ← 新约定：TRUE（系统共用）
     status,
     execution_mode,
     created_at,
@@ -167,14 +175,15 @@ INSERT INTO t_agent (
 )
 SELECT
     'session-annotator',
-    'System agent: hourly LLM annotation of production sessions. '
-        || 'Outputs (outcome, suspect_surface, confidence, reasoning) per session via '
-        || 'SessionFetch + SessionAnnotate tools. Drives PROD-LABEL-CLUSTER (V1).',
+    'System agent: hourly orchestration of production session annotation + clustering. '
+        || 'Calls DetectSignalAnnotations / AnnotateSession / RecomputeClusters tools in sequence. '
+        || 'Drives PROD-LABEL-CLUSTER (V1) data flywheel step ①②.',
     'claude-sonnet-4-6',  -- default; 用户在 dashboard 可改
     'SEE_FILE:session-annotator-system-prompt.md',  -- 由 SessionAnnotatorBootstrap 启动加载
     '[]',
-    '["SessionFetch","SessionAnnotate"]',
-    '{"temperature": 0.2, "maxTokens": 2048}',
+    '["DetectSignalAnnotations","AnnotateSession","RecomputeClusters"]',
+    '{"temperature": 0.2, "maxTokens": 4096}',
+    NULL,              -- ← lifecycle_hooks: 不需要（V69 用于 SESSION_END broadcast，本包不用）
     1,                 -- ← owner_id = 1（新约定）
     TRUE,              -- ← is_public = TRUE
     'active',
@@ -182,16 +191,42 @@ SELECT
     NOW(),
     NOW()
 WHERE NOT EXISTS (SELECT 1 FROM t_agent WHERE name = 'session-annotator');
+
+-- ② ScheduledTask 触发 cron (V69 dogfood 同款 pattern)
+INSERT INTO t_scheduled_task (
+    name,
+    cron_expression,
+    target_agent_name,   -- 字段名以 V69 实际 schema 为准；Phase 1.1 校对
+    enabled,
+    concurrency_policy,
+    creator_user_id,
+    created_at,
+    updated_at
+)
+SELECT
+    'session-annotator-hourly',
+    '0 0 * * * *',       -- hourly at minute 0
+    'session-annotator',
+    TRUE,                -- ← V1 默认 enabled（dogfood 阶段直接跑；用户随时可在 dashboard /schedules 关）
+    'skip-if-running',
+    0,                    -- SYSTEM marker，跟 V69 同
+    NOW(),
+    NOW()
+WHERE NOT EXISTS (SELECT 1 FROM t_scheduled_task WHERE name = 'session-annotator-hourly');
 ```
 
 **约定决策（2026-05-14 ratify）**：
 - **新 system agent 默认 `owner_id = 1` + `is_public = TRUE`**（"admin 拥有 / 系统共用"模式）
 - **V69 memory-curator 留 `owner_id = NULL` 不动**（已发布的迁移不补 fix migration）
-- V73 注释里 acknowledge "与 V69 不一致是有意的新约定"
+- **dispatch 模式**：P12 ScheduledTask（V69 dogfood 同款），不走 Spring @Scheduled
+- **V1 默认 enabled=TRUE**（不像 V69 默认 false 等用户启用 —— 我们是 dogfood 阶段，直接跑）
+- V75 注释 acknowledge "owner_id=1 跟 V69 是有意的新约定" + "enabled=TRUE 跟 V69 不一样因为是 dogfood 默认开"
 
-**Model 配置说明**：`session-annotator.model_id` 是 `t_agent` 标准字段，**用户在 dashboard 的 Agents 页面像配置任何其他 agent 一样可改**。V73 seed 时填一个合理默认值（`claude-sonnet-4-6`，跟 memory-curator 同档；对成本敏感的用户可后续切到 Haiku 类）—— 但**这不是 V1 开发期决策，是 runtime 用户配置**。
+**Model 配置说明**：`session-annotator.model_id` 是 `t_agent` 标准字段，**用户在 dashboard 的 Agents 页面像配置任何其他 agent 一样可改**。V75 seed 时填一个合理默认值（`claude-sonnet-4-6`，跟 memory-curator 同档；对成本敏感的用户可后续切到 Haiku 类）—— 但**这不是 V1 开发期决策，是 runtime 用户配置**。
 
 prompt 文件 `classpath:session-annotator-system-prompt.md` 由 `SessionAnnotatorBootstrap` 启动时加载（复用 MemoryCuratorBootstrap 模板，避免长 prompt 转义到 SQL string 里）。
+
+**⚠️ Phase 1.1 必须校对**：`t_scheduled_task` 字段名、`concurrency_policy` 取值、`creator_user_id` 是否仍是 0 SYSTEM marker —— 实际开工前读 `V69__memory_curator_dogfood.sql` 第二段 INSERT 抄准字段，**绝对不可瞎猜**。
 
 ## 3. 后端组件清单
 
@@ -199,11 +234,12 @@ prompt 文件 `classpath:session-annotator-system-prompt.md` 由 `SessionAnnotat
 
 | 类 | 位置 | 复用程度 |
 |---|---|---|
-| `TraceScenarioImportService` 内部 reason 检测 | 现有，line 136-151 | 抽 package-private 方法 `detectReasons(trace, spans)` 给 V1 调用；**只重构 visibility，不改逻辑** |
-| `LlmTraceRepository` / `LlmSpanRepository` | 现有 | 直接调 |
-| `SubAgentRegistry` + `SubAgentTool` | 现有 | session-annotator 通过它派发 |
-| `MemoryCuratorBootstrap` 模板 | 现有 | 复制成 `SessionAnnotatorBootstrap` |
-| `LlmMemorySynthesisScheduler` 模板 | 现有 | 复制成 3 个 V1 cron（lock 模式照抄） |
+| `TraceScenarioImportService` 内部 reason 检测 | 现有 service line 134-152 内联在 `suggestImportCandidates` 循环里 | **Phase 1.1 先抽 package-private `detectReasons(LlmTraceEntity, List<LlmSpanEntity>, int tokens, int toolCalls, int llmCalls, int minTokens) -> List<String>`** helper（零行为漂移 + `TraceScenarioImportServiceTest:102` 必须保留绿色）；之后 V1 `DetectSignalAnnotationsTool` 调它 |
+| `LlmTraceRepository` / `LlmSpanRepository` | 现有 | 直接调（取 sessionId → trace 集 + traceId → span 集） |
+| `SubAgentRegistry` + `SubAgentTool` | 现有 | session-annotator 派发走它，**零改动**（Phase 1.0 BE-Dev 已确认） |
+| `MemoryCuratorBootstrap` 模板 | 现有 | 复制成 `SessionAnnotatorBootstrap` —— 改 `AGENT_NAME` + `PROMPT_RESOURCE_PATH` 两常量 |
+| **P12 ScheduledTask + V69 dogfood 模式** | 现有 `t_scheduled_task` 表 + `V69__memory_curator_dogfood.sql` 第二段 INSERT 模板 | V75 抄一份 INSERT 写 session-annotator-hourly row，**不写 Spring @Scheduled，不需 advisory lock**（`concurrency_policy='skip-if-running'` 内建） |
+| memory-curator tool 4 件 | `skillforge-server/src/main/java/com/skillforge/server/tool/memorysynth/` 4 个 Tool 类 | V1 3 个 Tool 类**组织方式** copy（class 结构 + JSON 输入输出 + 注入 service），不 copy 业务逻辑 |
 
 ### 3.2 新建
 
@@ -212,70 +248,97 @@ prompt 文件 `classpath:session-annotator-system-prompt.md` 由 `SessionAnnotat
 | `SessionAnnotationEntity` / `SessionAnnotationRepository` | JPA | 标准 |
 | `SessionPatternEntity` / `SessionPatternRepository` | JPA | 标准 |
 | `PatternSessionMemberEntity` / `PatternSessionMemberRepository` | JPA | 关联表 |
-| `SessionAnnotationService` | Service | upsert + 幂等 + source 区分 |
-| `SignalAnnotationJob` | Service + @Scheduled | Stage A，复用 detectReasons |
-| `LlmAnnotationJob` | Service + @Scheduled | Stage B，派 session-annotator |
-| `PatternClusteringJob` | Service + @Scheduled | Stage C，简单 bucket |
-| `SessionAnnotatorBootstrap` | @Component | 启动时同步 system agent |
-| `classpath:session-annotator-system-prompt.md` | 资源文件 | agent 系统 prompt |
-| `SessionFetchTool` | Tool | agent 工具：拿一批 session 的基本信息 + 末尾几条 message |
-| `SessionAnnotateTool` | Tool | agent 工具：写一条 outcome+suspect_surface 到 t_session_annotation |
+| `SessionAnnotationService` | Service | upsert + 幂等 + source 区分（signal / llm / human） |
+| `SessionAnnotationSignalService` | Service | 调 `TraceScenarioImportService.detectReasons` + 写 signal 标注。**Phase 1.2 红测试转绿的目标** |
+| `SessionPatternClusterService` | Service | bucket 聚类 + upsert `t_session_pattern` |
+| `SessionAnnotatorBootstrap` | @Component | 启动时同步 system agent prompt（复用 MemoryCuratorBootstrap 模板） |
+| `classpath:session-annotator-system-prompt.md` | 资源文件 | agent 系统 prompt（orchestrate 3 tool 调用顺序） |
+| `DetectSignalAnnotationsTool` | Tool | agent 工具：调 `SessionAnnotationSignalService.detectAndPersist(window)` 返回需 LLM 标注的 session IDs |
+| `AnnotateSessionTool` | Tool | agent 工具：拿 sessionId → fetch trace summary → 让 agent 内 LLM 判断 outcome/suspect_surface → 写 source=llm 标注 |
+| `RecomputeClustersTool` | Tool | agent 工具：调 `SessionPatternClusterService.recompute(window=7d)` |
 | `InsightsController` | REST | `GET /api/insights/patterns` + `GET /api/insights/patterns/{id}/members` |
 | `SurfaceType` enum | Core | skill / prompt / behavior_rule / tool / hook / mcp / other / unclear |
 | `OptimizableSurface<V>` 空接口 | Core | V4 之前不实现，留扩展位 |
 
-**注意**：`OptimizableSurface<V>` 在 V1 只是空接口骨架（loadActive / createCandidate / promote / rollback 方法声明），不要任何实现类。这是 ratify 决策"架构留扩展位"的最小落地。
+**注意**：
+- `OptimizableSurface<V>` 在 V1 只是空接口骨架（loadActive / createCandidate / promote / rollback 方法声明），不要任何实现类
+- 3 个 Tool 都是**薄包装**：实际业务逻辑都在对应 Service 里，Tool 只做参数解析 + service 调用 + JSON 序列化。这样 Service 单测能锁住主逻辑，Tool 测只验 wiring
+- 没有"3 个 @Scheduled cron job"类 —— ScheduledTask 表 + agent 内部循环承担 orchestration 角色
 
 ## 4. session-annotator Agent 设计
 
 ### 4.1 System prompt 骨架（写到 `classpath:session-annotator-system-prompt.md`）
 
 ```
-You are session-annotator, a system agent that classifies SkillForge production
-sessions by outcome and suspected optimization surface.
+You are session-annotator, a SkillForge system agent that orchestrates
+hourly annotation + clustering of production sessions.
 
-For each session you receive, output ONE structured judgment via the
-SessionAnnotationWrite tool with these fields:
-- outcome: success | partial_success | failure | cancelled
-- suspect_surface: skill | prompt | behavior_rule | other | unclear
-- confidence: 0..1
-- reasoning: 1-2 sentence rationale
+Every time you are invoked (via ScheduledTask), run this pipeline:
 
-Use SessionFetch first to get the session transcript tail + key trace events.
-Do NOT label more than what was asked. Do NOT propose fixes — that's a
-separate agent's job.
+STEP 1 — Signal detection (deterministic):
+  Call DetectSignalAnnotations(window="1h").
+  Returns: { signal_count, sessions_needing_llm: [sessionId, ...] }
+  Writes source=signal annotations from trace/span derived reasons.
+  No LLM judgment required from you for this step.
 
-Suspect surface heuristics:
-- skill: session failed because a skill returned wrong/incomplete output
-- prompt: session failed because agent misunderstood user intent or
-  produced rambling/off-task responses
-- behavior_rule: session failed because agent violated established
-  behavior rules (no rule citation, wrong escalation pattern, etc.)
-- other: failure cause clearly outside the 3 above (LLM timeout, network)
-- unclear: not enough signal to decide
+STEP 2 — LLM annotation (your job):
+  For each sessionId in sessions_needing_llm (cap at 10):
+    Call AnnotateSession(sessionId).
+    AnnotateSession returns the trace summary + recent message tail; you
+    decide outcome + suspect_surface + confidence + reasoning, and the
+    tool writes source=llm annotation in one round-trip.
+  If sessions_needing_llm is empty, skip to step 3.
+
+STEP 3 — Clustering (deterministic):
+  Call RecomputeClusters(window="7d").
+  Returns: { patterns_upserted, members_added }.
+
+DECISION HEURISTICS (only used inside AnnotateSession LLM step):
+- outcome:
+    success: agent completed user's request without retry/error
+    partial_success: completed with degraded output or extra clarification
+    failure: agent failed to deliver / aborted / runtime_error
+    cancelled: user cancelled or session timed out without completion
+- suspect_surface:
+    skill: session failed because a skill returned wrong/incomplete output
+    prompt: agent misunderstood user intent or produced rambling output
+    behavior_rule: agent violated established behavior rule
+    other: cause clearly outside the 3 above (LLM timeout, network)
+    unclear: not enough signal to decide
+- confidence: 0..1; under 0.5 won't enter clustering (still persists for audit)
+
+CONSTRAINTS:
+- Do NOT propose fixes — that's V3 attribution-curator agent's job
+- Do NOT call any tool not in your toolbox
+- Do NOT skip step 1 or 3 — they must run every invocation
+- If a tool returns an error, log it and proceed; never abort the pipeline
 ```
 
 ### 4.2 Dispatch shape
 
-`LlmAnnotationJob` 派发参数（参考 memory-curator 派发协议）：
+ScheduledTask 触发（V69 dogfood 同款 path）：
 
 ```
-SubAgentDispatch.dispatch(
-    "session-annotator",
-    payload={
-        "session_ids": [...],  // 批量，但 agent 一条一条 SessionFetch + SessionAnnotationWrite
-        "window": "1h"
-    },
-    timeoutMs=600_000
+P12 ScheduledRunner → SubAgentDispatch.dispatch(
+    targetAgentName: "session-annotator",
+    payload: { "trigger": "hourly", "invocation_id": <generated> },
+    timeoutMs: 600_000
 )
 ```
 
-session-annotator 内部 loop：拿 session_ids → 逐条调 SessionFetch + 判断 + SessionAnnotationWrite。
+session-annotator agent loop **不接收 session_ids**（不像之前设计的 LlmAnnotationJob 直接派 batch）。改为 agent 自己调 `DetectSignalAnnotations` 拿一批。**好处**：未来想从 dashboard "手动 trigger 一次"也是同一条 dispatch path；attribution agent (V3) 可以选择性调 V1 这些 tool 而不需要绕过 cron。
 
-### 4.3 Tool 接口（粗略，落地 IT 时细化）
+### 4.3 Tool 接口（粗略，Phase 1.3 落地时细化）
 
-- `SessionFetchTool`：input `{sessionId}` → output `{agentName, runtimeStatus, runtimeError, completedAt, messageTail (last 8 messages), traceSummary (totalCost / totalDuration / hasError)}`
-- `SessionAnnotateTool`：input `{sessionId, outcome, suspect_surface, confidence, reasoning}` → 写 t_session_annotation (source=llm)，幂等（同 session 已有 outcome 标签则更新）
+- **`DetectSignalAnnotationsTool`** —— input `{ "window_hours": int }`（默认 1）→ output `{ "signal_count": int, "sessions_needing_llm": [{"sessionId": str, "agentName": str, "signalReasons": [str]}] }`
+  - service 内调 `TraceScenarioImportService.detectReasons` + 写 t_session_annotation (source=signal) + 返回 cap 10 条需 LLM 标注的 session
+- **`AnnotateSessionTool`** —— input `{ "sessionId": str, "outcome": str, "suspect_surface": str, "confidence": float, "reasoning": str }` → output `{ "ok": true, "annotationId": long }`
+  - **agent 决策 outcome/surface/confidence/reasoning** —— Tool 不做判断只持久化（agent 是 brain，tool 是 hand）
+  - service 写 t_session_annotation (source=llm) 幂等（同 sessionId + outcome 已存在则 update）
+- **`RecomputeClustersTool`** —— input `{ "window_days": int }`（默认 7）→ output `{ "patterns_upserted": int, "members_added": int }`
+  - service 内跑 bucket 聚类 + upsert t_session_pattern + t_pattern_session_member
+
+**幂等保证**：3 个 tool 各自的 service 都用 UNIQUE 约束 + ON CONFLICT upsert（Postgres），同一 invocation_id 重跑结果一致。
 
 ## 5. 聚类策略
 
@@ -295,7 +358,7 @@ signature = outcome + "|" + suspect_surface + "|" + top_failing_tool + "|" + age
 
 ### 5.3 重跑幂等
 
-- `clustering-cron` 每次跑：(1) 扫过去 7 天有新 label 的 session（2）按 signature 重算 bucket（3）upsert `t_session_pattern`（4）增量插入新 member（5）更新 `member_count` / `last_seen_at`
+- `RecomputeClustersTool` → `SessionPatternClusterService.recompute(window=7d)` 每次跑：(1) 扫过去 7 天有新标注的 session（2）按 signature 重算 bucket（3）upsert `t_session_pattern`（4）增量插入新 member（5）更新 `member_count` / `last_seen_at`
 - 不删除老 pattern，即使 member 数量降回 0 也保留（V3 attribution 可能引用）
 
 ## 6. Dashboard
@@ -314,45 +377,52 @@ signature = outcome + "|" + suspect_surface + "|" + top_failing_tool + "|" + age
 
 ## 7. 实施计划
 
-- [ ] **Phase 1.0：证伪 + 红测试**
-  - 跑现有 memory-curator dispatch 一次，确认接通
-  - 调 `TraceScenarioImportService` reason 检测 stub 单测
-  - 写红测试：fake session + tool error trace → 跑 signal stage 期望 `tool_failure` 标签出现
-- [ ] **Phase 1.1：DB + Entity + Repository + IT**
-  - V72/V73 migration
-  - 3 个 entity + repository + JPA IT
-- [ ] **Phase 1.2：Signal Stage**
-  - 重构 `TraceScenarioImportService.detectReasons` visibility（package-private）
-  - `SignalAnnotationJob` + cron
-  - 红测试转绿
-- [ ] **Phase 1.3：session-annotator Agent**
-  - `SessionAnnotatorBootstrap` + classpath prompt
-  - 2 个新 Tool (SessionFetchTool / SessionAnnotateTool)
-  - `LlmAnnotationJob` + cron
-  - 派一次 dispatch 端到端验证（manual test）
+- [x] **Phase 1.0：证伪 + 红测试** ✅ 2026-05-14
+  - ✅ memory-curator dispatch 链路确认：SubAgentRegistry 零改动可挂新 system agent
+  - ✅ TraceScenarioImportService reason 检测内联在 `suggestImportCandidates`，需先抽 `detectReasons` helper
+  - ✅ 红测试已落地 `skillforge-server/src/test/java/com/skillforge/server/sessionlabel/SignalAnnotationJobRedTest.java`（@Disabled placeholder）
+  - **3 个 push back 已修**：Flyway V72/V73 占用 → 改 V74/V75；dispatch 模式 → ScheduledTask + 1 agent + 3 tool；V75 INSERT 补 `lifecycle_hooks` 列
+- [ ] **Phase 1.1：DB schema + Entity + Repository + IT**
+  - V74 migration（3 张新表 + 索引 + UNIQUE）
+  - V75 migration（t_agent + t_scheduled_task 双 INSERT）
+  - 3 个 Entity + Repository + JPA IT
+  - `SessionAnnotatorBootstrap` 启动加载 prompt
+  - `classpath:session-annotator-system-prompt.md`
+  - **校对 V69 实际 `t_scheduled_task` 字段名 + concurrency_policy 取值 + creator_user_id**（绝对不可瞎猜）
+- [ ] **Phase 1.2：Signal Service + DetectSignalAnnotationsTool**
+  - 重构 `TraceScenarioImportService.detectReasons` package-private（零行为漂移 + TraceScenarioImportServiceTest:102 保持绿色）
+  - `SessionAnnotationSignalService.detectAndPersist(window)` + 单测
+  - `DetectSignalAnnotationsTool` 薄包装
+  - **删红测试 `@Disabled`** → 翻绿
+- [ ] **Phase 1.3：AnnotateSessionTool + 端到端 dispatch**
+  - `AnnotateSessionTool`（agent 决策 outcome/surface/confidence/reasoning，tool 只持久化）
+  - 派一次 dispatch 端到端 manual test（手动 trigger session-annotator 跑一次）
+  - 校验 source=llm 标注真写进 t_session_annotation
 - [ ] **Phase 1.4：Clustering + InsightsController**
-  - `PatternClusteringJob` + cron + 幂等测试
-  - `InsightsController` + 2 endpoint
+  - `SessionPatternClusterService.recompute(window)` + 幂等测试
+  - `RecomputeClustersTool` 薄包装
+  - `InsightsController` 2 endpoint
 - [ ] **Phase 1.5：Dashboard 页**
   - `Insights.tsx` + `PatternList` + `PatternDetailDrawer`
   - 路由 + nav
 - [ ] **Phase Final：Verify & Commit**
-  - `mvn test` 全绿
-  - `npm run build` EXIT 0
-  - 跑一遍真实生产数据 hourly cron，spot-check
-  - `git diff` 确认核心文件零改动
-  - Reviewer: `java-reviewer` + `typescript-reviewer` + `database-reviewer`（新表 + JPA）
+  - `mvn -pl skillforge-server -am test` 全绿
+  - `cd skillforge-dashboard && npm run build` EXIT 0
+  - **真跑 ScheduledTask 一次** —— 把 cron 改成 `*/2 * * * * *`（每 2 min）让它在测试期内跑一次，确认 agent run 端到端写标注 + cluster
+  - `git diff` 确认核心文件零改动（grep SessionEntity / ChatService / SessionService / CompactionService / AgentLoopEngine）
+  - Reviewer: `java-reviewer` + `typescript-reviewer` + `database-reviewer`（新表 + JPA + 2 个 INSERT migration）
 
 ## 8. 风险 & 边界
 
 | 风险 | 缓解 |
 |---|---|
-| `TraceScenarioImportService` 现有方法签名调整影响 SmartImport | 改 visibility 而非签名，加单元测试锁住输出格式 |
-| LLM 标注错误率拖累聚类 | confidence < 0.5 不入聚类；source 字段区分便于后期人工修正 |
-| 三个 cron 互相依赖时序错位 | hourly 错开 + advisory lock + 各 stage 幂等 |
+| `TraceScenarioImportService` 现有方法签名调整影响 SmartImport | 只重构 visibility 抽 helper，不改签名；保留 `TraceScenarioImportServiceTest:102` 绿色锁行为 |
+| LLM 标注错误率拖累聚类 | confidence < 0.5 不入聚类；source 字段区分便于 V3 加人工修正入口 |
+| ScheduledTask cron 跟 memory-curator 04:30 冲突 | session-annotator hourly 跑 00:00 整点；memory-curator 一天一次 04:30；不冲突 |
 | 三个新表磁盘膨胀 | t_session_annotation 加 created_at 索引；7 天滚动清理（V1 不做，V3 加） |
-| 派 session-annotator agent 成本失控 | 单批 ≤ 10 session；agent 内 max_loops 限制；hourly 限 1 次 |
-| Phase 1.3 派 agent 跨进程调试困难 | 走 memory-curator 现有 SubAgentDispatch + 派发日志，不开新通路 |
+| 派 session-annotator agent 成本失控 | DetectSignalAnnotations 单次 cap 10 session；agent 内 max_loops 限制 12（3 tool × 10 session）；hourly cron 每小时 1 次 |
+| Phase 1.3 派 agent 跨进程调试困难 | 走 memory-curator 现有 SubAgentDispatch + 派发日志，不开新通路；SubAgentRun entity 记录每次 invocation |
+| V75 `t_scheduled_task` 字段名瞎猜 | Phase 1.1 强制读 V69 实际 SQL 抄字段；reviewer 在 Phase 2 显式 audit |
 
 ## 9. 与现有规则的关系
 

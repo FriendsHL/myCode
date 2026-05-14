@@ -46,9 +46,10 @@ V1 单包 Mid 推进：
 
 ## 当前状态
 
-**已 ratify（2026-05-14）**。开发期默认值：
-- 三个 cron 频率：**hourly**
-- session-annotator 单批最多：**10 条 / batch**
+**已 ratify（2026-05-14）+ Phase 1.0 完成（押 3 个 push back）**。开发期默认值：
+- ScheduledTask `session-annotator-hourly`：**hourly**（P12 框架，V69 dogfood 同款模式，非 Spring @Scheduled）
+- agent 内部 orchestrate 3 个 tool（`DetectSignalAnnotations` / `AnnotateSession` / `RecomputeClusters`）
+- session-annotator 单次 invocation 最多标注：**10 条 session**
 
 下一步：**Phase 1.0 证伪**（spot-check 已有 TraceScenarioImportService 输出 + 跑一遍 memory-curator agent 看 dispatch 模式接通），然后进入 Phase 1.1 实现。
 

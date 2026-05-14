@@ -28,11 +28,13 @@ V1 飞轮起点：production session 自动标注（signal + LLM agent 双通道
 ## 用户流程
 
 1. 用户正常使用 SkillForge agent / skill（产生 production session）
-2. 后台 hourly cron 跑两阶段：
-   - **Stage A — Signal annotation**：批量查最近 1h 完成的 t_session 关联的 trace/span，按现有 `TraceScenarioImportService` 6 reason 检测逻辑，每条 session 输出 0-6 个 signal label，写 `t_session_annotation`
-   - **Stage B — LLM annotation**：派 `session-annotator` agent，按 active user 维度批量看新完成 session，输出 `(outcome, suspect_surface, confidence, reasoning)` 写 `t_session_annotation`
-3. 第三个 hourly cron 跑 **Stage C — Clustering**：按 `(outcome × suspect_surface × top_failing_tool × agent_id)` bucket 聚类，≥ 3 member 入 `t_session_pattern` + `t_pattern_session_member`
+2. 后台 **1 个 hourly ScheduledTask** 触发 `session-annotator` agent 跑一次（V69 memory-curator dogfood 同款 pattern）
+3. agent 内部按 system prompt 顺序调 3 个 tool：
+   - **`DetectSignalAnnotations(window=1h)`**：调 `TraceScenarioImportService.detectReasons` 写 source=signal 标注，返回需 LLM 标注的 session 列表（最多 10 条）
+   - **`AnnotateSession(sessionId)`**（每条 session 一次）：agent 内 LLM 判断 outcome + suspect_surface，写 source=llm 标注
+   - **`RecomputeClusters(window=7d)`**：按 `(outcome × suspect_surface × top_failing_tool × agent_id)` bucket 聚类，≥ 3 member 入 `t_session_pattern` + `t_pattern_session_member`
 4. 用户进 dashboard `/insights/patterns` 看 pattern 列表 → 点开看 member → 跳现有 trace 详情页
+5. 用户可在 dashboard `/schedules` 页关掉 `session-annotator-hourly` 或调频（P12 ScheduledTask 内建能力）
 
 ## 功能需求
 
@@ -74,11 +76,13 @@ V1 飞轮起点：production session 自动标注（signal + LLM agent 双通道
 
 ### Cron 触发
 
-- 三个独立 cron，hourly 跑
-  - `signal-annotation-cron`：扫上 1h 完成 session，跑 signal stage
-  - `llm-annotation-cron`：扫上 1h 完成且 signal stage 已跑完的 session，派 session-annotator agent
-  - `clustering-cron`：扫过去 7 天有新 label 的 session，重跑聚类
-- 每个 cron 用 advisory lock 防并发重跑
+- **1 个 P12 ScheduledTask**：`session-annotator-hourly`，每小时整点跑
+  - target_agent = `session-annotator`
+  - `concurrency_policy = 'skip-if-running'`（内建防重入，**不需要 advisory lock**）
+  - 默认 enabled = TRUE（dogfood 阶段直接跑；用户随时可在 dashboard `/schedules` 关 / 调频）
+  - 跟 V69 memory-curator daily 04:30 cron 不冲突（不同时段）
+- agent 内部按 system prompt 顺序调 3 tool（DetectSignalAnnotations → AnnotateSession × N → RecomputeClusters）
+- **不写 Spring @Scheduled** —— 用项目自己的 P12 ScheduledTask 框架
 
 ## 非目标
 
