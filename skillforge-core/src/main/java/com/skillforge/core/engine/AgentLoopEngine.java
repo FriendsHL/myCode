@@ -1609,7 +1609,7 @@ public class AgentLoopEngine {
         }
         try {
             com.skillforge.core.skill.view.SessionSkillView view =
-                    sessionSkillResolver.resolveFor(agentDef);
+                    sessionSkillResolver.resolveFor(agentDef, loopCtx.getSessionId());
             loopCtx.setSkillView(view != null
                     ? view
                     : com.skillforge.core.skill.view.SessionSkillView.EMPTY);
