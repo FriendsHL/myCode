@@ -3,6 +3,7 @@ package com.skillforge.server.controller;
 import com.skillforge.core.engine.CancellationRegistry;
 import com.skillforge.core.engine.PendingAskRegistry;
 import com.skillforge.core.engine.confirm.PendingConfirmationRegistry;
+import com.skillforge.server.config.LlmProperties;
 import com.skillforge.server.entity.AgentEntity;
 import com.skillforge.server.entity.ChatAttachmentEntity;
 import com.skillforge.server.entity.SessionEntity;
@@ -27,6 +28,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -37,17 +40,13 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * MULTIMODAL-MVP Task #2: upload endpoint must reject when the session's agent
- * has no {@code multimodalModelId} configured, BEFORE
+ * MULTIMODAL-MVP redesign (2026-05-14): upload endpoint must reject when
+ * {@code !llmProperties.supportsVision(agent.modelId)} BEFORE
  * {@link ChatAttachmentService#upload} touches disk (no orphan files).
  *
- * <p>Covers all 4 explicit cases from the team-lead brief:</p>
- * <ul>
- *   <li>409 MULTIMODAL_MODEL_NOT_CONFIGURED when unset / blank</li>
- *   <li>200 when {@code multimodalModelId} is set</li>
- *   <li>403 when the session isn't owned by the caller</li>
- *   <li>400 when the multipart file is missing/empty</li>
- * </ul>
+ * <p>The previous design checked a separate {@code agent.multimodalModelId};
+ * the new design uses the agent's single {@code modelId} so users only pick
+ * one model (FE picker tags vision-capable options with a "多模态" chip).</p>
  */
 @ExtendWith(MockitoExtension.class)
 class ChatControllerAttachmentGateTest {
@@ -55,6 +54,8 @@ class ChatControllerAttachmentGateTest {
     private static final String SESSION_ID = "sess-1";
     private static final Long USER_ID = 42L;
     private static final Long AGENT_ID = 7L;
+    private static final String VISION_MODEL = "xiaomi-mimo:mimo-v2.5";
+    private static final String TEXT_MODEL = "xiaomi-mimo:mimo-v2.5-pro";
 
     @Mock private ChatService chatService;
     @Mock private ChatAttachmentService chatAttachmentService;
@@ -69,15 +70,31 @@ class ChatControllerAttachmentGateTest {
     @Mock private ChannelConversationRepository channelConversationRepository;
     @Mock private ContextBreakdownService contextBreakdownService;
 
+    private LlmProperties llmProperties;
     private ChatController controller;
 
     @BeforeEach
     void setUp() {
+        // Real LlmProperties with one provider whose vision-models list contains
+        // `mimo-v2.5` (matches application.yml). This exercises the actual
+        // `supportsVision(modelId)` lookup path rather than mocking it away.
+        llmProperties = new LlmProperties();
+        LlmProperties.ProviderConfig mimo = new LlmProperties.ProviderConfig();
+        mimo.setType("openai");
+        mimo.setModel("mimo-v2.5-pro");
+        mimo.setModels(List.of("mimo-v2.5-pro", "mimo-v2.5"));
+        mimo.setVisionModels(List.of("mimo-v2.5"));
+        Map<String, LlmProperties.ProviderConfig> providers = new LinkedHashMap<>();
+        providers.put("xiaomi-mimo", mimo);
+        llmProperties.setProviders(providers);
+        llmProperties.setDefaultProvider("xiaomi-mimo");
+
         controller = new ChatController(
                 chatService,
                 chatAttachmentService,
                 sessionService,
                 agentService,
+                llmProperties,
                 pendingAskRegistry,
                 pendingConfirmationRegistry,
                 subAgentRegistry,
@@ -100,52 +117,53 @@ class ChatControllerAttachmentGateTest {
         return session;
     }
 
-    @Test
-    @DisplayName("upload returns 409 MULTIMODAL_MODEL_NOT_CONFIGURED when agent.multimodalModelId is null")
-    void upload_unsetMultimodalModel_returns409() {
-        when(sessionService.getSession(SESSION_ID)).thenReturn(ownedSession());
+    private AgentEntity agentWithModel(String modelId) {
         AgentEntity agent = new AgentEntity();
         agent.setId(AGENT_ID);
-        agent.setMultimodalModelId(null);
-        when(agentService.getAgent(AGENT_ID)).thenReturn(agent);
+        agent.setModelId(modelId);
+        return agent;
+    }
+
+    @Test
+    @DisplayName("upload returns 409 MAIN_MODEL_NOT_VISION_CAPABLE when agent.modelId is text-only")
+    void upload_nonVisionMainModel_returns409() {
+        when(sessionService.getSession(SESSION_ID)).thenReturn(ownedSession());
+        when(agentService.getAgent(AGENT_ID)).thenReturn(agentWithModel(TEXT_MODEL));
 
         ResponseEntity<Map<String, Object>> response =
                 controller.uploadAttachment(SESSION_ID, USER_ID, pngFile());
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         assertThat(response.getBody())
-                .containsEntry("code", "MULTIMODAL_MODEL_NOT_CONFIGURED");
+                .containsEntry("code", "MAIN_MODEL_NOT_VISION_CAPABLE");
         assertThat(response.getBody()).containsKey("error");
         // Iron Law: gate runs BEFORE bytes are accepted — no AttachmentService.upload call.
         verify(chatAttachmentService, never()).upload(any(), any(), any());
     }
 
     @Test
-    @DisplayName("upload returns 409 when agent.multimodalModelId is blank")
-    void upload_blankMultimodalModel_returns409() {
+    @DisplayName("upload returns 409 when agent.modelId is null or blank")
+    void upload_blankMainModel_returns409() {
         when(sessionService.getSession(SESSION_ID)).thenReturn(ownedSession());
-        AgentEntity agent = new AgentEntity();
-        agent.setId(AGENT_ID);
-        agent.setMultimodalModelId("   ");
-        when(agentService.getAgent(AGENT_ID)).thenReturn(agent);
+        when(agentService.getAgent(AGENT_ID)).thenReturn(agentWithModel("   "));
 
         ResponseEntity<Map<String, Object>> response =
                 controller.uploadAttachment(SESSION_ID, USER_ID, pngFile());
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         assertThat(response.getBody())
-                .containsEntry("code", "MULTIMODAL_MODEL_NOT_CONFIGURED");
+                .containsEntry("code", "MAIN_MODEL_NOT_VISION_CAPABLE");
         verify(chatAttachmentService, never()).upload(any(), any(), any());
     }
 
     @Test
-    @DisplayName("upload returns 200 when agent.multimodalModelId is configured")
-    void upload_configuredMultimodalModel_returns200() {
+    @DisplayName("upload returns 200 when agent.modelId is vision-capable")
+    void upload_visionCapableMainModel_returns200() {
         when(sessionService.getSession(SESSION_ID)).thenReturn(ownedSession());
-        AgentEntity agent = new AgentEntity();
-        agent.setId(AGENT_ID);
-        agent.setMultimodalModelId("mimo-v2-omni");
-        when(agentService.getAgent(AGENT_ID)).thenReturn(agent);
+        // model is `mimo-v2.5` — provider name strips "xiaomi-mimo:" prefix in the
+        // controller's supportsVision() lookup which iterates all providers'
+        // visionModels lists matching exact model string.
+        when(agentService.getAgent(AGENT_ID)).thenReturn(agentWithModel("mimo-v2.5"));
 
         ChatAttachmentEntity stored = new ChatAttachmentEntity();
         stored.setId("att-1");
@@ -184,7 +202,7 @@ class ChatControllerAttachmentGateTest {
                 controller.uploadAttachment(SESSION_ID, USER_ID, pngFile());
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-        // 403 fires before the multimodal gate; agent lookup must not happen — that
+        // 403 fires before the vision gate; agent lookup must not happen — that
         // would leak session existence to the wrong user.
         verify(agentService, never()).getAgent(any());
         verify(chatAttachmentService, never()).upload(any(), any(), any());
@@ -194,10 +212,7 @@ class ChatControllerAttachmentGateTest {
     @DisplayName("upload returns 400 when file is missing")
     void upload_missingFile_returns400() {
         when(sessionService.getSession(SESSION_ID)).thenReturn(ownedSession());
-        AgentEntity agent = new AgentEntity();
-        agent.setId(AGENT_ID);
-        agent.setMultimodalModelId("mimo-v2-omni");
-        when(agentService.getAgent(AGENT_ID)).thenReturn(agent);
+        when(agentService.getAgent(AGENT_ID)).thenReturn(agentWithModel(VISION_MODEL));
 
         ResponseEntity<Map<String, Object>> response =
                 controller.uploadAttachment(SESSION_ID, USER_ID, null);

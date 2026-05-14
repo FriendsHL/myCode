@@ -9,9 +9,13 @@ import { FALLBACK_MODEL_OPTIONS, type ModelOption, type ProtocolFamily } from '.
  * 5 fields. We normalize missing capability flags to `false` so the UI never
  * assumes a model supports thinking it doesn't actually support.
  */
-type RawModelOption = Omit<ModelOption, 'supportsThinking' | 'supportsReasoningEffort' | 'protocolFamily'> & {
+type RawModelOption = Omit<
+  ModelOption,
+  'supportsThinking' | 'supportsReasoningEffort' | 'supportsVision' | 'protocolFamily'
+> & {
   supportsThinking?: boolean;
   supportsReasoningEffort?: boolean;
+  supportsVision?: boolean;
   protocolFamily?: ProtocolFamily;
 };
 
@@ -24,6 +28,7 @@ function normalize(raw: RawModelOption): ModelOption {
     isDefault: raw.isDefault,
     supportsThinking: raw.supportsThinking ?? false,
     supportsReasoningEffort: raw.supportsReasoningEffort ?? false,
+    supportsVision: raw.supportsVision ?? false,
     protocolFamily: raw.protocolFamily,
   };
 }

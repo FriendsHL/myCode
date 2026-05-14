@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { ChatMessage } from '../components/ChatWindow';
+import type { ChatAttachmentRef, ChatMessage } from '../components/ChatWindow';
 import type { RawMessage, ContentBlock } from '../types/messages';
 
 export interface InflightTool {
@@ -39,6 +39,7 @@ export function normalizeMessages(list: RawMessage[]): ChatMessage[] {
     let text = '';
     const toolUseBlocks: ContentBlock[] = [];
     const toolResultBlocks: ContentBlock[] = [];
+    const attachmentRefs: ChatAttachmentRef[] = [];
     if (typeof content === 'string') {
       text = content;
     } else if (Array.isArray(content)) {
@@ -51,16 +52,44 @@ export function normalizeMessages(list: RawMessage[]): ChatMessage[] {
           toolUseBlocks.push(b);
         } else if (b.type === 'tool_result') {
           toolResultBlocks.push(b);
+        } else if (b.type === 'image_ref' || b.type === 'pdf_ref') {
+          // MULTIMODAL-MVP Phase 2: collect refs so ChatWindow can render
+          // inline thumbnails (image) / chips (pdf) via AttachmentThumbnail.
+          // The earlier Phase 1 emoji+filename string injection here was a
+          // placeholder until Phase 2 thumbnails landed — keeping it now would
+          // double-render alongside the chip.
+          const ref = b as unknown as {
+            filename?: unknown;
+            attachment_id?: unknown;
+            page_count?: unknown;
+            pageCount?: unknown;
+          };
+          const attachmentId =
+            typeof ref.attachment_id === 'string' ? ref.attachment_id : '';
+          if (!attachmentId) continue;
+          const filename =
+            typeof ref.filename === 'string' && ref.filename.length > 0
+              ? ref.filename
+              : attachmentId;
+          const rawPages = ref.page_count ?? ref.pageCount;
+          const pageCount =
+            typeof rawPages === 'number' && Number.isFinite(rawPages) ? rawPages : undefined;
+          attachmentRefs.push({
+            kind: b.type === 'image_ref' ? 'image' : 'pdf',
+            attachmentId,
+            filename,
+            pageCount,
+          });
         }
       }
     }
-    return { text, toolUseBlocks, toolResultBlocks };
+    return { text, toolUseBlocks, toolResultBlocks, attachmentRefs };
   };
 
   for (const m of list) {
     const msgType = typeof m.msgType === 'string' ? m.msgType.toUpperCase() : '';
     const messageType = typeof m.messageType === 'string' ? m.messageType : 'normal';
-    const { text, toolUseBlocks, toolResultBlocks } = extractBlocks(m.content);
+    const { text, toolUseBlocks, toolResultBlocks, attachmentRefs } = extractBlocks(m.content);
 
     if (msgType === 'COMPACT_BOUNDARY') {
       // Boundary is a structural marker for context slicing, not a user-visible card.
@@ -140,7 +169,10 @@ export function normalizeMessages(list: RawMessage[]): ChatMessage[] {
           }
         }
       }
-      if (!text.trim()) continue;
+      // Phase 2: a pure-attachment user message (image + no caption) has an
+      // empty `text` but non-empty `attachmentRefs` — keep the row so the
+      // thumbnails render. Drop only when BOTH text and attachments are empty.
+      if (!text.trim() && attachmentRefs.length === 0) continue;
 
       // Compaction 压缩摘要注入为 user 消息：
       //   独立形态: "[Context summary from N messages...]\n...summary..." — 跳过不显示
@@ -168,7 +200,11 @@ export function normalizeMessages(list: RawMessage[]): ChatMessage[] {
         if (!displayText) continue;
       }
 
-      result.push({ role: 'user', content: displayText });
+      result.push({
+        role: 'user',
+        content: displayText,
+        attachments: attachmentRefs.length > 0 ? attachmentRefs : undefined,
+      });
     } else if (m.role === 'assistant') {
       const toolCalls = toolUseBlocks.map((b: any) => ({
         id: b.id,

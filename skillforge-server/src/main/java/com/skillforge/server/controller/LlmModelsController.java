@@ -37,6 +37,7 @@ public class LlmModelsController {
             boolean isDefault,
             boolean supportsThinking,
             boolean supportsReasoningEffort,
+            boolean supportsVision,
             String protocolFamily) {}
 
     @GetMapping("/models")
@@ -48,6 +49,9 @@ public class LlmModelsController {
                 .flatMap(e -> {
                     String providerName = e.getKey();
                     LlmProperties.ProviderConfig provider = e.getValue();
+                    List<String> visionModels = provider.getVisionModels() != null
+                            ? provider.getVisionModels()
+                            : List.of();
                     List<String> modelCandidates = new ArrayList<>();
                     if (provider.getModels() != null) {
                         modelCandidates.addAll(provider.getModels());
@@ -65,6 +69,10 @@ public class LlmModelsController {
                                 boolean isDefault = providerName.equals(defaultProvider)
                                         && model.equals(provider.getModel());
                                 ProviderProtocolFamily family = resolveFamilyForDisplay(providerName, model);
+                                // MULTIMODAL-MVP redesign (2026-05-14): FE picker
+                                // tags vision-capable options with a "多模态" chip;
+                                // Chat upload button gates on this same flag.
+                                boolean supportsVision = visionModels.contains(model);
                                 return new ModelOption(
                                         id,
                                         id,
@@ -73,6 +81,7 @@ public class LlmModelsController {
                                         isDefault,
                                         family.supportsThinkingToggle,
                                         family.supportsReasoningEffort,
+                                        supportsVision,
                                         family.name().toLowerCase(Locale.ROOT));
                             });
                 })

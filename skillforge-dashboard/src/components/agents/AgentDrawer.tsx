@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { InputNumber, Select, Switch, message } from 'antd';
+import { InputNumber, Select, Switch, Tag, message } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   updateAgent,
@@ -260,11 +260,6 @@ const AgentDrawer: React.FC<AgentDrawerProps> = ({ agent, onClose }) => {
   // Overview — model + maxLoops + thinking edit
   const agentWithExtras = agent as AgentDto & { maxLoops?: number | null };
   const [modelIdDraft, setModelIdDraft] = useState<string>(agent.modelId || '');
-  // MULTIMODAL-MVP: independent picker, nullable. Empty string = "not
-  // configured" → Chat upload button disabled (gate logic lives in Chat.tsx).
-  const [multimodalModelIdDraft, setMultimodalModelIdDraft] = useState<string>(
-    agent.multimodalModelId || '',
-  );
   const [publicDraft, setPublicDraft] = useState<boolean>(agent.public ?? false);
   const [maxLoopsDraft, setMaxLoopsDraft] = useState<number | null>(
     typeof agentWithExtras.maxLoops === 'number' ? agentWithExtras.maxLoops : null,
@@ -282,7 +277,6 @@ const AgentDrawer: React.FC<AgentDrawerProps> = ({ agent, onClose }) => {
   );
   useEffect(() => {
     setModelIdDraft(agent.modelId || '');
-    setMultimodalModelIdDraft(agent.multimodalModelId || '');
     setPublicDraft(agent.public ?? false);
     setRoleDraft((agent.role || '').toString());
     setMaxLoopsDraft(typeof agentWithExtras.maxLoops === 'number' ? agentWithExtras.maxLoops : null);
@@ -307,7 +301,6 @@ const AgentDrawer: React.FC<AgentDrawerProps> = ({ agent, onClose }) => {
   // server value. Without this guard, Save would fire a false success toast.
   const overviewDirty =
     (agent.modelId || '') !== modelIdDraft ||
-    (agent.multimodalModelId || '') !== multimodalModelIdDraft ||
     (agent.public ?? false) !== publicDraft ||
     ((agent.role || '') !== roleDraft) ||
     (maxLoopsDraft !== null && initialMaxLoops !== maxLoopsDraft) ||
@@ -516,10 +509,6 @@ const AgentDrawer: React.FC<AgentDrawerProps> = ({ agent, onClose }) => {
   const handleSaveOverview = () => {
     const partial: UpdateAgentRequest = {
       modelId: modelIdDraft || undefined,
-      // MULTIMODAL-MVP: send `''` (not undefined) so BE partial-update treats
-      // it as explicit clear-to-NULL. Sending undefined would skip the field
-      // and leave a stale id behind. PRD Ratify #6 / tech-design 449.
-      multimodalModelId: multimodalModelIdDraft,
       role: roleDraft,
       public: publicDraft,
       thinkingMode: thinkingModeDraft,
@@ -605,37 +594,35 @@ const AgentDrawer: React.FC<AgentDrawerProps> = ({ agent, onClose }) => {
                   <Select
                     size="small"
                     value={modelIdDraft || undefined}
-                    options={modelOptions.map((o) => ({ label: o.label, value: o.id }))}
+                    // MULTIMODAL-MVP redesign (2026-05-14): vision-capable
+                    // models get a "多模态" chip on the option label. Users
+                    // who want to upload images / PDFs pick one of these as
+                    // the agent's main model (no separate multimodal model
+                    // picker). FE Chat upload button gates on the same flag.
+                    options={modelOptions.map((o) => ({
+                      label: o.supportsVision ? (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          {o.label}
+                          <Tag color="purple" style={{ marginInlineEnd: 0, fontSize: 11, lineHeight: '14px', padding: '0 4px' }}>
+                            多模态
+                          </Tag>
+                        </span>
+                      ) : (
+                        o.label
+                      ),
+                      value: o.id,
+                    }))}
                     onChange={(v) => setModelIdDraft(v)}
                     placeholder="default"
                     style={{ width: '100%', marginTop: 4 }}
                     showSearch
                     optionFilterProp="label"
+                    filterOption={(input, option) => {
+                      // Custom filter since label is now ReactNode for some options.
+                      const opt = modelOptions.find((o) => o.id === option?.value);
+                      return opt ? opt.label.toLowerCase().includes(input.toLowerCase()) : false;
+                    }}
                   />
-                </div>
-                {/* MULTIMODAL-MVP: independent picker — null/empty disables
-                    Chat upload button. Reuses the same modelOptions list
-                    intentionally (PRD §"Agent 配置 multimodal model"): the
-                    user picks whatever vision-capable model they have, and
-                    the BE materializer enforces capability with the explicit
-                    MULTIMODAL_MODEL_NO_VISION_CAPABILITY error. */}
-                <div className="overview-card" data-testid="multimodal-model-card">
-                  <div className="overview-k">Multimodal model</div>
-                  <Select
-                    size="small"
-                    value={multimodalModelIdDraft || undefined}
-                    options={modelOptions.map((o) => ({ label: o.label, value: o.id }))}
-                    onChange={(v) => setMultimodalModelIdDraft(v ?? '')}
-                    placeholder="未配置 — 上传图片/PDF 时不可用"
-                    style={{ width: '100%', marginTop: 4 }}
-                    allowClear
-                    showSearch
-                    optionFilterProp="label"
-                    data-testid="multimodal-model-select"
-                  />
-                  <div style={{ fontSize: 11, color: 'var(--fg-4)', marginTop: 4 }}>
-                    仅在用户发送带图片/PDF 的消息时使用；不影响主对话。
-                  </div>
                 </div>
                 <div className="overview-card">
                   <div className="overview-k">Max Loops</div>

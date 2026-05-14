@@ -65,10 +65,26 @@ public class LlmProperties {
         if (providers == null) {
             return false;
         }
-        for (ProviderConfig provider : providers.values()) {
+        // Agent / runtime modelId may be stored either as a bare "<model>" or
+        // as the prefixed "<provider>:<model>" form that LlmModelsController.id
+        // and ModelCatalog.fullId emit. Accept both shapes: strip any leading
+        // "provider:" before comparing to a provider's visionModels list
+        // (yaml stores bare model ids).
+        int colon = modelId.indexOf(':');
+        String bare = colon >= 0 ? modelId.substring(colon + 1) : modelId;
+        String requestedProvider = colon >= 0 ? modelId.substring(0, colon) : null;
+        for (Map.Entry<String, ProviderConfig> entry : providers.entrySet()) {
+            ProviderConfig provider = entry.getValue();
             if (provider == null) continue;
             List<String> visionModels = provider.getVisionModels();
-            if (visionModels != null && visionModels.contains(modelId)) {
+            if (visionModels == null || visionModels.isEmpty()) continue;
+            // When the input is prefixed, require the provider name to match
+            // so that a model with the same bare name on the wrong provider
+            // isn't accidentally accepted as vision-capable.
+            if (requestedProvider != null && !entry.getKey().equals(requestedProvider)) {
+                continue;
+            }
+            if (visionModels.contains(bare)) {
                 return true;
             }
         }

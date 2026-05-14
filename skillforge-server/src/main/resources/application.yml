@@ -163,6 +163,12 @@ skillforge:
         model: claude-sonnet-4-20250514
         models:
           - claude-sonnet-4-20250514
+        # MULTIMODAL-MVP: vision-capable models. FE picker tags these with a
+        # "多模态" chip; user can upload images/PDFs when their agent.modelId
+        # is one of these. ChatService.runLoop keeps capability check as
+        # defense-in-depth (race-condition guard).
+        vision-models:
+          - claude-sonnet-4-20250514
         context-window-tokens: 200000   # claude-sonnet-4 / claude-3.x = 200K
       deepseek:
         type: deepseek
@@ -217,12 +223,15 @@ skillforge:
           - mimo-v2-pro
           - mimo-v2-omni
           - mimo-v2-tts
-        # MULTIMODAL-MVP: allowlist of vision-capable models. ChatService refuses
-        # multimodal turns whose effective model is not listed here (BE side of
-        # PRD Ratify #9 — no silent fallback to text-only). Add additional model
-        # ids when they gain vision support.
+        # MULTIMODAL-MVP: allowlist of vision-capable models. FE picker tags these
+        # with a "多模态" chip; users get an enabled upload button when their
+        # agent.modelId is one of these. ChatService.runLoop keeps the check as
+        # defense-in-depth (race condition guard). Confirmed via session
+        # 93415b12 on 2026-05-13 that mimo-v2.5 correctly handles inline image
+        # content blocks.
         vision-models:
           - mimo-v2-omni
+          - mimo-v2.5
         # Context windows resolved per-model via ModelConfig.KNOWN_MODEL_WINDOWS
         # (V2.5 / V2-Pro = 1M tokens, V2-Omni = 256K, TTS variants = 1M tokenizer-aligned).
         # Note: TTS models (-tts / -tts-voiceclone / -tts-voicedesign) are listed for

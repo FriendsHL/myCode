@@ -44,16 +44,23 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * MULTIMODAL-MVP Task #4: vision capability check.
+ * MULTIMODAL-MVP redesign (2026-05-14): vision capability defense-in-depth.
  *
- * <p>When the effective model resolved for a multimodal turn is NOT in any
- * provider's {@code visionModels} allowlist, ChatService must throw
- * {@link MultimodalNoVisionException} BEFORE handing the message to the
- * provider. The existing catch block then writes runtimeError + broadcasts
- * sessionStatus("error"), so the user sees an actionable wire code instead of
- * a silent image-block drop.</p>
+ * <p>The agent now has a single {@code modelId} (the separate
+ * {@code multimodalModelId} field was dropped). When a turn carries multimodal
+ * blocks and the resolved effective model (runtimeOverride or agent.modelId)
+ * is NOT in any provider's {@code visionModels} allowlist, ChatService must
+ * throw {@link MultimodalNoVisionException} BEFORE handing the message to the
+ * provider. The existing catch block writes runtimeError + broadcasts
+ * sessionStatus("error"), so the FE can surface an actionable "switch model"
+ * hint via the stable wire code.</p>
+ *
+ * <p>FE upload-button gate + BE upload-endpoint gate
+ * ({@code ChatController.requireVisionCapableModel}) block the common path
+ * upstream; this check is the runtime guard for race conditions (agent.modelId
+ * swapped between upload and send) and replayed / stale-FE requests.</p>
  */
-@DisplayName("ChatService — multimodal vision capability check (MULTIMODAL-MVP Task #4)")
+@DisplayName("ChatService — multimodal vision capability check (defense-in-depth)")
 class ChatServiceMultimodalCapabilityCheckTest {
 
     private AgentService agentService;
@@ -103,9 +110,9 @@ class ChatServiceMultimodalCapabilityCheckTest {
     }
 
     @Test
-    @DisplayName("multimodal turn + effective model NOT in visionModels → runtimeError set, provider never called")
-    void unsupportedVisionModel_setsRuntimeErrorAndSkipsProvider() {
-        // visionModels is empty → no model passes the check.
+    @DisplayName("multimodal turn + agent.modelId NOT in visionModels → runtimeError set, provider never called")
+    void unsupportedVisionMainModel_setsRuntimeErrorAndSkipsProvider() {
+        // visionModels has only "real-vision-model"; agent uses a text model.
         LlmProperties props = new LlmProperties();
         LlmProperties.ProviderConfig provider = new LlmProperties.ProviderConfig();
         provider.setType("openai");
@@ -117,8 +124,9 @@ class ChatServiceMultimodalCapabilityCheckTest {
         chatService = buildChatService(props);
 
         SessionEntity sess = newSession("sess-no-vision", null);
-        AgentEntity agent = newAgent(100L, "claude:claude-sonnet-4", "non-vision-model");
-        AgentDefinition def = newDef("claude:claude-sonnet-4");
+        // agent.modelId is text-only ("non-vision-model" not in any visionModels list)
+        AgentEntity agent = newAgent(100L, "non-vision-model");
+        AgentDefinition def = newDef("non-vision-model");
         when(chatAttachmentService.referenceBlocks(eq("sess-no-vision"), eq(7L), eq(List.of("att-1"))))
                 .thenReturn(List.of(ContentBlock.imageRef("att-1", "image/png", "screen.png")));
         when(chatAttachmentService.materializeForProvider(eq("sess-no-vision"), any(Message.class)))
@@ -129,10 +137,8 @@ class ChatServiceMultimodalCapabilityCheckTest {
         when(sessionService.getSessionMessages("sess-no-vision")).thenReturn(new ArrayList<>());
         when(sessionService.getContextMessages("sess-no-vision")).thenReturn(new ArrayList<>());
         when(sessionService.getFullHistory("sess-no-vision")).thenReturn(new ArrayList<>());
-
-        // Capture the SessionEntity reloads inside runLoop / catch block — saveSession is
-        // called multiple times along the path. Returning the same `sess` keeps state
-        // consistent across reads.
+        // SessionEntity reloads inside runLoop / catch block: returning the same `sess`
+        // keeps state consistent across saveSession round-trips.
         lenient().when(sessionService.getSession(anyString())).thenReturn(sess);
 
         chatService.chatAsync("sess-no-vision", "describe", 7L, List.of("att-1"));
@@ -143,8 +149,7 @@ class ChatServiceMultimodalCapabilityCheckTest {
                 any(Message.class),
                 anyList(), anyString(), anyLong(),
                 any(com.skillforge.core.engine.LoopContext.class));
-        // runtimeError is set on the session and contains the stable wire code so the FE
-        // can detect it.
+        // runtimeError contains the stable wire code so the FE can detect + prompt.
         assertThat(sess.getRuntimeError())
                 .isNotNull()
                 .contains(MultimodalNoVisionException.CODE)
@@ -153,8 +158,8 @@ class ChatServiceMultimodalCapabilityCheckTest {
     }
 
     @Test
-    @DisplayName("multimodal turn + effective model IS in visionModels → provider call proceeds normally")
-    void supportedVisionModel_proceedsToProvider() {
+    @DisplayName("multimodal turn + agent.modelId IS in visionModels → provider call proceeds normally")
+    void visionCapableMainModel_proceedsToProvider() {
         LlmProperties props = new LlmProperties();
         LlmProperties.ProviderConfig provider = new LlmProperties.ProviderConfig();
         provider.setType("openai");
@@ -166,8 +171,8 @@ class ChatServiceMultimodalCapabilityCheckTest {
         chatService = buildChatService(props);
 
         SessionEntity sess = newSession("sess-vision-ok", null);
-        AgentEntity agent = newAgent(100L, "claude:claude-sonnet-4", "mimo-v2-omni");
-        AgentDefinition def = newDef("claude:claude-sonnet-4");
+        AgentEntity agent = newAgent(100L, "mimo-v2-omni");
+        AgentDefinition def = newDef("mimo-v2-omni");
         when(chatAttachmentService.referenceBlocks(eq("sess-vision-ok"), eq(7L), eq(List.of("att-2"))))
                 .thenReturn(List.of(ContentBlock.imageRef("att-2", "image/png", "x.png")));
         when(chatAttachmentService.materializeForProvider(eq("sess-vision-ok"), any(Message.class)))
@@ -207,7 +212,7 @@ class ChatServiceMultimodalCapabilityCheckTest {
         chatService = buildChatService(props);
 
         SessionEntity sess = newSession("sess-text", null);
-        AgentEntity agent = newAgent(100L, "claude:claude-sonnet-4", null);
+        AgentEntity agent = newAgent(100L, "claude:claude-sonnet-4");
         AgentDefinition def = newDef("claude:claude-sonnet-4");
         when(sessionService.getSession("sess-text")).thenReturn(sess);
         when(agentService.getAgent(100L)).thenReturn(agent);
@@ -250,12 +255,11 @@ class ChatServiceMultimodalCapabilityCheckTest {
         return s;
     }
 
-    private AgentEntity newAgent(Long id, String modelId, String multimodalModelId) {
+    private AgentEntity newAgent(Long id, String modelId) {
         AgentEntity a = new AgentEntity();
         a.setId(id);
         a.setName("test-agent");
         a.setModelId(modelId);
-        a.setMultimodalModelId(multimodalModelId);
         return a;
     }
 

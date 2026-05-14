@@ -43,6 +43,7 @@ import {
 import { z } from 'zod';
 import { AgentSchema, SessionSchema, safeParseList } from '../api/schemas';
 import { useChatWebSocket } from '../hooks/useChatWebSocket';
+import { useLlmModels } from '../hooks/useLlmModels';
 import { useChatMessages, type InflightTool } from '../hooks/useChatMessages';
 import { stripRemindersFromMessageList } from '../utils/messageContent';
 import { useCollabState } from '../hooks/useCollabState';
@@ -365,14 +366,20 @@ const Chat: React.FC = () => {
 
   const doSend = async (sid: string, text: string, files: File[] = []) => {
     setLoopSpans([]);
-    const attachmentLabel = files.length > 0
-      ? `${text ? `${text}\n` : ''}${files.map((file) => `[Attachment: ${file.name}]`).join('\n')}`
-      : text;
-    setRawMessages((prev) => [...prev, { role: 'user', content: attachmentLabel }]);
+    // Optimistic insert ONLY for text-only turns. When files are present, the
+    // server-persisted message is a ContentBlock[] (image_ref / pdf_ref + text)
+    // while a local optimistic preview can only be a string — the WS-dedup
+    // path (useChatWsEventHandler) compares string content only, so a
+    // string-vs-array mismatch falls through and renders TWO bubbles for the
+    // same user turn. Skip the optimistic insert for multimodal turns and
+    // let the BE → WS push populate the bubble (~100ms after upload).
+    if (files.length === 0) {
+      setRawMessages((prev) => [...prev, { role: 'user', content: text }]);
+    }
     setRuntimeStatus('running');
     setRuntimeStep('Starting');
     // MULTIMODAL-MVP — upload phase is its own try/catch so we can surface
-    // the precise per-file failure (409 MULTIMODAL_MODEL_NOT_CONFIGURED,
+    // the precise per-file failure (409 MAIN_MODEL_NOT_VISION_CAPABLE,
     // 413 too large, 415 wrong type, 500) without conflating it with the
     // chat send error path. We bail before sending if any file fails.
     const uploaded: string[] = [];
@@ -385,16 +392,16 @@ const Chat: React.FC = () => {
         const status = resp?.status;
         const code = resp?.data?.code;
         const beMessage = resp?.data?.message ?? resp?.data?.error;
-        if (status === 409 && code === 'MULTIMODAL_MODEL_NOT_CONFIGURED') {
-          // r2 W2 — tech-design §前端设计 "tooltip 文案 + **跳转链接**".
-          // AntD message.error accepts a ReactNode; embed an inline link to
-          // the agent config so the user can recover in one click. duration=6
-          // (vs default 3) gives time to click before auto-dismiss.
-          // Inline the navigate call rather than forward-ref handleOpenAgentConfig
-          // (declared further down the component); avoids ordering coupling.
+        if (status === 409 && code === 'MAIN_MODEL_NOT_VISION_CAPABLE') {
+          // Redesign (2026-05-14): server rejects upload when agent.modelId is
+          // not vision-capable. AntD message.error accepts a ReactNode; embed
+          // an inline link to the agent config so the user can switch the main
+          // model in one click. duration=6 (vs default 3) gives time to click
+          // before auto-dismiss. Inline navigate (avoids forward-ref to
+          // handleOpenAgentConfig declared further down the component).
           message.error(
             <span data-testid="multimodal-409-jump">
-              请先在 agent 配置中选择多模态模型 ·{' '}
+              请把 agent 的主模型切换为多模态模型 ·{' '}
               <a
                 data-testid="multimodal-409-jump-link"
                 onClick={() => {
@@ -731,10 +738,20 @@ const Chat: React.FC = () => {
   );
   const activeAgent = agents.find((a) => a.id === selectedAgent);
   const agentName = activeAgent?.name;
-  // MULTIMODAL-MVP gate: empty string / null / undefined → button disabled.
+  // MULTIMODAL-MVP redesign (2026-05-14): upload button is enabled iff the
+  // agent's main model is in the vision-capable allowlist (BE returns
+  // `supportsVision` per model on /api/llm/models). FE picker shows a "多模态"
+  // chip on these models so users pick one to enable uploads. Gate stays
+  // defense-in-depth alongside the BE upload-endpoint check.
+  const { options: modelOptions } = useLlmModels();
+  const visionCapableSet = useMemo(() => {
+    const ids = modelOptions.filter((o) => o.supportsVision).map((o) => o.id);
+    return new Set(ids);
+  }, [modelOptions]);
   const multimodalEnabled =
-    typeof activeAgent?.multimodalModelId === 'string' &&
-    activeAgent.multimodalModelId.length > 0;
+    typeof activeAgent?.modelId === 'string' &&
+    activeAgent.modelId.length > 0 &&
+    visionCapableSet.has(activeAgent.modelId);
   const handleOpenAgentConfig = useCallback(() => {
     if (selectedAgent == null) {
       navigate('/agents');

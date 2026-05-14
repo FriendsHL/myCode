@@ -14,7 +14,9 @@ import com.skillforge.server.entity.CompactionEventEntity;
 import com.skillforge.server.entity.SessionEntity;
 import com.skillforge.server.dto.SessionReplayDto;
 import com.skillforge.server.repository.ChannelConversationRepository;
+import com.skillforge.server.config.LlmProperties;
 import com.skillforge.server.entity.AgentEntity;
+import com.skillforge.server.entity.ChatAttachmentEntity;
 import com.skillforge.server.exception.AgentNotFoundException;
 import com.skillforge.server.service.AgentService;
 import com.skillforge.server.service.ChatService;
@@ -58,6 +60,7 @@ public class ChatController {
     private final ChatAttachmentService chatAttachmentService;
     private final SessionService sessionService;
     private final AgentService agentService;
+    private final LlmProperties llmProperties;
     private final PendingAskRegistry pendingAskRegistry;
     private final PendingConfirmationRegistry pendingConfirmationRegistry;
     private final SubAgentRegistry subAgentRegistry;
@@ -71,6 +74,7 @@ public class ChatController {
                           ChatAttachmentService chatAttachmentService,
                           SessionService sessionService,
                           AgentService agentService,
+                          LlmProperties llmProperties,
                           PendingAskRegistry pendingAskRegistry,
                           PendingConfirmationRegistry pendingConfirmationRegistry,
                           SubAgentRegistry subAgentRegistry,
@@ -83,6 +87,7 @@ public class ChatController {
         this.chatAttachmentService = chatAttachmentService;
         this.sessionService = sessionService;
         this.agentService = agentService;
+        this.llmProperties = llmProperties;
         this.pendingAskRegistry = pendingAskRegistry;
         this.pendingConfirmationRegistry = pendingConfirmationRegistry;
         this.subAgentRegistry = subAgentRegistry;
@@ -210,7 +215,7 @@ public class ChatController {
                                                                @RequestParam(value = "file", required = false) MultipartFile file) {
         // MULTIMODAL-MVP gate order (matters):
         //   1) session ownership (404/403/400) — never leak session existence
-        //   2) agent.multimodalModelId presence (409 MULTIMODAL_MODEL_NOT_CONFIGURED)
+        //   2) agent.modelId is vision-capable (409 MAIN_MODEL_NOT_VISION_CAPABLE)
         //   3) file presence (400) — fail before AttachmentService.upload() opens a stream,
         //      so no orphan files land in the storage root when the gate fails.
         ResponseEntity<SessionEntity> check = requireOwnedSession(sessionId, userId);
@@ -218,7 +223,7 @@ public class ChatController {
             return ResponseEntity.status(check.getStatusCode()).build();
         }
         SessionEntity session = check.getBody();
-        ResponseEntity<Map<String, Object>> gate = requireMultimodalModelConfigured(session);
+        ResponseEntity<Map<String, Object>> gate = requireVisionCapableModel(session);
         if (gate != null) {
             return gate;
         }
@@ -245,18 +250,80 @@ public class ChatController {
     }
 
     /**
-     * MULTIMODAL-MVP §6/§9 ratify: BE must independently reject uploads when
-     * the session's agent has no {@code multimodalModelId} configured, even if
-     * the FE upload-button gate is bypassed (curl / replayed request / stale FE).
+     * MULTIMODAL-MVP Phase 2: stream raw bytes for an attachment so the chat UI
+     * can render image thumbnails / PDF previews inline. Same ownership chain
+     * as the upload endpoint — caller must own the session, and the attachment
+     * must belong to the same session + user. 200 streams body with
+     * Content-Type from the server-detected MIME and Cache-Control: private so
+     * intermediaries don't cache. 404 covers both "missing" and "ownership
+     * mismatch" intentionally so we don't leak existence to non-owners.
+     *
+     * <p>Auth flows through the project's standard Bearer token interceptor;
+     * because {@code <img src>} tags cannot carry the Authorization header,
+     * the FE fetches via axios (interceptor adds Bearer) then renders the
+     * response as a blob URL — keeping the token out of URLs / logs.</p>
+     */
+    @GetMapping("/attachments/{attachmentId}/data")
+    public ResponseEntity<byte[]> getAttachmentData(@PathVariable String attachmentId,
+                                                    @RequestParam Long userId,
+                                                    @RequestParam(required = false) String sessionId) {
+        if (userId == null) {
+            return ResponseEntity.badRequest().build();
+        }
+        ChatAttachmentEntity attachment = chatAttachmentService.findReadable(attachmentId, sessionId, userId);
+        if (attachment == null) {
+            return ResponseEntity.notFound().build();
+        }
+        if (sessionId != null) {
+            // Defense-in-depth: caller passed a session hint, require they actually
+            // own that session before we hand back bytes. requireOwnedSession
+            // returns 403 on cross-user mismatch and 404 on missing.
+            ResponseEntity<SessionEntity> ownership = requireOwnedSession(sessionId, userId);
+            if (!ownership.getStatusCode().is2xxSuccessful()) {
+                return ResponseEntity.status(ownership.getStatusCode()).build();
+            }
+        }
+        byte[] bytes;
+        try {
+            bytes = chatAttachmentService.readBytes(attachment);
+        } catch (IllegalStateException e) {
+            return ResponseEntity.internalServerError().build();
+        }
+        org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+        String mime = attachment.getMimeType();
+        if (mime != null && !mime.isBlank()) {
+            headers.setContentType(org.springframework.http.MediaType.parseMediaType(mime));
+        } else {
+            headers.setContentType(org.springframework.http.MediaType.APPLICATION_OCTET_STREAM);
+        }
+        headers.setContentLength(bytes.length);
+        // Private + 1d — these blobs are user-scoped, never share across users
+        // and rarely change in place (filename can mutate but bytes don't).
+        headers.setCacheControl("private, max-age=86400");
+        // Avoid Content-Disposition: attachment so browsers render inline. The
+        // filename hint helps users who click "Save image as".
+        headers.add("Content-Disposition",
+                "inline; filename=\"" + attachment.getFilename().replace("\"", "_") + "\"");
+        return new ResponseEntity<>(bytes, headers, HttpStatus.OK);
+    }
+
+    /**
+     * MULTIMODAL-MVP redesign (2026-05-14): BE must independently reject uploads
+     * when the session agent's main {@code modelId} is not vision-capable, even
+     * if the FE upload-button gate is bypassed (curl / replayed request / stale FE).
+     *
+     * <p>This is the simplified design: there is no separate "multimodal model"
+     * field on the agent. The agent's single {@code modelId} must be in
+     * {@link LlmProperties#supportsVision(String)} for uploads to be allowed.</p>
      *
      * @return null when the gate passes; a 409 ResponseEntity with body
-     *         {@code {"code":"MULTIMODAL_MODEL_NOT_CONFIGURED","error":...}}
-     *         when blocked; 404/500 ResponseEntity when the agent lookup itself fails.
+     *         {@code {"code":"MAIN_MODEL_NOT_VISION_CAPABLE","error":...}}
+     *         when blocked; 404 ResponseEntity when the agent lookup itself fails.
      */
-    private ResponseEntity<Map<String, Object>> requireMultimodalModelConfigured(SessionEntity session) {
+    private ResponseEntity<Map<String, Object>> requireVisionCapableModel(SessionEntity session) {
         if (session == null || session.getAgentId() == null) {
             return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
-                    "code", "MULTIMODAL_MODEL_NOT_CONFIGURED",
+                    "code", "MAIN_MODEL_NOT_VISION_CAPABLE",
                     "error", "Session is not bound to an agent"));
         }
         AgentEntity agent;
@@ -266,11 +333,11 @@ public class ChatController {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of(
                     "error", "agent not found: " + session.getAgentId()));
         }
-        String mm = agent.getMultimodalModelId();
-        if (mm == null || mm.isBlank()) {
+        String modelId = agent.getModelId();
+        if (modelId == null || modelId.isBlank() || !llmProperties.supportsVision(modelId)) {
             return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
-                    "code", "MULTIMODAL_MODEL_NOT_CONFIGURED",
-                    "error", "Agent has not configured a multimodal model"));
+                    "code", "MAIN_MODEL_NOT_VISION_CAPABLE",
+                    "error", "Agent model is not vision-capable: " + modelId));
         }
         return null;
     }

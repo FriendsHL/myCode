@@ -1,13 +1,16 @@
 /**
- * MULTIMODAL-MVP — Task #6 frontend coverage:
- *   - Attach button is **visible but disabled** when activeAgent has no
- *     multimodalModelId; tooltip copy + jump link are present.
- *   - Attach button is **enabled** when multimodalModelId is set.
+ * MULTIMODAL-MVP frontend coverage (redesign 2026-05-14):
+ *   - Attach button is **visible but disabled** when activeAgent.modelId is
+ *     not vision-capable; tooltip copy + jump link are present.
+ *   - Attach button is **enabled** when the main model is vision-capable
+ *     (caller passes multimodalEnabled=true derived from the LLM model list).
  *   - Clicking the disabled button does NOT trigger the hidden file input.
  *   - sessionResetKey change clears in-flight file picks.
  *
  * We import the inner `ChatInput` rather than `ChatWindow` to avoid the
  * thread/scroll/markdown deps; the gating logic lives entirely in `ChatInput`.
+ * The derivation `multimodalEnabled = visionCapableSet.has(agent.modelId)`
+ * happens in `Chat.tsx`; ChatInput just consumes the boolean.
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -112,7 +115,7 @@ describe('ChatInput — MULTIMODAL-MVP attach button gate', () => {
       {},
       { timeout: 3000 },
     );
-    expect(content.textContent ?? '').toMatch(/请先在 agent 配置中选择多模态模型/);
+    expect(content.textContent ?? '').toMatch(/请把 agent 的主模型切换为多模态模型/);
   });
 
   it('clicking the aria-disabled attach button does NOT open the file picker', async () => {

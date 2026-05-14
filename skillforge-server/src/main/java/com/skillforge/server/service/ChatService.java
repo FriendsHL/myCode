@@ -462,8 +462,8 @@ public class ChatService {
     /**
      * MULTIMODAL-MVP: returns true when {@code message.content} is a block list
      * containing any block of type {@code image_ref} or {@code pdf_ref}.
-     * Used by {@link #runLoop} to decide whether this turn switches to
-     * {@code agent.multimodalModelId}.
+     * Used by {@link #runLoop} to trigger the defense-in-depth vision capability
+     * check against the resolved effective model.
      *
      * <p>Block objects can be either {@link ContentBlock} instances (in-memory) or
      * {@link Map} (after Jackson deserialization of persisted messages). Both forms
@@ -471,8 +471,7 @@ public class ChatService {
      *
      * <p>String-content messages have no blocks → returns false. tool_result blocks
      * carrying nested image content are intentionally NOT counted here — only the
-     * current user-message-level reference blocks trigger the model switch,
-     * matching PRD Ratify #7 semantics.</p>
+     * current user-message-level reference blocks gate the vision capability check.</p>
      *
      * <p>r2 (N2 fix): the materialized {@code image} type is NOT included.
      * Post-B2-fix, the engine's messages list is guaranteed to be in
@@ -596,49 +595,34 @@ public class ChatService {
             // 解析 agent definition,并把 session 的 executionMode 注入 config
             AgentDefinition agentDef = agentService.toAgentDefinition(agentEntity);
             SessionEntity freshSession = sessionService.getSession(sessionId);
-            // MULTIMODAL-MVP §7/§9 + tech-design "effective model":
-            //   priority is `agent.multimodalModelId` (when current turn has multimodal
-            //   blocks AND the field is configured) > `session.runtimeModelOverride`
-            //   (`/model`) > `agent.modelId`. Since `agentDef` is a fresh copy built
-            //   from `toAgentDefinition` (not the persisted entity), mutating its
-            //   modelId here does NOT touch `agentEntity` — next turn without
-            //   multimodal blocks naturally falls back to the normal model.
-            //
-            // Phase 1 follow-up: `LlmCallObserver` does not yet take a
-            //   `ctx.attributes()` map for per-call span attrs (see
-            //   skillforge-core/llm/observer/LlmCallObserver). When that wiring lands,
-            //   emit `llm.effective_model` + `llm.model_source` here. Tracked in PRD
-            //   §observability checklist.
+            // MULTIMODAL-MVP redesign (2026-05-14): the agent has a single
+            // `modelId` only. Effective model picks /model runtime override when
+            // set, otherwise agent.modelId. No more per-turn effective-model
+            // switching based on multimodal blocks — if the user wants vision,
+            // they pick a vision-capable model as the agent's main model
+            // (FE picker tags vision-capable options with a "多模态" chip).
             String runtimeOverride = freshSession.getRuntimeModelOverride();
-            String multimodalModelId = agentEntity.getMultimodalModelId();
-            boolean hasMultimodalBlocks = userMsgWithReminder != null
-                    && messageHasMultimodalBlocks(userMsgWithReminder);
-            if (hasMultimodalBlocks
-                    && multimodalModelId != null
-                    && !multimodalModelId.isBlank()) {
-                agentDef.setModelId(multimodalModelId);
-                log.info("Multimodal turn: switching effective model to {} for session={}",
-                        multimodalModelId, sessionId);
-            } else if (runtimeOverride != null && !runtimeOverride.isBlank()) {
-                // P10 INV-4: /model runtime override takes precedence over agent.modelId
-                // for non-multimodal turns. Multimodal turns override this (MULTIMODAL-MVP
-                // Ratify #7: structural switch beats user temp switch).
+            if (runtimeOverride != null && !runtimeOverride.isBlank()) {
+                // P10 INV-4: /model runtime override takes precedence over agent.modelId.
                 agentDef.setModelId(runtimeOverride);
             }
 
-            // MULTIMODAL-MVP Task #4 / PRD Ratify #9: when this turn carries
-            // multimodal blocks, refuse if the resolved effective model is not in any
-            // provider's visionModels allowlist. Throwing here lets the existing
-            // catch (Exception) block on line ~847 surface it as runtimeError + WS
-            // sessionStatus("error") — caller (FE) can map the code to a "please
-            // switch model" hint. Do NOT silently fall back to agent.modelId
-            // (that would re-introduce the silent-drop class of bugs this prevents).
+            // MULTIMODAL-MVP defense-in-depth: when this turn carries multimodal
+            // blocks, refuse if the resolved effective model is not in any provider's
+            // visionModels allowlist. The FE upload-button gate + BE upload endpoint
+            // gate (`requireVisionCapableModel`) already block the common path, but
+            // this check guards against race conditions (agent.modelId changed
+            // between upload and send) and replayed / stale-FE requests. Throwing
+            // here lets the existing catch (Exception) block on line ~847 surface
+            // it as runtimeError + WS sessionStatus("error") — the FE maps the
+            // wire code MULTIMODAL_MODEL_NO_VISION_CAPABILITY to a "switch model" hint.
             //
             // r2 (W7 fix): in production, `llmProperties` MUST be wired (the 24-arg
             // constructor is the Spring-injected path). The 22/23-arg constructors
-            // pass null for test compat only — but if a multimodal turn ever reaches
-            // a null-llmProperties code path, fail loud rather than silently skip
-            // the capability check (which would re-create the silent-drop bug class).
+            // pass null for test compat only — fail loud if a multimodal turn ever
+            // reaches the null-llmProperties code path.
+            boolean hasMultimodalBlocks = userMsgWithReminder != null
+                    && messageHasMultimodalBlocks(userMsgWithReminder);
             if (hasMultimodalBlocks) {
                 if (llmProperties == null) {
                     throw new IllegalStateException(
@@ -1339,14 +1323,16 @@ public class ChatService {
     private static String toFriendlyChatError(Throwable e) {
         for (Throwable c = e; c != null; c = c.getCause()) {
             if (c instanceof MultimodalNoVisionException mnv) {
-                // MULTIMODAL-MVP Task #4: stable error code on the wire so FE can
-                // detect and prompt "please choose a vision-capable multimodal
-                // model in agent config". Keep model id in the message so users
-                // know which config to fix.
-                return MultimodalNoVisionException.CODE + ": 当前 agent 配置的多模态模型 `"
+                // MULTIMODAL-MVP redesign (2026-05-14): the agent now has a single
+                // modelId; vision-capable status drives the FE upload gate and the
+                // BE upload-endpoint gate. This exception is the runtime
+                // defense-in-depth (race: agent model swapped between upload and
+                // send). FE detects the stable wire CODE and prompts user to
+                // switch the agent's main model to a vision-capable one.
+                return MultimodalNoVisionException.CODE + ": 当前 agent 的主模型 `"
                         + mnv.getModelId() + "` 不支持图像 / PDF 输入。"
-                        + "请在 agent 配置面选择 vision-capable 模型，"
-                        + "或在 application.yml 的 provider.vision-models 中加入此模型。";
+                        + "请把 agent 配置中的模型切换为多模态模型（picker 上带 \"多模态\" 标签的项），"
+                        + "或在 application.yml 的 provider.vision-models 中加入此模型 id。";
             }
             if (c instanceof java.net.SocketTimeoutException) {
                 return "模型响应超时：流式响应中长时间未收到新 chunk。"

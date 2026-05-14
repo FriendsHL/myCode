@@ -2380,6 +2380,25 @@ html[data-density="spacious"] { --density: 1; }
 .chat-redesign .msg.user .msg-head .msg-avatar { order: 2; }
 .chat-redesign .msg.user .msg-time { margin-left: 8px; }
 
+/* MULTIMODAL-MVP Phase 2: inline attachment thumbnails row above the bubble
+ * text. Right-aligned (matches user-bubble flex direction), 8px gap, wraps
+ * onto multiple rows when many attachments. */
+.chat-redesign .msg.user .msg-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.chat-redesign .msg.user .msg-attachments .ant-image {
+  display: inline-block;
+}
+@keyframes pulse {
+  0%   { opacity: 0.6; }
+  50%  { opacity: 1; }
+  100% { opacity: 0.6; }
+}
+
 /* Responsive adjustments for chat messages */
 @media (max-width: 767px) {
   .chat-redesign .thread {

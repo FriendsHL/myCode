@@ -342,6 +342,39 @@ public class ChatAttachmentService implements MessageMaterializer {
                 .toList();
     }
 
+    /**
+     * Phase 2 read endpoint — fetch the entity for inline display in the chat
+     * UI ({@code GET /api/chat/attachments/{id}/data}). Ownership check runs
+     * against both session id (caller already proved session ownership in the
+     * controller) and user id (defense-in-depth). Returns null when the
+     * attachment is missing or fails any ownership check — the controller maps
+     * that to {@code 404}.
+     */
+    public ChatAttachmentEntity findReadable(String attachmentId, String sessionId, Long userId) {
+        if (attachmentId == null || attachmentId.isBlank()) return null;
+        if (userId == null) return null;
+        ChatAttachmentEntity attachment = attachmentRepository.findById(attachmentId).orElse(null);
+        if (attachment == null) return null;
+        if (sessionId != null && !sessionId.equals(attachment.getSessionId())) return null;
+        if (!userId.equals(attachment.getUserId())) return null;
+        return attachment;
+    }
+
+    /**
+     * Phase 2 read endpoint — read the bytes for an attachment that has
+     * already passed {@link #findReadable}. Wraps {@link Files#readAllBytes}
+     * with the same {@link IllegalStateException} surface the upload path
+     * uses for I/O failures so the controller catch block is symmetric.
+     */
+    public byte[] readBytes(ChatAttachmentEntity attachment) {
+        try {
+            return Files.readAllBytes(Path.of(attachment.getStoragePath()));
+        } catch (IOException e) {
+            throw new IllegalStateException(
+                    "Failed to read attachment bytes: " + attachment.getId(), e);
+        }
+    }
+
     private static String sanitizeFilename(String original) {
         String name = original == null || original.isBlank() ? "attachment" : Path.of(original).getFileName().toString();
         name = name.replaceAll("[\\r\\n\\t]", "_").replaceAll("[^A-Za-z0-9._ -]", "_").trim();

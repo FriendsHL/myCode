@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Tooltip, message } from 'antd';
 import { type ToolCall } from './ToolCallTimeline';
 import MarkdownRenderer from './MarkdownRenderer';
+import AttachmentThumbnail from './AttachmentThumbnail';
 import PendingAskCard from './PendingAskCard';
 import InstallConfirmationCard from './InstallConfirmationCard';
 import type { ConfirmationDecision, ConfirmationPromptPayload } from '../api';
@@ -91,7 +92,7 @@ interface ChatInputProps {
   sessionResetKey?: string;
 }
 
-const MULTIMODAL_GATE_TOOLTIP = '请先在 agent 配置中选择多模态模型';
+const MULTIMODAL_GATE_TOOLTIP = '请把 agent 的主模型切换为多模态模型（picker 上带「多模态」标签的项）';
 
 /**
  * r2 W1 — Attachment chip metadata. Format bytes as `B / KB / MB`. Single
@@ -504,6 +505,17 @@ ChatInput.displayName = 'ChatInput';
 // the existing module layout.
 export { ChatInput };
 
+/** MULTIMODAL-MVP Phase 2: lightweight reference to an uploaded attachment,
+ *  carried inline on the chat bubble so the thumbnail can render via
+ *  `AttachmentThumbnail`. Mirrors BE `image_ref` / `pdf_ref` content blocks. */
+export interface ChatAttachmentRef {
+  kind: 'image' | 'pdf';
+  attachmentId: string;
+  filename: string;
+  /** PDF only — page count surfaced in the chip. */
+  pageCount?: number;
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'summary';
   content: string;
@@ -514,6 +526,9 @@ export interface ChatMessage {
   toolCalls?: ToolCall[];
   timestamp?: string;
   id?: string;
+  /** Inline attachment refs (image_ref / pdf_ref). Renderer shows thumbnails
+   *  above the message body. Phase 2. */
+  attachments?: ChatAttachmentRef[];
 }
 
 interface InflightTool {
@@ -842,6 +857,28 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                   </span>
                 </div>
                 <div className="msg-body">
+                  {/* MULTIMODAL-MVP Phase 2: render inline thumbnails above
+                      the bubble text. Only for user bubbles for now (BE only
+                      attaches image_ref / pdf_ref on user messages — assistant
+                      replies stay text-only). userId / sessionId are required
+                      to authenticate the blob fetch; both flow in via the
+                      slashCommandConfig prop which the parent always sets in
+                      production paths. */}
+                  {isUser && msg.attachments && msg.attachments.length > 0 && slashCommandConfig && (
+                    <div className="msg-attachments">
+                      {msg.attachments.map((att) => (
+                        <AttachmentThumbnail
+                          key={att.attachmentId}
+                          kind={att.kind}
+                          attachmentId={att.attachmentId}
+                          filename={att.filename}
+                          pageCount={att.pageCount}
+                          userId={slashCommandConfig.userId}
+                          sessionId={slashCommandConfig.sessionId}
+                        />
+                      ))}
+                    </div>
+                  )}
                   {isUser ? msg.content : <MarkdownRenderer content={msg.content} />}
                   {!isUser && msg.toolCalls && msg.toolCalls.length > 0 && (
                     <div className="tool-calls">

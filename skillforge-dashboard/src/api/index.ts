@@ -78,14 +78,6 @@ export interface CreateAgentRequest {
   soulPrompt?: string;
   toolsPrompt?: string;
   modelId?: string;
-  /**
-   * MULTIMODAL-MVP — secondary model id used only on turns where the user
-   * attaches image / PDF blocks. Wire format is camelCase to match
-   * `AgentEntity#multimodalModelId` (BE Java field). An explicit empty string
-   * (`""`) on PATCH signals "clear to NULL"; sending `undefined` would skip
-   * the field entirely under the BE partial-update semantics.
-   */
-  multimodalModelId?: string;
   executionMode?: 'ask' | 'auto';
   maxLoops?: number;
   skillIds?: string;
@@ -169,6 +161,24 @@ export const uploadChatAttachment = (sessionId: string, userId: number, file: Fi
     { params: { userId } },
   );
 };
+
+/**
+ * MULTIMODAL-MVP Phase 2: fetch attachment bytes for inline rendering. Returns
+ * the response as a {@link Blob} so callers can build a blob URL with
+ * {@code URL.createObjectURL}. Auth flows through the standard Bearer
+ * interceptor (the URL itself stays clean — no token leakage in browser
+ * history / dev-tools network panel). Caller is responsible for revoking the
+ * blob URL on unmount to avoid memory leaks.
+ */
+export const getChatAttachmentBlob = (
+  attachmentId: string,
+  userId: number,
+  sessionId?: string,
+) =>
+  api.get<Blob>(`/chat/attachments/${attachmentId}/data`, {
+    params: sessionId ? { userId, sessionId } : { userId },
+    responseType: 'blob',
+  });
 export const cancelChat = (sessionId: string, userId: number) =>
   api.post(`/chat/${sessionId}/cancel`, null, { params: { userId } });
 export const answerAsk = (sessionId: string, askId: string, answer: string, userId: number) =>
