@@ -3,10 +3,11 @@ import { message, Modal, Tooltip, Tag } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   forkSkill, startSkillAbTest, getSkillAbTests,
-  manualPromoteAbRun, rollbackSkill,
+  manualPromoteAbRun, rollbackSkill, getSkillDetail,
   type SkillAbRun, type SkillVersionEntry,
 } from '../../api';
 import { useAuth } from '../../contexts/AuthContext';
+import { CanaryPanel } from '../canary/CanaryPanel';
 import type { SkillRow } from './types';
 
 interface SkillAbPanelProps {
@@ -248,6 +249,25 @@ export const SkillAbPanel: React.FC<SkillAbPanelProps> = ({ skillId, agentId, sk
 
   const busy = abMutation.isPending;
 
+  // SKILL-CANARY-ROLLOUT V2 Phase 1.5 — resolve the candidate skill's
+  // **name** (BE allocator routes on `skill_name`, not `skill_id`) so the
+  // canary panel can pass it to `startCanary`. We only fetch when a
+  // candidate id is known; the response is untyped so we narrow to
+  // `{ name?: string }` defensively.
+  const candidateSkillId = latest?.candidateSkillId;
+  const { data: candidateDetail } = useQuery<{ name?: string } | undefined>({
+    queryKey: ['skill-detail', candidateSkillId],
+    queryFn: () =>
+      candidateSkillId
+        ? getSkillDetail(candidateSkillId).then(
+            (r) => (r.data as { name?: string }) ?? undefined,
+          )
+        : Promise.resolve(undefined),
+    enabled: typeof candidateSkillId === 'number',
+    staleTime: 60_000,
+  });
+  const candidateSkillName = candidateDetail?.name ?? null;
+
   const showManualPromote =
     !!latest &&
     latest.status === 'COMPLETED' &&
@@ -466,6 +486,19 @@ export const SkillAbPanel: React.FC<SkillAbPanelProps> = ({ skillId, agentId, sk
           </span>
         )}
       </div>
+
+      {/* SKILL-CANARY-ROLLOUT V2 Phase 1.5 — embedded canary panel. Shown
+          whenever the SkillRow has a name and a source agent is picked;
+          panel itself returns null when agentId is null, and gates the
+          "Start Canary" button on candidateSkillName (which requires an
+          A/B fork to exist). */}
+      {skill?.name && (
+        <CanaryPanel
+          agentId={agentId}
+          parentSkillName={skill.name}
+          candidateSkillName={candidateSkillName}
+        />
+      )}
     </div>
   );
 };
