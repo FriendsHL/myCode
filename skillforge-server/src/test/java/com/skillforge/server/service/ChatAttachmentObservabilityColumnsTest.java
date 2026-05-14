@@ -206,7 +206,7 @@ class ChatAttachmentObservabilityColumnsTest {
     }
 
     @Test
-    @DisplayName("materializeForProvider(image_ref): does NOT save the entity (image path has no refinement)")
+    @DisplayName("materializeForProvider(image_ref): tiny valid PNG → IMAGE_BLOCK_INLINE unchanged, no save")
     void materialize_imageRef_doesNotSaveEntity() throws Exception {
         ChatAttachmentEntity imgRow = new ChatAttachmentEntity();
         imgRow.setId("att-img");
@@ -215,9 +215,19 @@ class ChatAttachmentObservabilityColumnsTest {
         imgRow.setKind("image");
         imgRow.setMimeType("image/png");
         imgRow.setFilename("a.png");
-        imgRow.setSizeBytes(8L);
+        // Wave 2-D IMAGE-COMPRESSION change: materializer now tries to decode +
+        // possibly compress. Write a REAL (decodable) tiny PNG so ImageScaler
+        // returns null (under both 2048px / 1MB thresholds) → no compression
+        // ran → entity unchanged → no save. Earlier revision wrote 8 bytes of
+        // PNG header only, which ImageIO can't decode and which would now flip
+        // the entity into IMAGE_COMPRESSION_FAILED.
+        java.awt.image.BufferedImage img = new java.awt.image.BufferedImage(
+                16, 16, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(img, "png", baos);
+        imgRow.setSizeBytes(baos.size());
         Path fakeImg = tempStorage.resolve("a.png");
-        Files.write(fakeImg, new byte[]{(byte) 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'});
+        Files.write(fakeImg, baos.toByteArray());
         imgRow.setStoragePath(fakeImg.toString());
         imgRow.setStatus("uploaded");
         imgRow.setProcessingMode("IMAGE_BLOCK_INLINE");
@@ -231,8 +241,9 @@ class ChatAttachmentObservabilityColumnsTest {
         Message expanded = service.materializeForProvider("sess-1", msg);
 
         assertThat(expanded).isNotSameAs(msg);  // image_ref → image was expanded
-        // No refinement → no save (image path stays IMAGE_BLOCK_INLINE).
+        // No compression → no refinement → no save (image stays IMAGE_BLOCK_INLINE).
         verify(attachmentRepository, never()).save(any(ChatAttachmentEntity.class));
         assertThat(imgRow.getProcessingMode()).isEqualTo("IMAGE_BLOCK_INLINE");
+        assertThat(imgRow.getErrorCode()).isNull();
     }
 }

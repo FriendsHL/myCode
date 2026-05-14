@@ -5,6 +5,8 @@ import com.skillforge.core.model.ContentBlock;
 import com.skillforge.core.model.Message;
 import com.skillforge.server.entity.ChatAttachmentEntity;
 import com.skillforge.server.repository.ChatAttachmentRepository;
+import com.skillforge.server.service.document.ImageScaler;
+import com.skillforge.server.service.document.PdfPageImageRenderer;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
@@ -51,9 +53,54 @@ public class ChatAttachmentService implements MessageMaterializer {
     // (e.g. IMAGE_BLOCK_COMPRESSED / PDF_PAGE_IMAGE). Keeping these as String
     // constants avoids an enum contract that future waves would have to extend.
     public static final String MODE_IMAGE_BLOCK_INLINE = "IMAGE_BLOCK_INLINE";
+    /**
+     * Wave 2-D IMAGE-COMPRESSION: image attachment was down-scaled (long edge
+     * &gt; 2048px OR raw bytes &gt; 1MB) and re-encoded as JPEG by
+     * {@link ImageScaler#maybeCompress} before being shipped to the LLM. The
+     * original file on disk is unchanged — only the transient provider request
+     * carries the compressed payload. Set in {@link #materializeForProvider}
+     * on the image_ref branch when compression actually ran; left at
+     * {@link #MODE_IMAGE_BLOCK_INLINE} when bypassed.
+     */
+    public static final String MODE_IMAGE_BLOCK_COMPRESSED = "IMAGE_BLOCK_COMPRESSED";
+    /**
+     * Wave 2-D IMAGE-COMPRESSION error code — image read OR encode OR scale
+     * step threw inside {@link ImageScaler}; the materializer fell back to the
+     * original uncompressed bytes so the LLM request still succeeds, and
+     * recorded this code on {@link ChatAttachmentEntity#getErrorCode()} for
+     * later admin visibility. Symptom is usually "input was not a decodable
+     * image despite passing magic-byte upload validation" — corruption or a
+     * format the JVM's ImageIO doesn't understand.
+     */
+    public static final String IMAGE_COMPRESSION_FAILED = "IMAGE_COMPRESSION_FAILED";
     public static final String MODE_PDF_TEXT = "PDF_TEXT";
     public static final String MODE_PDF_TEXT_TRUNCATED = "PDF_TEXT_TRUNCATED";
     public static final String MODE_PDF_TEXT_EMPTY = "PDF_TEXT_EMPTY";
+    /**
+     * Wave 2 PDF-SCAN-FALLBACK: PDF text extraction yielded &lt; {@link #PDF_SCAN_TEXT_THRESHOLD_CHARS}
+     * characters; rendered the first {@link #MAX_PDF_PAGE_IMAGES} pages as PNG images for
+     * vision-based analysis. Set in {@link #materializeForProvider} after the renderer
+     * succeeds; left at the previous PDF_TEXT_* value if the render path fails.
+     */
+    public static final String MODE_PDF_PAGE_IMAGE = "PDF_PAGE_IMAGE";
+
+    /**
+     * Wave 2 PDF-SCAN-FALLBACK error code — recorded on
+     * {@link ChatAttachmentEntity#getErrorCode()} when text extraction yielded near-empty
+     * content AND the page-image fallback also failed (corruption / encrypted / etc.).
+     * Surfaces in admin observability queries so we can tell apart "text-empty + image
+     * fallback worked" (mode=PDF_PAGE_IMAGE, no error_code) from "text-empty + nothing
+     * worked" (mode=PDF_TEXT_EMPTY, error_code=PDF_TEXT_EMPTY_NEEDS_VISION).
+     */
+    public static final String PDF_TEXT_EMPTY_NEEDS_VISION = "PDF_TEXT_EMPTY_NEEDS_VISION";
+
+    // ─── Wave 2 PDF-SCAN-FALLBACK tunables ───
+    /** Below this many extracted chars we trigger the page-image fallback. */
+    private static final int PDF_SCAN_TEXT_THRESHOLD_CHARS = 200;
+    /** Cap pages rendered as images to bound memory / token cost. */
+    private static final int MAX_PDF_PAGE_IMAGES = 5;
+    /** Render DPI for the page-image fallback. Renderer applies a 1MB per-page hard cap. */
+    private static final float PDF_RENDER_DPI = 150f;
     /**
      * MULTIMODAL-MVP r2 W5 / tech-design §"安全与限制": cap pages extracted from a
      * PDF. Prevents a 500-page PDF from spending memory + CPU on full extraction
@@ -315,7 +362,50 @@ public class ChatAttachmentService implements MessageMaterializer {
                 ChatAttachmentEntity attachment = attachmentRepository.findById(attachmentId)
                         .filter(a -> sessionId.equals(a.getSessionId()))
                         .orElseThrow(() -> new IllegalArgumentException("Image attachment not found: " + attachmentId));
-                out.add(ContentBlock.image(attachment.getMimeType(), readBase64(attachment)));
+                // Wave 2-D IMAGE-COMPRESSION: scale-down + JPEG re-encode for
+                // oversized images (long edge > 2048px OR raw bytes > 1MB) via
+                // ImageScaler.maybeCompress. The original file on disk is NEVER
+                // modified — only the transient ContentBlock.image we add to the
+                // outgoing provider request carries the compressed payload. The
+                // persisted message in the engine's messages list stays in
+                // image_ref form (persistence-shape invariant unchanged: see
+                // .claude/rules/persistence-shape-invariant.md). Entity-side
+                // mutations are limited to V73 observability columns
+                // (processingMode / errorCode / errorMessage), persisted with the
+                // same Objects.equals guard pattern used for pdf_ref below.
+                byte[] originalBytes = readBytes(attachment);
+                byte[] providerBytes = originalBytes;
+                String providerMime = attachment.getMimeType();
+                boolean entityChanged = false;
+                try {
+                    ImageScaler.CompressedImage compressed =
+                            ImageScaler.maybeCompress(originalBytes, attachment.getMimeType());
+                    if (compressed != null) {
+                        providerBytes = compressed.bytes();
+                        providerMime = compressed.mimeType();
+                        if (!MODE_IMAGE_BLOCK_COMPRESSED.equals(attachment.getProcessingMode())) {
+                            attachment.setProcessingMode(MODE_IMAGE_BLOCK_COMPRESSED);
+                            entityChanged = true;
+                        }
+                    }
+                } catch (IOException e) {
+                    // Graceful fallback: don't fail the LLM call — log + persist
+                    // an error code so admin observability can spot recurring
+                    // failures, then ship the original (uncompressed) bytes.
+                    log.warn("Image compression failed for attachment {} (mime={}); falling back to original bytes: {}",
+                            attachment.getId(), attachment.getMimeType(), e.toString());
+                    if (!IMAGE_COMPRESSION_FAILED.equals(attachment.getErrorCode())) {
+                        attachment.setErrorCode(IMAGE_COMPRESSION_FAILED);
+                        attachment.setErrorMessage(truncateErrorMessage(e.toString()));
+                        entityChanged = true;
+                    }
+                    // providerBytes / providerMime stay as originals.
+                }
+                if (entityChanged) {
+                    attachmentRepository.save(attachment);
+                }
+                out.add(ContentBlock.image(providerMime,
+                        Base64.getEncoder().encodeToString(providerBytes)));
                 changed = true;
             } else if ("pdf_ref".equals(type)) {
                 ChatAttachmentEntity attachment = attachmentRepository.findById(attachmentId)
@@ -331,9 +421,61 @@ public class ChatAttachmentService implements MessageMaterializer {
                 // message has 0–2 PDF refs so DB write cost is acceptable.
                 String previousMode = attachment.getProcessingMode();
                 Integer previousChars = attachment.getExtractedTextChars();
-                out.add(ContentBlock.text(pdfTextBlock(attachment)));
+                String pdfText = pdfTextBlock(attachment);
+                // Wave 2 PDF-SCAN-FALLBACK: when text extraction yields near-empty
+                // content (< PDF_SCAN_TEXT_THRESHOLD_CHARS), render the leading
+                // pages as PNG images and let the provider's vision pipeline read
+                // them. Vision-capability gating happens UPSTREAM in
+                // ChatService.runLoop's `messageHasMultimodalBlocks` check:
+                // pdf_ref already marks the message multimodal, so a vision-
+                // incapable agent is rejected with MultimodalNoVisionException
+                // before we ever reach this code. The added `image` blocks here
+                // are emitted to the request copy only (materializer contract) —
+                // the engine's in-memory message list keeps the pdf_ref shape, so
+                // persistence-shape invariant (java.md footgun #4) is preserved.
+                Integer chars = attachment.getExtractedTextChars();
+                boolean fallbackEngaged = false;
+                if (chars != null && chars < PDF_SCAN_TEXT_THRESHOLD_CHARS) {
+                    try {
+                        List<byte[]> pageImages = PdfPageImageRenderer.renderFirstPages(
+                                Path.of(attachment.getStoragePath()), MAX_PDF_PAGE_IMAGES, PDF_RENDER_DPI);
+                        if (!pageImages.isEmpty()) {
+                            // Clarifying text block first (keeps the [PDF attachment: name]
+                            // prefix the LLM relies on for context), then rendered pages.
+                            out.add(ContentBlock.text(pdfText + "\n\n[Rendered " + pageImages.size()
+                                    + " page(s) as images for vision-based analysis]"));
+                            for (byte[] png : pageImages) {
+                                out.add(ContentBlock.image("image/png",
+                                        Base64.getEncoder().encodeToString(png)));
+                            }
+                            attachment.setProcessingMode(MODE_PDF_PAGE_IMAGE);
+                            // Clear any prior fallback error code — this render succeeded.
+                            if (PDF_TEXT_EMPTY_NEEDS_VISION.equals(attachment.getErrorCode())) {
+                                attachment.setErrorCode(null);
+                                attachment.setErrorMessage(null);
+                            }
+                            fallbackEngaged = true;
+                        }
+                    } catch (IOException e) {
+                        // Page-image render failed too — leave the text-only path
+                        // intact and record the failure on the entity for the admin
+                        // observability endpoint. We do NOT rethrow: the LLM should
+                        // still get the [PDF attachment: name] placeholder rather
+                        // than a hard 500 on the chat turn.
+                        log.warn("PDF page-image fallback failed for attachment={} ({} chars text): {}",
+                                attachment.getId(), chars, e.toString());
+                        attachment.setErrorCode(PDF_TEXT_EMPTY_NEEDS_VISION);
+                        attachment.setErrorMessage(truncateErrorMessage(e.toString()));
+                    }
+                }
+                if (!fallbackEngaged) {
+                    // Normal text-only path: PDF had enough text OR fallback failed.
+                    out.add(ContentBlock.text(pdfText));
+                }
                 boolean refined = !java.util.Objects.equals(previousMode, attachment.getProcessingMode())
-                        || !java.util.Objects.equals(previousChars, attachment.getExtractedTextChars());
+                        || !java.util.Objects.equals(previousChars, attachment.getExtractedTextChars())
+                        || fallbackEngaged
+                        || PDF_TEXT_EMPTY_NEEDS_VISION.equals(attachment.getErrorCode());
                 if (refined) {
                     attachmentRepository.save(attachment);
                 }
@@ -471,12 +613,22 @@ public class ChatAttachmentService implements MessageMaterializer {
         return value != null ? value.toString() : null;
     }
 
-    private String readBase64(ChatAttachmentEntity attachment) {
-        try {
-            return Base64.getEncoder().encodeToString(Files.readAllBytes(Path.of(attachment.getStoragePath())));
-        } catch (IOException e) {
-            throw new IllegalStateException("Failed to read image attachment", e);
+    /**
+     * V73 / OBS-COLUMNS — clamp the {@code error_message} we write to the DB so a
+     * misbehaving stack trace can't blow the row's column budget. The
+     * {@code error_message} column is TEXT (no hard SQL limit), but
+     * {@link #MAX_ERROR_MESSAGE_CHARS} keeps storage + UI rendering predictable.
+     * Anything longer is implicitly "see server log" — the full trace lives in
+     * {@code logs/skillforge-server.log}.
+     */
+    private static String truncateErrorMessage(String raw) {
+        if (raw == null) {
+            return null;
         }
+        if (raw.length() <= MAX_ERROR_MESSAGE_CHARS) {
+            return raw;
+        }
+        return raw.substring(0, MAX_ERROR_MESSAGE_CHARS);
     }
 
     // ------------------------------------------------------------------
