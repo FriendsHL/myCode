@@ -233,8 +233,11 @@ const Tasks: React.FC = () => {
       width: 130,
       render: (sid: string | null) =>
         sid ? (
+          // V3 dogfood 2026-05-15: link to /chat/<sid> so paused (ask_user)
+          // sessions can be resumed in-context. /traces still searchable from
+          // chat top-bar if user wants raw trace.
           <Link
-            to={`/traces?q=${encodeURIComponent(sid)}`}
+            to={`/chat/${sid}`}
             style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}
           >
             {sid.slice(0, 8)}…

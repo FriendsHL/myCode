@@ -78,7 +78,10 @@ const ScheduleRunHistoryDrawer: React.FC<ScheduleRunHistoryDrawerProps> = ({
       key: 'triggeredSessionId',
       render: (sid: string | null) =>
         sid ? (
-          <Link to={`/sessions/${sid}`} style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+          // V3 dogfood 2026-05-15: link to /chat/<sid> instead of /sessions/<sid>
+          // so the operator can resume a paused (ask_user) session in-context,
+          // not just view the transcript read-only.
+          <Link to={`/chat/${sid}`} style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
             {sid.slice(0, 8)}…
           </Link>
         ) : (
