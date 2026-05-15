@@ -36,7 +36,7 @@ import {
  * result as a single-or-zero match.
  */
 
-const SURFACE_TYPE = 'skill';
+const DEFAULT_SURFACE_TYPE = 'skill';
 /** Mirrors BE auto-rollback trigger (tech-design §6 — fail_rate_ratio > 1.5 + sample ≥ 50). */
 const AUTO_ROLLBACK_THRESHOLD = 1.5;
 const LOW_SAMPLE_THRESHOLD = 50;
@@ -44,10 +44,29 @@ const LOW_SAMPLE_THRESHOLD = 50;
 export interface CanaryPanelProps {
   /** Agent that owns the rollout; null disables the panel (no source agent picked). */
   agentId: number | null;
-  /** Baseline skill name (display + start payload). */
+  /** Baseline identity (display + start payload). For skill surface this is the
+   *  skill name; for behavior_rule surface this is the baseline version id. The
+   *  underlying DB column is `baseline_skill_name VARCHAR(64)` regardless — the
+   *  field name is V2 legacy, the value is opaque per V4 multi-surface flywheel. */
   parentSkillName: string;
-  /** Candidate skill name (start payload). When null, "Start Canary" is disabled. */
+  /** Candidate identity (start payload). When null, "Start Canary" is disabled. */
   candidateSkillName: string | null;
+  /**
+   * V4 MULTI-SURFACE-FLYWHEEL Phase 1.4 — surface type passed through to BE
+   * `/api/canary/rollouts` (`surfaceType` query/body field). Defaults to
+   * `'skill'` so V2 callers (SkillAbPanel) remain unchanged. Phase 1.4 BE
+   * (CanaryRolloutService) lifts the V2 `surfaceType=='skill'` guard so
+   * `'behavior_rule'` is accepted; older deployments will return 400 — the
+   * resulting error is surfaced via the `startMutation` onError path.
+   */
+  surfaceType?: string;
+  /**
+   * Display noun for the entity under rollout, used inside the panel's own
+   * confirmation modals and tooltips. Defaults to "skill"; behavior_rule
+   * callers pass "behavior rule version" so the operator copy reads
+   * naturally without leaking the surface taxonomy.
+   */
+  entityNoun?: string;
 }
 
 /** Best-effort error message extraction from axios reject reasons. */
@@ -305,7 +324,11 @@ export const CanaryPanel: React.FC<CanaryPanelProps> = ({
   agentId,
   parentSkillName,
   candidateSkillName,
+  surfaceType,
+  entityNoun,
 }) => {
+  const effectiveSurfaceType = surfaceType ?? DEFAULT_SURFACE_TYPE;
+  const noun = entityNoun ?? 'skill';
   const queryClient = useQueryClient();
   const [stepUpOpen, setStepUpOpen] = useState(false);
   const [stepUpValue, setStepUpValue] = useState<number>(50);
@@ -315,10 +338,10 @@ export const CanaryPanel: React.FC<CanaryPanelProps> = ({
   // older completed/rolled_back rows may co-exist. We resolve "active" first
   // (canary), then fall back to the most recent terminal row of THIS baseline.
   const listQuery = useQuery<CanaryRolloutResponse[]>({
-    queryKey: ['canary-rollouts', agentId, parentSkillName],
+    queryKey: ['canary-rollouts', agentId, effectiveSurfaceType, parentSkillName],
     queryFn: async () => {
       if (agentId == null) return [];
-      const r = await listCanaries({ agentId, surfaceType: SURFACE_TYPE });
+      const r = await listCanaries({ agentId, surfaceType: effectiveSurfaceType });
       return r.data;
     },
     enabled: agentId != null,
@@ -361,17 +384,19 @@ export const CanaryPanel: React.FC<CanaryPanelProps> = ({
   }, [metricsQuery.data]);
 
   const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ['canary-rollouts', agentId, parentSkillName] });
+    queryClient.invalidateQueries({
+      queryKey: ['canary-rollouts', agentId, effectiveSurfaceType, parentSkillName],
+    });
     if (active) queryClient.invalidateQueries({ queryKey: ['canary-metrics', active.id] });
   };
 
   const startMutation = useMutation({
     mutationFn: async () => {
       if (agentId == null) throw new Error('agentId required');
-      if (!candidateSkillName) throw new Error('candidate skill name unknown');
+      if (!candidateSkillName) throw new Error(`candidate ${noun} unknown`);
       const res = await startCanary({
         agentId,
-        surfaceType: SURFACE_TYPE,
+        surfaceType: effectiveSurfaceType,
         baselineSkillName: parentSkillName,
         candidateSkillName,
         percentage: 10,
@@ -567,11 +592,11 @@ export const CanaryPanel: React.FC<CanaryPanelProps> = ({
             gap: 12,
           }}
         >
-          <span>No active canary for this skill.</span>
+          <span>No active canary for this {noun}.</span>
           <Tooltip
             title={
               !candidateSkillName
-                ? 'A candidate (A/B fork) must exist before starting a canary.'
+                ? `A candidate (A/B fork) must exist before starting a canary.`
                 : 'Start a canary rollout at 10% traffic.'
             }
           >

@@ -1,10 +1,13 @@
 package com.skillforge.server.canary;
 
+import com.skillforge.server.entity.BehaviorRuleVersionEntity;
 import com.skillforge.server.entity.CanaryMetricSnapshotEntity;
 import com.skillforge.server.entity.CanaryRolloutEntity;
 import com.skillforge.server.entity.SkillEntity;
+import com.skillforge.server.improve.BehaviorRulePromotionService;
 import com.skillforge.server.improve.SkillAbEvalService;
 import com.skillforge.server.repository.AgentRepository;
+import com.skillforge.server.repository.BehaviorRuleVersionRepository;
 import com.skillforge.server.repository.CanaryMetricSnapshotRepository;
 import com.skillforge.server.repository.CanaryRolloutRepository;
 import com.skillforge.server.repository.SkillRepository;
@@ -27,6 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.lenient;
@@ -51,13 +55,16 @@ class CanaryRolloutServiceTest {
     @Mock private SkillRepository skillRepository;
     @Mock private AgentRepository agentRepository;
     @Mock private SkillAbEvalService skillAbEvalService;
+    @Mock private BehaviorRuleVersionRepository behaviorRuleVersionRepository;
+    @Mock private BehaviorRulePromotionService behaviorRulePromotionService;
 
     private CanaryRolloutService service;
 
     @BeforeEach
     void setUp() {
         service = new CanaryRolloutService(canaryRepository, snapshotRepository,
-                skillRepository, agentRepository, skillAbEvalService);
+                skillRepository, agentRepository, skillAbEvalService,
+                behaviorRuleVersionRepository, behaviorRulePromotionService);
         // Default: agent 42 exists, both skills exist with parent linkage on
         // candidate. Individual tests override as needed.
         lenient().when(agentRepository.existsById(42L)).thenReturn(true);
@@ -152,11 +159,16 @@ class CanaryRolloutServiceTest {
     }
 
     @Test
-    @DisplayName("startCanary rejects non-skill surface (V2 scope)")
-    void startCanary_rejectsNonSkillSurface() {
+    @DisplayName("startCanary rejects unknown surface (not in {skill, behavior_rule})")
+    void startCanary_rejectsUnknownSurface() {
+        // V4 Phase 1.4 widened the allowed set to {skill, behavior_rule}; 'foo'
+        // (and similarly 'prompt' until V3-canary-prompt ships) still rejects.
+        assertThatThrownBy(() -> service.startCanary(42L, "foo", "a", "b", 10))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("surfaceType must be one of");
         assertThatThrownBy(() -> service.startCanary(42L, "prompt", "a", "b", 10))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("surfaceType must be 'skill'");
+                .hasMessageContaining("surfaceType must be one of");
     }
 
     @Test
@@ -218,6 +230,117 @@ class CanaryRolloutServiceTest {
                 .hasMessageContaining("percentage must be in [0, 100]");
         assertThatThrownBy(() -> service.startCanary(42L, "skill", "a", "b", 101))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    // ───────────── V4 Phase 1.4 behavior_rule branch ─────────────
+
+    private BehaviorRuleVersionEntity behaviorRuleVersion(String id, String agentId, String status) {
+        BehaviorRuleVersionEntity v = new BehaviorRuleVersionEntity();
+        v.setId(id);
+        v.setAgentId(agentId);
+        v.setStatus(status);
+        v.setRulesJson("[]");
+        return v;
+    }
+
+    @Test
+    @DisplayName("V4 Phase 1.4: startCanary accepts surface=behavior_rule, persists row, no SkillEntity sync")
+    void startCanary_acceptsBehaviorRuleSurface_happyPath() {
+        String baselineId = "br-baseline-uuid";
+        String candidateId = "br-candidate-uuid";
+        when(behaviorRuleVersionRepository.findById(baselineId))
+                .thenReturn(Optional.of(behaviorRuleVersion(baselineId, "42",
+                        BehaviorRuleVersionEntity.STATUS_ACTIVE)));
+        when(behaviorRuleVersionRepository.findById(candidateId))
+                .thenReturn(Optional.of(behaviorRuleVersion(candidateId, "42",
+                        BehaviorRuleVersionEntity.STATUS_CANDIDATE)));
+        when(canaryRepository.findActiveCanaryByAgentAndSurface(42L, "behavior_rule"))
+                .thenReturn(Optional.empty());
+        when(canaryRepository.save(any(CanaryRolloutEntity.class)))
+                .thenAnswer(inv -> {
+                    CanaryRolloutEntity e = inv.getArgument(0);
+                    e.setId(101L);
+                    return e;
+                });
+
+        CanaryRolloutEntity created = service.startCanary(
+                42L, "behavior_rule", baselineId, candidateId, 10);
+
+        assertThat(created.getId()).isEqualTo(101L);
+        assertThat(created.getSurfaceType()).isEqualTo("behavior_rule");
+        assertThat(created.getRolloutStage()).isEqualTo("canary");
+        assertThat(created.getBaselineSkillName()).isEqualTo(baselineId);
+        assertThat(created.getCandidateSkillName()).isEqualTo(candidateId);
+        assertThat(created.getRolloutPercentage()).isEqualTo(10);
+        // behavior_rule path does NOT touch SkillRepository.
+        verify(skillRepository, never()).findByName(anyString());
+        verify(skillRepository, never()).save(any(SkillEntity.class));
+    }
+
+    @Test
+    @DisplayName("V4 Phase 1.4: startCanary behavior_rule rejects when baseline ruleSetId not found")
+    void startCanary_behaviorRule_baselineNotFound_throws() {
+        when(behaviorRuleVersionRepository.findById("missing-baseline"))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.startCanary(
+                42L, "behavior_rule", "missing-baseline", "br-candidate", 10))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Baseline behavior_rule version not found")
+                .hasMessageContaining("missing-baseline");
+        verify(canaryRepository, never()).save(any(CanaryRolloutEntity.class));
+    }
+
+    @Test
+    @DisplayName("V4 Phase 1.4: startCanary behavior_rule rejects when version belongs to a different agent (defensive cross-check)")
+    void startCanary_behaviorRule_agentMismatch_throws() {
+        String baselineId = "br-baseline-uuid";
+        String candidateId = "br-candidate-uuid";
+        // Baseline version belongs to agent 99, NOT 42 — operator passed the
+        // wrong agentId or wrong ruleSetId. Candidate belongs to 42 (correct)
+        // so only the baseline mismatch surfaces.
+        when(behaviorRuleVersionRepository.findById(baselineId))
+                .thenReturn(Optional.of(behaviorRuleVersion(baselineId, "99",
+                        BehaviorRuleVersionEntity.STATUS_ACTIVE)));
+        when(behaviorRuleVersionRepository.findById(candidateId))
+                .thenReturn(Optional.of(behaviorRuleVersion(candidateId, "42",
+                        BehaviorRuleVersionEntity.STATUS_CANDIDATE)));
+
+        assertThatThrownBy(() -> service.startCanary(
+                42L, "behavior_rule", baselineId, candidateId, 10))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("belongs to agent 99")
+                .hasMessageContaining("not 42");
+        verify(canaryRepository, never()).save(any(CanaryRolloutEntity.class));
+    }
+
+    @Test
+    @DisplayName("V4 Phase 1.4: publish behavior_rule calls BehaviorRulePromotionService.promote (not SkillAbEvalService)")
+    void publish_behaviorRule_callsBehaviorRulePromotionService() {
+        String candidateId = "br-candidate-uuid";
+        CanaryRolloutEntity canary = activeCanary(7L, 50);
+        canary.setSurfaceType("behavior_rule");
+        canary.setBaselineSkillName("br-baseline-uuid");
+        canary.setCandidateSkillName(candidateId);
+        when(canaryRepository.findById(7L)).thenReturn(Optional.of(canary));
+        when(canaryRepository.save(any(CanaryRolloutEntity.class))).thenAnswer(inv -> inv.getArgument(0));
+        BehaviorRuleVersionEntity candidateVersion = behaviorRuleVersion(
+                candidateId, "42", BehaviorRuleVersionEntity.STATUS_CANDIDATE);
+        when(behaviorRuleVersionRepository.findById(candidateId))
+                .thenReturn(Optional.of(candidateVersion));
+
+        CanaryRolloutEntity updated = service.publish(7L);
+
+        assertThat(updated.getRolloutStage()).isEqualTo("production");
+        assertThat(updated.getDecision()).isEqualTo("promoted");
+        // BehaviorRulePromotionService.promote called with the candidate version.
+        ArgumentCaptor<BehaviorRuleVersionEntity> cap = ArgumentCaptor.forClass(BehaviorRuleVersionEntity.class);
+        verify(behaviorRulePromotionService, times(1)).promote(cap.capture());
+        assertThat(cap.getValue().getId()).isEqualTo(candidateId);
+        // skill surface promote path NOT called for behavior_rule.
+        verify(skillAbEvalService, never()).promoteCandidate(any());
+        // No SkillEntity sync for behavior_rule.
+        verify(skillRepository, never()).save(any(SkillEntity.class));
     }
 
     // ───────────────────────── stepUp ──────────────────────────

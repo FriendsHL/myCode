@@ -40,6 +40,16 @@ import java.time.Instant;
 public class CanaryRolloutEntity {
 
     public static final String SURFACE_SKILL = "skill";
+    /**
+     * V4 Phase 1.4: behavior_rule surface joined the canary system. When
+     * {@code surfaceType='behavior_rule'} the {@code baseline_skill_name} /
+     * {@code candidate_skill_name} columns store {@link BehaviorRuleVersionEntity#getId()}
+     * (UUID, 36 chars — fits in the existing VARCHAR(64)). The column names
+     * predate V4 (V77 schema) and were not renamed to avoid a costly migration
+     * dance; the storage is type-safe because the resolution path is keyed by
+     * {@code surfaceType}.
+     */
+    public static final String SURFACE_BEHAVIOR_RULE = "behavior_rule";
 
     public static final String STAGE_DISABLED = "disabled";
     public static final String STAGE_CANARY = "canary";

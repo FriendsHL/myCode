@@ -41,7 +41,10 @@ import java.util.Set;
  *
  * <p>Validation (per system-prompt CONSTRAINTS 1-3):
  * <ul>
- *   <li>{@code surface} ∈ \{skill, prompt\} (ratify #6) — other / unclear / behavior_rule rejected here</li>
+ *   <li>{@code surface} ∈ \{skill, prompt, behavior_rule\} — V4 Phase 1.4 widened from
+ *       V3's \{skill, prompt\} (ratify #6) to include behavior_rule once the
+ *       AttributionApprovalService.dispatchBehaviorRuleSurface branch shipped in
+ *       Phase 1.3 (commit 9cd74d8); {@code other} / {@code unclear} still rejected.</li>
  *   <li>{@code confidence} ∈ [0, 1]</li>
  *   <li>{@code risk} ∈ \{low, medium, high\}</li>
  *   <li>{@code description} / {@code expectedImpact} non-blank</li>
@@ -64,7 +67,8 @@ public class ProposeOptimizationTool implements Tool {
 
     static final Set<String> ALLOWED_SURFACES = Set.of(
             OptimizationEventEntity.SURFACE_SKILL,
-            OptimizationEventEntity.SURFACE_PROMPT);
+            OptimizationEventEntity.SURFACE_PROMPT,
+            OptimizationEventEntity.SURFACE_BEHAVIOR_RULE);
     static final Set<String> ALLOWED_RISKS = Set.of(
             OptimizationEventEntity.RISK_LOW,
             OptimizationEventEntity.RISK_MEDIUM,
@@ -98,8 +102,9 @@ public class ProposeOptimizationTool implements Tool {
     public String getDescription() {
         return "STEP 4 of the attribution-curator pipeline (happy path). "
                 + "Writes a new t_optimization_event row at stage=proposal_pending "
-                + "with 24h cooldown. Allowed surfaces: skill / prompt (V3 scope, "
-                + "ratify #6). Allowed risk: low / medium / high. confidence ∈ [0,1]. "
+                + "with 24h cooldown. Allowed surfaces: skill / prompt / behavior_rule "
+                + "(V4 Phase 1.4 widened from V3's skill+prompt — see ratify #6). "
+                + "Allowed risk: low / medium / high. confidence ∈ [0,1]. "
                 + "Rejects low-confidence (<0.5) and out-of-scope surfaces — the "
                 + "curator should call WriteOptimizationEvent stage=proposal_rejected "
                 + "instead for those cases.";
@@ -120,7 +125,7 @@ public class ProposeOptimizationTool implements Tool {
                 "description", "Required agent_id (may be inherited from pattern.agentId)."));
         properties.put("surface", Map.of(
                 "type", "string",
-                "description", "Required: 'skill' or 'prompt'. V3 ratify #6 — other/unclear/behavior_rule rejected."));
+                "description", "Required: 'skill' / 'prompt' / 'behavior_rule'. V4 Phase 1.4 — other/unclear rejected."));
         properties.put("changeType", Map.of(
                 "type", "string",
                 "description", "Required: free-form identifier of the change (e.g. 'rewrite_skill_md', 'tune_prompt')."));

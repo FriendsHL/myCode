@@ -91,15 +91,28 @@ class ProposeOptimizationToolTest {
     }
 
     @Test
-    @DisplayName("surface='behavior_rule' rejected per ratify #6 (V3 scope: skill/prompt only)")
-    void execute_surfaceBehaviorRule_rejected() {
+    @DisplayName("V4 Phase 1.4: surface='behavior_rule' accepted (ratify #6 widened — V3 attribution dispatcher already wired)")
+    void proposeOptimization_behaviorRuleSurface_accepts() throws Exception {
+        when(patternRepository.findById(42L)).thenReturn(Optional.of(new SessionPatternEntity()));
+        ArgumentCaptor<OptimizationEventEntity> captor = ArgumentCaptor.forClass(OptimizationEventEntity.class);
+        when(eventRepository.save(captor.capture())).thenAnswer(inv -> {
+            OptimizationEventEntity arg = inv.getArgument(0);
+            arg.setId(124L);
+            return arg;
+        });
+
         Map<String, Object> in = validInput();
         in.put("surface", "behavior_rule");
+        in.put("changeType", "rewrite_behavior_rule");
 
         SkillResult result = tool.execute(in, null);
 
-        assertThat(result.isSuccess()).isFalse();
-        verify(eventRepository, never()).save(any());
+        assertThat(result.isSuccess()).isTrue();
+        OptimizationEventEntity saved = captor.getValue();
+        assertThat(saved.getSurfaceType()).isEqualTo(OptimizationEventEntity.SURFACE_BEHAVIOR_RULE);
+        assertThat(saved.getStage()).isEqualTo(OptimizationEventEntity.STAGE_PROPOSAL_PENDING);
+        assertThat(saved.getCooldownExpiresAt())
+                .isEqualTo(FIXED_NOW.plus(ProposeOptimizationTool.COOLDOWN_DURATION));
     }
 
     @Test

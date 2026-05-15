@@ -11,6 +11,7 @@ import {
 import PatternList from '../components/insights/PatternList';
 import PatternDetailDrawer from '../components/insights/PatternDetailDrawer';
 import OptimizationEventsPage from './OptimizationEvents';
+import BehaviorRuleEvolutionPage from './BehaviorRuleEvolution';
 import TabBar from '../components/TabBar';
 
 const { Title, Paragraph, Text } = Typography;
@@ -43,6 +44,9 @@ const MAX_LIMIT = 200;
 const INSIGHTS_TABS = [
   { key: 'patterns', label: 'Patterns' },
   { key: 'optimization', label: 'Optimization' },
+  // MULTI-SURFACE-FLYWHEEL V4 Phase 1.4 — behavior_rule canary management
+  // surface lives as a third sibling tab (mirrors the Optimization pattern).
+  { key: 'behavior-rules', label: 'Behavior Rules' },
 ];
 
 /**
@@ -107,6 +111,17 @@ const Insights: React.FC = () => {
         <TabBar tabs={INSIGHTS_TABS} activeTab={activeTab} onSwitch={setActiveTab} />
         <div style={{ flex: 1, minHeight: 0, overflow: 'auto', scrollbarGutter: 'stable' }}>
           <OptimizationEventsPage />
+        </div>
+      </div>
+    );
+  }
+
+  if (activeTab === 'behavior-rules') {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - var(--header-height, 44px))' }}>
+        <TabBar tabs={INSIGHTS_TABS} activeTab={activeTab} onSwitch={setActiveTab} />
+        <div style={{ flex: 1, minHeight: 0, overflow: 'auto', scrollbarGutter: 'stable' }}>
+          <BehaviorRuleEvolutionPage />
         </div>
       </div>
     );

@@ -1,10 +1,13 @@
 package com.skillforge.server.canary;
 
+import com.skillforge.server.entity.BehaviorRuleVersionEntity;
 import com.skillforge.server.entity.CanaryMetricSnapshotEntity;
 import com.skillforge.server.entity.CanaryRolloutEntity;
 import com.skillforge.server.entity.SkillEntity;
+import com.skillforge.server.improve.BehaviorRulePromotionService;
 import com.skillforge.server.improve.SkillAbEvalService;
 import com.skillforge.server.repository.AgentRepository;
+import com.skillforge.server.repository.BehaviorRuleVersionRepository;
 import com.skillforge.server.repository.CanaryMetricSnapshotRepository;
 import com.skillforge.server.repository.CanaryRolloutRepository;
 import com.skillforge.server.repository.SkillRepository;
@@ -67,33 +70,47 @@ public class CanaryRolloutService {
     private final SkillRepository skillRepository;
     private final AgentRepository agentRepository;
     private final SkillAbEvalService skillAbEvalService;
+    // V4 Phase 1.4: behavior_rule surface dependencies. BehaviorRulePromotionService
+    // is a leaf service (depends only on BehaviorRuleVersionRepository +
+    // ApplicationEventPublisher); no @Lazy needed — no DI cycle exists.
+    private final BehaviorRuleVersionRepository behaviorRuleVersionRepository;
+    private final BehaviorRulePromotionService behaviorRulePromotionService;
 
     public CanaryRolloutService(CanaryRolloutRepository canaryRepository,
                                 CanaryMetricSnapshotRepository snapshotRepository,
                                 SkillRepository skillRepository,
                                 AgentRepository agentRepository,
-                                SkillAbEvalService skillAbEvalService) {
+                                SkillAbEvalService skillAbEvalService,
+                                BehaviorRuleVersionRepository behaviorRuleVersionRepository,
+                                BehaviorRulePromotionService behaviorRulePromotionService) {
         this.canaryRepository = canaryRepository;
         this.snapshotRepository = snapshotRepository;
         this.skillRepository = skillRepository;
         this.agentRepository = agentRepository;
         this.skillAbEvalService = skillAbEvalService;
+        this.behaviorRuleVersionRepository = behaviorRuleVersionRepository;
+        this.behaviorRulePromotionService = behaviorRulePromotionService;
     }
 
     /**
-     * Create a new active canary rollout + transition the candidate skill row.
+     * Create a new active canary rollout + transition the candidate identity row.
      *
-     * <p>Validates 5 invariants up-front:
+     * <p>Validates invariants up-front:
      * <ol>
      *   <li>{@code percentage} in [0, 100]</li>
      *   <li>{@code agentId} resolves to an existing {@code t_agent} row</li>
-     *   <li>{@code surfaceType} is currently only {@code 'skill'} (V2 scope)</li>
-     *   <li>Both {@code baselineSkillName} and {@code candidateSkillName} resolve to
-     *       existing {@code t_skill} rows and differ from each other</li>
-     *   <li>No active canary already exists for (agent, surface) — the {@code uq_canary_active}
-     *       partial UNIQUE INDEX (Postgres-only) is the DB-layer safety net; the
-     *       application-side pre-check gives a clean {@code 409} + descriptive
-     *       message on H2 unit tests.</li>
+     *   <li>{@code surfaceType} ∈ \{skill, behavior_rule\} — V4 Phase 1.4 widened
+     *       from V2's skill-only. {@code prompt} surface canaries are still V3
+     *       backlog (no PromptVersion identity column on t_canary_rollout yet).</li>
+     *   <li>For {@code surface=skill}: both names resolve to existing {@code t_skill}
+     *       rows; for {@code surface=behavior_rule}: both ids resolve to existing
+     *       {@code t_behavior_rule_version} rows, both must belong to the supplied
+     *       agent (audit-trail invariant).</li>
+     *   <li>Baseline differs from candidate.</li>
+     *   <li>No active canary already exists for the agent (V83 partial UNIQUE
+     *       {@code uq_canary_active} now keyed on agent_id only — cross-surface
+     *       mutex per ratify #4); the application-side pre-check gives a clean
+     *       {@code 409} + descriptive message on H2 unit tests.</li>
      * </ol>
      */
     public CanaryRolloutEntity startCanary(Long agentId,
@@ -121,15 +138,53 @@ public class CanaryRolloutService {
         if (!agentRepository.existsById(agentId)) {
             throw new IllegalArgumentException("Agent not found: id=" + agentId);
         }
-        // findByName tolerates a single enabled row; multi-row collision (rare —
-        // V64 partial unique prevents enabled dups, disabled dups are possible
-        // but uncommon for fresh canary candidates) bubbles as IncorrectResultSize.
-        SkillEntity baselineSkill = skillRepository.findByName(baselineSkillName)
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "Baseline skill not found: " + baselineSkillName));
-        SkillEntity candidateSkill = skillRepository.findByName(candidateSkillName)
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "Candidate skill not found: " + candidateSkillName));
+
+        // Surface-specific identity validation. We do the existence check
+        // before the active-canary collision check so callers always get the
+        // most actionable error (missing identity → 400, vs collision → 409
+        // would mask a typo'd id).
+        SkillEntity skillBaseline = null;
+        SkillEntity skillCandidate = null;
+        if (CanaryRolloutEntity.SURFACE_SKILL.equals(surface)) {
+            // findByName tolerates a single enabled row; multi-row collision (rare —
+            // V64 partial unique prevents enabled dups, disabled dups are possible
+            // but uncommon for fresh canary candidates) bubbles as IncorrectResultSize.
+            skillBaseline = skillRepository.findByName(baselineSkillName)
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "Baseline skill not found: " + baselineSkillName));
+            skillCandidate = skillRepository.findByName(candidateSkillName)
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "Candidate skill not found: " + candidateSkillName));
+        } else {
+            // behavior_rule: baselineSkillName / candidateSkillName are
+            // BehaviorRuleVersionEntity.id UUIDs (see CanaryRolloutEntity
+            // SURFACE_BEHAVIOR_RULE javadoc for the column-reuse note).
+            BehaviorRuleVersionEntity brBaseline = behaviorRuleVersionRepository
+                    .findById(baselineSkillName)
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "Baseline behavior_rule version not found: " + baselineSkillName));
+            BehaviorRuleVersionEntity brCandidate = behaviorRuleVersionRepository
+                    .findById(candidateSkillName)
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "Candidate behavior_rule version not found: " + candidateSkillName));
+            // Defensive: behavior_rule version rows carry agentId; the canary
+            // identity must match the supplied agentId. Misalignment usually
+            // means dashboard sent a wrong UUID — fail loudly so attribution
+            // metrics aren't misattributed across agents.
+            String agentIdStr = String.valueOf(agentId);
+            if (!agentIdStr.equals(brBaseline.getAgentId())) {
+                throw new IllegalArgumentException(
+                        "Baseline behavior_rule version " + baselineSkillName
+                                + " belongs to agent " + brBaseline.getAgentId()
+                                + ", not " + agentIdStr);
+            }
+            if (!agentIdStr.equals(brCandidate.getAgentId())) {
+                throw new IllegalArgumentException(
+                        "Candidate behavior_rule version " + candidateSkillName
+                                + " belongs to agent " + brCandidate.getAgentId()
+                                + ", not " + agentIdStr);
+            }
+        }
 
         Optional<CanaryRolloutEntity> existing = canaryRepository
                 .findActiveCanaryByAgentAndSurface(agentId, surface);
@@ -152,19 +207,26 @@ public class CanaryRolloutService {
         entity.setUpdatedAt(now);
         CanaryRolloutEntity saved = canaryRepository.save(entity);
 
-        // Sync candidate SkillEntity so the row-level rollout columns mirror the
-        // canary row. Baseline is intentionally left at its current state
-        // (typically 'production' / 100) — it remains the default path until
-        // publish() flips both.
-        candidateSkill.setRolloutStage(CanaryRolloutEntity.STAGE_CANARY);
-        candidateSkill.setRolloutPercentage(percentage);
-        skillRepository.save(candidateSkill);
-        // Reference baselineSkill to silence "unused" warnings while keeping the
-        // existence check in scope — also lets a future iteration record the
-        // pre-canary baseline state if needed.
-        log.info("CanaryRolloutService: startCanary id={} agent={} surface={} baseline='{}'(id={}) candidate='{}'(id={}) pct={}",
-                saved.getId(), agentId, surface, baselineSkillName, baselineSkill.getId(),
-                candidateSkillName, candidateSkill.getId(), percentage);
+        if (skillCandidate != null) {
+            // skill surface: sync candidate SkillEntity so the row-level rollout
+            // columns mirror the canary row. Baseline is intentionally left at
+            // its current state (typically 'production' / 100) — it remains the
+            // default path until publish() flips both.
+            skillCandidate.setRolloutStage(CanaryRolloutEntity.STAGE_CANARY);
+            skillCandidate.setRolloutPercentage(percentage);
+            skillRepository.save(skillCandidate);
+            log.info("CanaryRolloutService: startCanary id={} agent={} surface={} baseline='{}'(id={}) candidate='{}'(id={}) pct={}",
+                    saved.getId(), agentId, surface, baselineSkillName, skillBaseline.getId(),
+                    candidateSkillName, skillCandidate.getId(), percentage);
+        } else {
+            // behavior_rule surface: BehaviorRuleVersionEntity status stays
+            // 'candidate' through the canary — promotion to 'active' happens on
+            // publish() via BehaviorRulePromotionService. No row-level mirror
+            // table to sync (the canary row IS the source of truth for rollout
+            // stage on this surface).
+            log.info("CanaryRolloutService: startCanary id={} agent={} surface=behavior_rule baselineRuleSetId='{}' candidateRuleSetId='{}' pct={}",
+                    saved.getId(), agentId, baselineSkillName, candidateSkillName, percentage);
+        }
         return saved;
     }
 
@@ -193,15 +255,20 @@ public class CanaryRolloutService {
         c.setUpdatedAt(Instant.now());
         CanaryRolloutEntity saved = canaryRepository.save(c);
 
-        // Sync candidate SkillEntity (best-effort; if missing — operator may have
-        // deleted the row — log and continue: the canary row is the source of truth).
-        skillRepository.findByName(c.getCandidateSkillName()).ifPresentOrElse(skill -> {
-            skill.setRolloutPercentage(newPercentage);
-            skillRepository.save(skill);
-        }, () -> log.warn("CanaryRolloutService.stepUp: candidate skill '{}' missing from SkillRepository — canary row updated, skill row skip",
-                c.getCandidateSkillName()));
+        if (CanaryRolloutEntity.SURFACE_SKILL.equals(c.getSurfaceType())) {
+            // Sync candidate SkillEntity (best-effort; if missing — operator may have
+            // deleted the row — log and continue: the canary row is the source of truth).
+            skillRepository.findByName(c.getCandidateSkillName()).ifPresentOrElse(skill -> {
+                skill.setRolloutPercentage(newPercentage);
+                skillRepository.save(skill);
+            }, () -> log.warn("CanaryRolloutService.stepUp: candidate skill '{}' missing from SkillRepository — canary row updated, skill row skip",
+                    c.getCandidateSkillName()));
+        }
+        // behavior_rule surface: no row-level mirror table to sync. Canary row
+        // alone tracks pct; CanaryAllocator reads it directly on each allocate.
 
-        log.info("CanaryRolloutService: stepUp id={} pct {} -> {}", canaryId, current, newPercentage);
+        log.info("CanaryRolloutService: stepUp id={} surface={} pct {} -> {}",
+                canaryId, c.getSurfaceType(), current, newPercentage);
         return saved;
     }
 
@@ -246,7 +313,27 @@ public class CanaryRolloutService {
         c.setUpdatedAt(now);
         CanaryRolloutEntity saved = canaryRepository.save(c);
 
-        // SkillEntity sync: candidate→production/100, baseline→disabled.
+        if (CanaryRolloutEntity.SURFACE_BEHAVIOR_RULE.equals(c.getSurfaceType())) {
+            // V4 Phase 1.4 behavior_rule path: promote candidate
+            // BehaviorRuleVersion via BehaviorRulePromotionService (which
+            // performs the V82 invariant-safe retire-then-activate transition).
+            // No SkillEntity sync — behavior_rule has its own version table.
+            behaviorRuleVersionRepository.findById(c.getCandidateSkillName()).ifPresentOrElse(candidate -> {
+                try {
+                    behaviorRulePromotionService.promote(candidate);
+                } catch (RuntimeException e) {
+                    log.warn("CanaryRolloutService.publish: behaviorRulePromotionService.promote threw for ruleSetId='{}': {}",
+                            candidate.getId(), e.getMessage());
+                    throw e;
+                }
+            }, () -> log.warn("CanaryRolloutService.publish: candidate behavior_rule version '{}' missing — promote skipped",
+                    c.getCandidateSkillName()));
+            log.info("CanaryRolloutService: publish id={} surface=behavior_rule → production (candidateRuleSetId='{}')",
+                    canaryId, c.getCandidateSkillName());
+            return saved;
+        }
+
+        // skill surface (legacy path — zero behavior drift from Phase 1.3).
         Optional<SkillEntity> candidateOpt = skillRepository.findByName(c.getCandidateSkillName());
         Optional<SkillEntity> baselineOpt = skillRepository.findByName(c.getBaselineSkillName());
 
@@ -307,6 +394,20 @@ public class CanaryRolloutService {
         c.setUpdatedAt(now);
         CanaryRolloutEntity saved = canaryRepository.save(c);
 
+        if (CanaryRolloutEntity.SURFACE_BEHAVIOR_RULE.equals(c.getSurfaceType())) {
+            // V4 Phase 1.4 behavior_rule rollback: only flip canary row.
+            // BehaviorRuleVersionEntity.status is intentionally NOT touched —
+            // the candidate version stays 'candidate' for audit, and the active
+            // version (if any was retired during this canary — it wasn't,
+            // because behavior_rule promotion only happens on publish()) stays
+            // active. Without an active row, BehaviorRuleResolver falls back to
+            // the startup baseline, which is the right behavior for a rollback.
+            log.info("CanaryRolloutService: rollback id={} surface=behavior_rule reason='{}' (BehaviorRuleVersion status preserved for audit)",
+                    canaryId, reason);
+            return saved;
+        }
+
+        // skill surface (legacy path — unchanged).
         skillRepository.findByName(c.getCandidateSkillName()).ifPresentOrElse(skill -> {
             skill.setRolloutStage(CanaryRolloutEntity.STAGE_ROLLED_BACK);
             skill.setRolloutPercentage(0);
@@ -434,12 +535,14 @@ public class CanaryRolloutService {
         String surface = surfaceType == null || surfaceType.isBlank()
                 ? CanaryRolloutEntity.SURFACE_SKILL
                 : surfaceType;
-        if (!CanaryRolloutEntity.SURFACE_SKILL.equals(surface)) {
-            // V2 ratify: only 'skill' surface is implemented. Other values
-            // (prompt / behavior_rule) are reserved for V3+ and explicitly
-            // rejected so callers get a clear signal instead of a silent miss.
+        // V4 Phase 1.4: accept {skill, behavior_rule}. prompt is still V3 backlog
+        // (no PromptVersion identity column wiring on t_canary_rollout yet); any
+        // other value rejected loudly.
+        if (!CanaryRolloutEntity.SURFACE_SKILL.equals(surface)
+                && !CanaryRolloutEntity.SURFACE_BEHAVIOR_RULE.equals(surface)) {
             throw new IllegalArgumentException(
-                    "surfaceType must be 'skill' (got '" + surfaceType + "'); other surfaces are V3+");
+                    "surfaceType must be one of {'skill', 'behavior_rule'} (got '"
+                            + surfaceType + "'); prompt surface is V3 backlog");
         }
         return surface;
     }

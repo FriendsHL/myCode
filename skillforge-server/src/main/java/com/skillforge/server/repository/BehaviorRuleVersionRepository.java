@@ -26,6 +26,17 @@ public interface BehaviorRuleVersionRepository extends JpaRepository<BehaviorRul
 
     List<BehaviorRuleVersionEntity> findByAgentIdOrderByVersionNumberDesc(String agentId);
 
+    /**
+     * V4 Phase 1.4 — list view filtered by status. Returns multiple rows for
+     * {@code candidate} / {@code retired} / {@code rejected} (which are
+     * unbounded per agent) and at most one row for {@code active} (enforced by
+     * V82 partial UNIQUE {@code uq_brv_one_active}). Ordered newest-first by
+     * {@code version_number} so the dashboard panel can render a chronological
+     * version list without extra sort.
+     */
+    List<BehaviorRuleVersionEntity> findByAgentIdAndStatusOrderByVersionNumberDesc(
+            String agentId, String status);
+
     @Query("SELECT MAX(v.versionNumber) FROM BehaviorRuleVersionEntity v WHERE v.agentId = :agentId")
     Optional<Integer> findMaxVersionNumber(@Param("agentId") String agentId);
 }
