@@ -15,7 +15,6 @@ import {
   notification,
   Alert,
   Empty,
-  Divider,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -38,7 +37,7 @@ import { stageColor, surfaceColor, riskColor } from '../components/attribution/s
 
 dayjs.extend(relativeTime);
 
-const { Title, Paragraph, Text } = Typography;
+const { Title, Text } = Typography;
 
 /** Stage options for the timeline filter dropdown. `undefined` = "all". */
 const STAGE_OPTIONS: { value: AttributionStage; label: string }[] = [
@@ -573,6 +572,36 @@ const OptimizationEvents: React.FC = () => {
     setPage(0);
   };
 
+  const statsBar: React.CSSProperties = {
+    display: 'flex',
+    gap: 'var(--sp-6, 24px)',
+    marginBottom: 'var(--sp-6, 24px)',
+  };
+  const statItem: React.CSSProperties = {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2,
+  };
+  const statCount: React.CSSProperties = {
+    fontFamily: 'var(--font-serif)',
+    fontSize: 28,
+    fontWeight: 500,
+    letterSpacing: '-0.02em',
+    lineHeight: 1.2,
+  };
+  const statLabel: React.CSSProperties = {
+    fontSize: 'var(--font-size-xs, 11px)',
+    color: 'var(--fg-3)',
+    letterSpacing: '0.05em',
+    textTransform: 'uppercase' as const,
+  };
+  const sectionCard: React.CSSProperties = {
+    border: '1px solid var(--border, #e0e0e0)',
+    borderRadius: 8,
+    padding: 'var(--sp-5, 20px)',
+    marginBottom: 'var(--sp-5, 20px)',
+  };
+
   return (
     <div
       style={{
@@ -581,25 +610,45 @@ const OptimizationEvents: React.FC = () => {
         margin: '0 auto',
       }}
     >
-      <div style={{ marginBottom: 24 }}>
-        <Title level={3} style={{ marginBottom: 4 }}>
-          Optimization Events
-        </Title>
-        <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-          Operator queue + lifecycle timeline for attribution-curator proposals.
-          Approve to trigger candidate generation; reject to close the proposal.
-        </Paragraph>
+      {/* Stats */}
+      <div style={statsBar}>
+        <div style={statItem}>
+          <span style={{ ...statCount, color: 'var(--color-warn, #d49a3a)' }}>
+            {pendingItems.length}
+          </span>
+          <span style={statLabel}>pending</span>
+        </div>
+        <div style={statItem}>
+          <span style={statCount}>{timelineTotal}</span>
+          <span style={statLabel}>total events</span>
+        </div>
       </div>
 
       {/* ─── Pending Approvals ─── */}
-      <div style={{ marginBottom: 32 }}>
-        <Space align="baseline" style={{ marginBottom: 12 }}>
+      <div style={sectionCard}>
+        <Space align="center" style={{ marginBottom: 16 }}>
           <Title level={4} style={{ margin: 0 }}>
             Pending approvals
           </Title>
-          <Text type="secondary">
-            {pendingItems.length} proposal{pendingItems.length === 1 ? '' : 's'} awaiting decision
-          </Text>
+          {pendingItems.length > 0 && (
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                minWidth: 24,
+                height: 22,
+                borderRadius: 11,
+                background: 'var(--color-warn, #d49a3a)',
+                color: '#fff',
+                fontSize: 12,
+                fontWeight: 600,
+                padding: '0 8px',
+              }}
+            >
+              {pendingItems.length}
+            </span>
+          )}
         </Space>
 
         {pendingErr && (
@@ -633,18 +682,11 @@ const OptimizationEvents: React.FC = () => {
         />
       </div>
 
-      <Divider />
-
       {/* ─── Timeline ─── */}
-      <div>
-        <Space align="baseline" style={{ marginBottom: 12, flexWrap: 'wrap' }}>
-          <Title level={4} style={{ margin: 0 }}>
-            Recent events
-          </Title>
-          <Text type="secondary">
-            {timelineTotal} total
-          </Text>
-        </Space>
+      <div style={sectionCard}>
+        <Title level={4} style={{ margin: '0 0 12px' }}>
+          Recent events
+        </Title>
 
         {/* Filter bar — three controls + reset. Each is independent. */}
         <Space wrap style={{ marginBottom: 12 }}>
