@@ -128,6 +128,30 @@ public interface OptimizationEventRepository extends JpaRepository<OptimizationE
     List<OptimizationEventEntity> findByStageAndCreatedAtBefore(String stage, Instant cutoff);
 
     /**
+     * V3.2 stage-mirror listener: find the optimization event whose A/B run id
+     * was just completed. There's at most one such event per A/B run because
+     * V3 attribution writes ab_run_id only once (at candidate_ready →
+     * ab_running transition).
+     */
+    List<OptimizationEventEntity> findByAbRunId(Long abRunId);
+
+    /**
+     * V3.2 stage-mirror listener: find the optimization event whose candidate
+     * prompt version was just promoted. At most one per candidate (each
+     * attribution-derived PromptVersionEntity is written exactly once by the
+     * approval flow).
+     */
+    List<OptimizationEventEntity> findByCandidatePromptVersionId(Long candidatePromptVersionId);
+
+    /**
+     * V3.2 stage-mirror listener: find the optimization event whose candidate
+     * SkillEntity row was just merged/promoted. Useful when V1 SkillDrafts
+     * page merges a draft (creates SkillEntity) and the operator wants the V3
+     * timeline to follow.
+     */
+    List<OptimizationEventEntity> findByCandidateSkillId(Long candidateSkillId);
+
+    /**
      * Phase 1.4 reviewer fix (W2/W3): unified pageable list with optional
      * {@code stage} / {@code agentId} / {@code surfaceType} filters. Each
      * parameter may be null to skip that dimension; passing all-null returns
