@@ -113,19 +113,32 @@ const Insights: React.FC = () => {
     // destroyOnClose unmounts the inner Table anyway.
   };
 
-  return (
-    <div style={{ padding: 'var(--sp-6, 24px) var(--sp-8, 32px)', maxWidth: 1600, margin: '0 auto' }}>
-      <div style={{ marginBottom: 24 }}>
-        <Title level={3} style={{ marginBottom: 4 }}>
-          Insights — Failure Patterns
-        </Title>
-        <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-          Hourly session-annotator agent labels production sessions and groups them by
-          (outcome × suspect_surface × top_failing_tool × agent). Clusters with ≥ 3 members surface here.
-        </Paragraph>
+  if (activeTab === 'optimization') {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - var(--header-height, 44px))' }}>
+        <InsightsTabBar activeTab={activeTab} onSwitch={setActiveTab} />
+        <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+          <OptimizationEventsPage />
+        </div>
       </div>
+    );
+  }
 
-      <Form<FilterFormValues>
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - var(--header-height, 44px))' }}>
+      <InsightsTabBar activeTab={activeTab} onSwitch={setActiveTab} />
+      <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: 'var(--sp-6, 24px) var(--sp-8, 32px)', maxWidth: 1600, margin: '0 auto' }}>
+        <div style={{ marginBottom: 24 }}>
+          <Title level={3} style={{ marginBottom: 4 }}>
+            Insights — Failure Patterns
+          </Title>
+          <Paragraph type="secondary" style={{ marginBottom: 0 }}>
+            Hourly session-annotator agent labels production sessions and groups them by
+            (outcome × suspect_surface × top_failing_tool × agent). Clusters with ≥ 3 members surface here.
+          </Paragraph>
+        </div>
+
+        <Form<FilterFormValues>
         form={form}
         layout="inline"
         initialValues={{ limit: DEFAULT_LIMIT }}
@@ -181,6 +194,7 @@ const Insights: React.FC = () => {
         open={drawerOpen}
         onClose={onDrawerClose}
       />
+      </div>
     </div>
   );
 };
