@@ -296,6 +296,16 @@ const Tasks: React.FC = () => {
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - var(--header-height, 44px))' }}>
       <TabBar tabs={TAB_ITEMS} activeTab={activeTab} onSwitch={setActiveTab} />
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: 'var(--sp-6, 24px) var(--sp-8, 32px)', ...contentMaxWidth }}>
+        {/* Header */}
+        <div style={{ marginBottom: 'var(--sp-6, 24px)' }}>
+          <h1 style={{ fontFamily: 'var(--font-serif)', fontSize: 28, fontWeight: 500, letterSpacing: '-0.02em', color: 'var(--fg-1)', margin: '0 0 4px', lineHeight: 1.2 }}>
+            Task Runs
+          </h1>
+          <p style={{ color: 'var(--fg-3)', fontSize: 'var(--font-size-sm)', margin: 0 }}>
+            Unified feed across all subsystems — scheduled tasks, sub-agents, skill evolution, A/B evals, and collab runs.
+          </p>
+        </div>
+
         {/* Stats */}
         <div style={statsBar}>
           <div style={statItem}>
