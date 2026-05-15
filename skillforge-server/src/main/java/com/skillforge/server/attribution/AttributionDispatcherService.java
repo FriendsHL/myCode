@@ -160,6 +160,30 @@ public class AttributionDispatcherService {
                                  int skippedActive) {}
 
     /**
+     * Cron entrypoint — fires hourly at :15 (half-past offset from V75 :00
+     * session-annotator and V79 :30 metrics-collector). Bypasses the V81
+     * ScheduledTask path (which would route through the LLM agent and ask
+     * "which patternId?" — wrong: the dispatch logic is *this* method,
+     * agents are spawned per-pattern from inside it).
+     *
+     * <p>Phase Final dogfood wiring (2026-05-15): the V81 ScheduledTask
+     * {@code attribution-dispatcher-hourly} should be set {@code enabled=false}
+     * so it doesn't also trigger the agent with the generic scan prompt.
+     */
+    @Scheduled(cron = "0 15 * * * *")
+    public void scheduledDispatch() {
+        try {
+            DispatchResult result = dispatchPendingPatterns(DEFAULT_MAX_DISPATCH_PER_RUN);
+            log.info("[AttributionDispatcher.scheduledDispatch] scanned={} dispatched={} "
+                    + "skippedSurface={} skippedCooldown={} skippedActive={}",
+                    result.scanned(), result.dispatched(),
+                    result.skippedSurface(), result.skippedCooldown(), result.skippedActive());
+        } catch (Exception e) {
+            log.error("[AttributionDispatcher.scheduledDispatch] unexpected error", e);
+        }
+    }
+
+    /**
      * Scan candidate patterns and dispatch the curator agent for the top-N
      * eligible. {@code maxDispatchPerRun ≤ 0} falls back to
      * {@link #DEFAULT_MAX_DISPATCH_PER_RUN}.
@@ -343,8 +367,21 @@ public class AttributionDispatcherService {
             return;
         }
         eventRepository.deleteAll(sentinels);
-        log.info("[AttributionDispatcher.cleanupOrphanSentinels] deleted {} orphan sentinel(s) older than {} (TTL={})",
-                sentinels.size(), cutoff, ORPHAN_SENTINEL_TTL);
+        // BUG-2 (V3 e2e dogfood 2026-05-15): count > 0 is a soft alarm — these
+        // sentinels mean curator AgentLoop ran but didn't advance to
+        // proposal_pending / proposal_rejected. Common causes: (a) BUG-1 reject
+        // path before fix, (b) LLM API failure mid-run, (c) curator-side
+        // tool_use validation_error not retried. Operator sees this WARN and
+        // can correlate with curator session logs by patternId.
+        StringBuilder patternIds = new StringBuilder();
+        for (int i = 0; i < sentinels.size(); i++) {
+            if (i > 0) patternIds.append(",");
+            patternIds.append(sentinels.get(i).getPatternId());
+        }
+        log.warn("[AttributionDispatcher.cleanupOrphanSentinels] deleted {} orphan sentinel(s) "
+                + "older than TTL={} — curator AgentLoop did not advance these patternIds: [{}]. "
+                + "Check curator session logs for tool_use validation_errors / LLM API failures.",
+                sentinels.size(), ORPHAN_SENTINEL_TTL, patternIds);
     }
 
     /**

@@ -21,7 +21,8 @@ import java.util.Optional;
  * (recent signal rows + which sessions already have an LLM row). These are
  * intentionally narrow — not a generic search surface.
  */
-public interface SessionAnnotationRepository extends JpaRepository<SessionAnnotationEntity, Long> {
+public interface SessionAnnotationRepository
+        extends JpaRepository<SessionAnnotationEntity, Long>, SessionAnnotationRepositoryCustom {
 
     List<SessionAnnotationEntity> findBySessionId(String sessionId);
 
@@ -76,51 +77,10 @@ public interface SessionAnnotationRepository extends JpaRepository<SessionAnnota
             """)
     List<String> findDistinctSessionIdsCreatedSince(@Param("since") Instant since);
 
-    /**
-     * V1 W2 fix (Postgres aborted-tx bug): native PG upsert that inserts a new
-     * row or skips silently on UNIQUE conflict. Returns the generated id of the
-     * newly-inserted row, or {@code null} when the UNIQUE constraint
-     * {@code uq_session_annotation} matched an existing row (caller treats that
-     * as a no-op duplicate).
-     *
-     * <p><b>Why native</b>: the prior implementation called
-     * {@code saveAndFlush} inside a {@code try/catch DataIntegrityViolationException}
-     * loop. On Postgres, the first UNIQUE conflict aborts the entire transaction
-     * — subsequent {@code saveAndFlush} calls throw {@link org.springframework.orm.jpa.JpaSystemException}
-     * ("current transaction is aborted, commands ignored until end of transaction
-     * block"), not {@code DataIntegrityViolationException}, so the catch misses
-     * them and the caller's per-session {@code catch (Exception)} silently
-     * swallows the remainder of the batch. {@code ON CONFLICT DO NOTHING} is
-     * a single statement that never marks the transaction aborted, restoring
-     * the intended per-row idempotency.
-     *
-     * <p>H2 (unit-test dialect) does not support the {@code ON CONFLICT} clause;
-     * the IT suite ({@code SessionAnnotationPersistenceIT}) covers real-PG
-     * behaviour, while service unit tests mock this method.
-     *
-     * @return the generated row id, or {@code null} if the row already existed
-     *         (UNIQUE conflict on {@code uq_session_annotation}).
-     */
-    @Modifying
-    @Query(value = """
-            INSERT INTO t_session_annotation (
-                session_id, annotation_type, annotation_value, source,
-                confidence, reasoning, created_at
-            ) VALUES (
-                :sessionId, :annotationType, :annotationValue, :source,
-                :confidence, :reasoning, NOW()
-            )
-            ON CONFLICT ON CONSTRAINT uq_session_annotation
-            DO NOTHING
-            RETURNING id
-            """, nativeQuery = true)
-    Long upsertSkipDuplicate(
-            @Param("sessionId") String sessionId,
-            @Param("annotationType") String annotationType,
-            @Param("annotationValue") String annotationValue,
-            @Param("source") String source,
-            @Param("confidence") BigDecimal confidence,
-            @Param("reasoning") String reasoning);
+    // upsertSkipDuplicate moved to SessionAnnotationRepositoryCustom + SessionAnnotationRepositoryImpl
+    // (V1 W2 fix retains ON CONFLICT DO NOTHING RETURNING id semantics, but Spring Data JPA
+    // @Modifying contract rejects Long return type — runtime IllegalArgumentException on first
+    // PG invocation. Custom impl via EntityManager bypasses the constraint.)
 
     /**
      * SKILL-CANARY-ROLLOUT V2 Phase 1.2: look up the canary group annotation

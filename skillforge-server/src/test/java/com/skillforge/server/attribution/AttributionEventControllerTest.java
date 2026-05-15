@@ -42,18 +42,20 @@ class AttributionEventControllerTest {
 
     private OptimizationEventRepository eventRepository;
     private AttributionApprovalService approvalService;
+    private AttributionDispatcherService dispatcher;
     private MockMvc mvc;
 
     @BeforeEach
     void setUp() {
         eventRepository = mock(OptimizationEventRepository.class);
         approvalService = mock(AttributionApprovalService.class);
+        dispatcher = mock(AttributionDispatcherService.class);
         ObjectMapper objectMapper = new ObjectMapper()
                 .registerModule(new JavaTimeModule())
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
         AttributionEventController controller =
-                new AttributionEventController(eventRepository, approvalService);
+                new AttributionEventController(eventRepository, approvalService, dispatcher);
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setMessageConverters(new MappingJackson2HttpMessageConverter(objectMapper))
                 .build();

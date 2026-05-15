@@ -62,11 +62,35 @@ public class AttributionEventController {
 
     private final OptimizationEventRepository eventRepository;
     private final AttributionApprovalService approvalService;
+    private final AttributionDispatcherService dispatcher;
 
     public AttributionEventController(OptimizationEventRepository eventRepository,
-                                      AttributionApprovalService approvalService) {
+                                      AttributionApprovalService approvalService,
+                                      AttributionDispatcherService dispatcher) {
         this.eventRepository = eventRepository;
         this.approvalService = approvalService;
+        this.dispatcher = dispatcher;
+    }
+
+    /**
+     * V3 ATTRIBUTION-AGENT Phase Final dogfood — manual dispatcher trigger.
+     * Bypasses cron (which fires at :15) so e2e tests + ad-hoc dogfood runs
+     * can drive the curator pipeline without waiting for natural cron tick.
+     *
+     * <p>Auth: goes through the same Bearer-token AuthInterceptor as every
+     * other {@code /api/**} endpoint. No additional gating in V1
+     * single-tenant dogfood; Phase 2 will introduce role-based admin gating.
+     */
+    @PostMapping("/admin/trigger-dispatch")
+    public ResponseEntity<?> triggerDispatch(@RequestParam(defaultValue = "5") int max) {
+        AttributionDispatcherService.DispatchResult result = dispatcher.dispatchPendingPatterns(max);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("scanned", result.scanned());
+        body.put("dispatched", result.dispatched());
+        body.put("skippedSurface", result.skippedSurface());
+        body.put("skippedCooldown", result.skippedCooldown());
+        body.put("skippedActive", result.skippedActive());
+        return ResponseEntity.ok(body);
     }
 
     /** Wire schema for {@code POST /{id}/approve} and {@code POST /{id}/retry}. */

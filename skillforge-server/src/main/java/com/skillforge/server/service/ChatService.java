@@ -1358,7 +1358,47 @@ public class ChatService {
         // 未识别类型：保留 top-level message（不带 stack）让开发者也有线索
         String topMsg = e.getMessage();
         if (topMsg == null || topMsg.isBlank()) topMsg = e.getClass().getSimpleName();
+
+        // 识别常见 LLM provider HTTP 错误 — 给出可操作 hint（不修底层异常类型，
+        // OkHttp / okhttp-based providers 抛 RuntimeException with message
+        // "<provider> API error: HTTP <code> - <body>" 模式）
+        if (topMsg.contains("HTTP 401")
+                || topMsg.contains("invalid_api_key")
+                || topMsg.contains("invalid access token or token expired")) {
+            String provider = extractProviderFromError(topMsg);
+            return "LLM 调用未授权（HTTP 401）：" + provider + " 的 API key 失效或未配置。"
+                    + "检查对应环境变量（ANTHROPIC_API_KEY / DASHSCOPE_API_KEY / DEEPSEEK_API_KEY / XIAOMI_MIMO_API_KEY）"
+                    + "是否有效，或在 agent 配置中切换到一个可用 provider 的模型（dashboard Agents 页可改）。";
+        }
+        if (topMsg.contains("HTTP 403")) {
+            return "LLM 调用被拒绝（HTTP 403）：API key 权限不足、配额耗尽、或 IP 被封。"
+                    + "登录 provider 控制台核查余额 / 配额 / 白名单设置。";
+        }
+        if (topMsg.contains("HTTP 429")) {
+            return "LLM 调用被限流（HTTP 429）：触发了 provider 的速率限制，请稍后重试，"
+                    + "或降低并发 / 升级 provider 计费档位。";
+        }
+        if (topMsg.contains("HTTP 5") && (topMsg.contains("HTTP 500") || topMsg.contains("HTTP 502")
+                || topMsg.contains("HTTP 503") || topMsg.contains("HTTP 504"))) {
+            return "LLM 提供方服务端错误（" + (topMsg.contains("HTTP 504") ? "HTTP 504 网关超时" :
+                    topMsg.contains("HTTP 503") ? "HTTP 503 服务不可用" :
+                    topMsg.contains("HTTP 502") ? "HTTP 502 网关错误" : "HTTP 500")
+                    + "）：provider 短暂不可用，可重试。持续报错请检查 provider 状态页。";
+        }
         return "Agent 执行失败：" + topMsg + "。完整堆栈见 server 日志。";
+    }
+
+    /**
+     * 从错误消息形如 "<provider> API error: HTTP 401 - ..." 提取 provider 名。
+     * 5 个 provider 命名：claude / bailian / dashscope / deepseek / xiaomi-mimo。
+     */
+    private static String extractProviderFromError(String msg) {
+        if (msg.contains("bailian")) return "bailian (dashscope)";
+        if (msg.contains("dashscope")) return "bailian (dashscope)";
+        if (msg.contains("claude") || msg.contains("anthropic")) return "claude (anthropic)";
+        if (msg.contains("deepseek")) return "deepseek";
+        if (msg.contains("xiaomi") || msg.contains("mimo")) return "xiaomi-mimo";
+        return "LLM provider";
     }
 
     /** Return non-blank getMessage() or fall back to simple class name. */
