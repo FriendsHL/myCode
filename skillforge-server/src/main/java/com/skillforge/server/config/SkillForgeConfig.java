@@ -779,6 +779,76 @@ public class SkillForgeConfig {
         return tool;
     }
 
+    // ---------- V3 ATTRIBUTION-AGENT Phase 1.2 tools ----------
+
+    /**
+     * V3 ATTRIBUTION-AGENT shared clock. Injected into
+     * {@link com.skillforge.server.attribution.AttributionDispatcherService} +
+     * {@link com.skillforge.server.tool.attribution.ProposeOptimizationTool}
+     * so tests can supply a fixed clock without touching system time. UTC by
+     * default — cooldown arithmetic + audit timestamps don't care about zone,
+     * and TIMESTAMPTZ stores everything as UTC at the DB layer anyway.
+     */
+    @Bean
+    public java.time.Clock systemClock() {
+        return java.time.Clock.systemUTC();
+    }
+
+    @Bean
+    public com.skillforge.server.tool.attribution.PatternReadTool patternReadTool(
+            com.skillforge.server.repository.SessionPatternRepository patternRepository,
+            com.skillforge.server.repository.PatternSessionMemberRepository memberRepository,
+            ObjectMapper objectMapper,
+            SkillRegistry skillRegistry) {
+        com.skillforge.server.tool.attribution.PatternReadTool tool =
+                new com.skillforge.server.tool.attribution.PatternReadTool(
+                        patternRepository, memberRepository, objectMapper);
+        skillRegistry.registerTool(tool);
+        log.info("Registered PatternReadTool into SkillRegistry");
+        return tool;
+    }
+
+    @Bean
+    public com.skillforge.server.tool.attribution.SessionAnnotationReadTool sessionAnnotationReadTool(
+            com.skillforge.server.repository.SessionAnnotationRepository annotationRepository,
+            ObjectMapper objectMapper,
+            SkillRegistry skillRegistry) {
+        com.skillforge.server.tool.attribution.SessionAnnotationReadTool tool =
+                new com.skillforge.server.tool.attribution.SessionAnnotationReadTool(
+                        annotationRepository, objectMapper);
+        skillRegistry.registerTool(tool);
+        log.info("Registered SessionAnnotationReadTool into SkillRegistry");
+        return tool;
+    }
+
+    @Bean
+    public com.skillforge.server.tool.attribution.ProposeOptimizationTool proposeOptimizationTool(
+            com.skillforge.server.repository.OptimizationEventRepository eventRepository,
+            com.skillforge.server.repository.SessionPatternRepository patternRepository,
+            ObjectMapper objectMapper,
+            java.time.Clock clock,
+            SkillRegistry skillRegistry) {
+        com.skillforge.server.tool.attribution.ProposeOptimizationTool tool =
+                new com.skillforge.server.tool.attribution.ProposeOptimizationTool(
+                        eventRepository, patternRepository, objectMapper, clock);
+        skillRegistry.registerTool(tool);
+        log.info("Registered ProposeOptimizationTool into SkillRegistry");
+        return tool;
+    }
+
+    @Bean
+    public com.skillforge.server.tool.attribution.WriteOptimizationEventTool writeOptimizationEventTool(
+            com.skillforge.server.repository.OptimizationEventRepository eventRepository,
+            ObjectMapper objectMapper,
+            SkillRegistry skillRegistry) {
+        com.skillforge.server.tool.attribution.WriteOptimizationEventTool tool =
+                new com.skillforge.server.tool.attribution.WriteOptimizationEventTool(
+                        eventRepository, objectMapper);
+        skillRegistry.registerTool(tool);
+        log.info("Registered WriteOptimizationEventTool into SkillRegistry");
+        return tool;
+    }
+
     @Bean
     public SkillPackageLoader skillPackageLoader() {
         return new SkillPackageLoader();

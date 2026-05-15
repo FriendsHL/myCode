@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -57,6 +58,23 @@ public interface OptimizationEventRepository extends JpaRepository<OptimizationE
      * <p>Backed by {@code idx_optimization_event_pattern (pattern_id, stage)}.
      */
     List<OptimizationEventEntity> findByPatternIdAndStage(Long patternId, String stage);
+
+    /**
+     * Phase 1.2 reviewer fix (N+1 collapse): single-query check whether any
+     * event row for the given pattern is in any of the supplied stages. Used
+     * by {@code AttributionDispatcherService} Filter 4 — was previously a
+     * {@code for (stage : ACTIVE_STAGES)} loop calling
+     * {@link #findByPatternIdAndStage} per stage (worst case ≥6 queries per
+     * pattern × 100-row scan = 600 SELECTs).
+     *
+     * <p>Backed by {@code idx_optimization_event_pattern (pattern_id, stage)};
+     * the {@code stage IN} clause uses an index range scan.
+     */
+    @Query("SELECT COUNT(e) > 0 FROM OptimizationEventEntity e " +
+           "WHERE e.patternId = :patternId AND e.stage IN :stages")
+    boolean existsByPatternIdAndStageIn(
+            @Param("patternId") Long patternId,
+            @Param("stages") Collection<String> stages);
 
     /**
      * Phase 1.4 dashboard "Per-Agent Pending Approvals" filter — the side
