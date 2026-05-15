@@ -152,15 +152,16 @@ class SkillAbEvalServiceMultiTurnTest {
     }
 
     @Test
-    @DisplayName("multi-turn engine.run failure isolates to per-scenario ERROR result; AB run still COMPLETED")
+    @DisplayName("multi-turn judge failure isolates to per-scenario ERROR result; AB run still COMPLETED")
     void runAbTestAsync_multiTurnScenario_perScenarioErrorIsolated() throws Exception {
         // SKILL-AB-MULTITURN-FIX 验收 #6 explicit coverage:
-        // engine.run 在某一 multi-turn user turn 抛异常时，runMultiTurnScenario 内部的
-        // try/catch (SkillAbEvalService.java:1013-1017) 把它转成 ScenarioRunResult.error，
-        // 然后 runCandidateEvalSet (SkillAbEvalService.java:579-602) 把 ERROR runResult
-        // 喂给 multi-turn judge 并把 candidateStatus 钉成 "ERROR" (:588) / candidateScore
-        // = 0.0 (:589 via judge output)；外层 runAbTestAsync 的 try/catch (:603-607 mirror
-        // + :501-522 outer) 不会被触发 — abRun.setStatus("COMPLETED") at :464 仍执行。
+        // 让 multi-turn judge 抛 RuntimeException 时，SkillAbEvalService.runCandidateEvalSet
+        // 的 try/catch (SkillAbEvalService.java:603-607) 必须把 candidateStatus 钉成 "ERROR"
+        // / candidateScore = 0.0 / 不抛上层，让外层 runAbTestAsync 仍能完成
+        // (abRun.setStatus("COMPLETED") at :464，而非 catch 块的 :504 setStatus("FAILED"))。
+        // 选 judge 抛而非 engine.run 抛：因为 runMultiTurnScenario 内部有自己的 try/catch
+        // (:1013-1017) 会 swallow engine 异常转 ScenarioRunResult.error；只有 judge 异常会
+        // 逃到 :603-607 外层 catch — 测 :603-607 这块代码最直接的方式。
         // PRD 验收点："A/B run 失败场景有明确 per-scenario error result，run 状态和事件不回退"。
         SkillAbRunEntity abRun = abRun();
         SkillEntity candidate = candidateSkill();
@@ -177,17 +178,12 @@ class SkillAbEvalServiceMultiTurnTest {
                 .thenReturn(skillRegistry);
         when(sandboxFactory.getSandboxRoot("ab-1", "multi-1")).thenReturn(Path.of("/tmp/eval-ab"));
         when(evalEngineFactory.buildEvalEngine(skillRegistry)).thenReturn(engine);
-        // Force per-scenario failure by making engine.run throw on the user turn.
         when(engine.run(any(), anyString(), any(), anyString(), any(), any()))
-                .thenThrow(new RuntimeException("simulated turn failure"));
-        // Judge is still called with the ERROR runResult (per :583); mock a low-score
-        // output so we don't NPE in the judge wiring + isolate the assertion to per-scenario
-        // ERROR mapping rather than judge implementation detail.
-        EvalJudgeMultiTurnOutput defaultLowOutput = new EvalJudgeMultiTurnOutput();
-        defaultLowOutput.setCompositeScore(0.0);
-        defaultLowOutput.setPass(false);
+                .thenAnswer(inv -> loopResult(inv.getArgument(1)));
+        // Force per-scenario failure by making the multi-turn judge throw.
+        // The outer per-scenario catch in runCandidateEvalSet (:603-607) must absorb it.
         when(evalJudgeTool.judgeMultiTurnConversation(eq(scenario), any(), any(MultiTurnTranscript.class)))
-                .thenReturn(defaultLowOutput);
+                .thenThrow(new RuntimeException("simulated multi-turn judge failure"));
 
         // Must not throw — per-scenario error isolation invariant.
         ReflectionTestUtils.invokeMethod(service, "runAbTestAsync", "ab-1");

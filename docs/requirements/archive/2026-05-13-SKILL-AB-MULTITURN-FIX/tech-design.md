@@ -159,3 +159,9 @@ ScenarioRunResult runMultiTurn(
 ## 评审记录
 
 2026-05-13：按 review 意见将原 `SKILL-CONVERSATION-EVAL` 三阶段包拆分。本包只保留 Phase 1，risk 从 Full 调整为 Mid；Phase 2/3 与 `EVAL-DYNAMIC-USER-SIM` 合并回 backlog。
+
+## 交付记录
+
+- **2026-05-13** commit `6a78dd5 fix skill ab multi-turn evaluation`：Phase 1.1-1.4 全部实施落地，同一 commit 含 4 docs（index/mrd/prd/tech-design）+ `SkillAbEvalService` 改动 +196/-16 + 新文件 `SkillAbEvalServiceMultiTurnTest.java` +246 行（2 case：multi-turn candidate registry + multi-turn judge / single-turn regression）。runtime 与初始测试当日 land，但需求包 status 滞留 `design-draft` 未更新 — 文档/代码 skew。
+- **2026-05-16** docs/code skew 发现 + 闭合：V5 Phase 1 task dispatch 时 BE-Dev Phase 1.0 grep 自校正发现 commit `6a78dd5` 已 land（runtime 行号在 V3 (ATTRIBUTION-AGENT) / V4 (MULTI-SURFACE-FLYWHEEL) 期间漂移到 :579-602/:603-607/:880-1021/:887-888），按 pipeline.md "先验证再实施" 防过早实施浪费 → 补 explicit `multiTurn_perScenarioErrorIsolated` test (第 3 case，验收 #6 per-scenario ERROR 隔离显式锁) + 行号校正 + status flip `design-draft` → `delivered` + 4 docs `git mv` active → archive + README/todo/delivery-index 同步。runtime 代码不再动（已正确）；本次纯 test + docs 净改动 +83 / -13 行 8 文件，核心 7+1 文件 0 diff（Iron Law 守住）。
+- **验证**：`mvn -pl skillforge-server -am test` Tests run: **1671**, Failures: 0, Errors: 0, Skipped: 84 → BUILD SUCCESS in 29.093s（整 reactor 4 模块全过：skillforge-core / -tools / -observability / -server）。`SkillAbEvalService*Test` 13/13 PASS（multi-turn 3 / aggregate-baseline 4 / manual-promote 4 / run-baseline-only 2）。7/7 PRD 验收点全显式覆盖。
