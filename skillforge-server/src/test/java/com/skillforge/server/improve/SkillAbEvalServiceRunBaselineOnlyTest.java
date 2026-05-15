@@ -62,7 +62,8 @@ class SkillAbEvalServiceRunBaselineOnlyTest {
                 skillEvalHistoryRepository, agentService, scenarioLoader,
                 sandboxFactory, evalEngineFactory, evalJudgeTool, skillPackageLoader,
                 objectMapper, broadcaster, coordinatorExecutor, loopExecutor,
-                skillRegistry, abCompletedEventPublisher);
+                skillRegistry, abCompletedEventPublisher,
+                org.mockito.Mockito.mock(com.skillforge.server.improve.surface.SkillSurface.class));
     }
 
     @Test

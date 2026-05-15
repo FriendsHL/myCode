@@ -3,7 +3,11 @@ package com.skillforge.server.improve.surface;
 import com.skillforge.server.entity.SkillEntity;
 import com.skillforge.server.improve.SkillAbEvalService;
 import com.skillforge.server.repository.SkillRepository;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
+
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 /**
  * MULTI-SURFACE-FLYWHEEL V4 Phase 1.1 — Skill surface adapter.
@@ -34,8 +38,35 @@ public class SkillSurface implements OptimizableSurface<SkillEntity> {
     private final SkillRepository skillRepository;
     private final SkillAbEvalService abEvalService;
 
+    /**
+     * Phase 1.2 — session-scoped registry of which {@link SkillEntity} is
+     * currently injected for which sandbox session. Populated by
+     * {@link #injectForSandbox} and queryable by
+     * {@link #getInjectedVersion}. The map is concurrent because two
+     * concurrent A/B runs (different agents) may write/read disjoint keys at
+     * the same time.
+     *
+     * <p>Phase 1.2 caller — {@code SkillAbEvalService.runEvalSet} — does
+     * <i>not</i> consume this map (it gets the {@code SkillEntity} directly
+     * as the {@code version} argument of {@code runEvalSet}). The map exists
+     * for Phase 1.3+ surface-aware dispatch (e.g. when
+     * {@code SkillRegistry.findSkill(name)} needs to see the candidate
+     * version during a sandbox eval scenario).
+     */
+    private final ConcurrentMap<String, SkillEntity> injectedBySession = new ConcurrentHashMap<>();
+
+    /*
+     * @Lazy on abEvalService breaks the constructor-injection cycle introduced
+     * by Phase 1.2 (SkillAbEvalService now extends AbstractAbEvalRunner and
+     * takes SkillSurface in its super() call). SkillSurface only invokes
+     * abEvalService inside promote() — which is NOT called by
+     * AbstractAbEvalRunner.run() in Phase 1.2 (the SkillAbEvalService subclass
+     * overrides promoteIfNeeded to call promoteCandidate on itself) — so the
+     * proxy is only resolved if external Phase 1.3 dispatch invokes
+     * SkillSurface.promote() directly.
+     */
     public SkillSurface(SkillRepository skillRepository,
-                        SkillAbEvalService abEvalService) {
+                        @Lazy SkillAbEvalService abEvalService) {
         this.skillRepository = skillRepository;
         this.abEvalService = abEvalService;
     }
@@ -90,16 +121,36 @@ public class SkillSurface implements OptimizableSurface<SkillEntity> {
 
     @Override
     public void injectForSandbox(SandboxContext ctx, SkillEntity version) {
-        // V2 sandbox injection happens inside SkillAbEvalService.runSingleScenario
-        // via SandboxSkillRegistryFactory.buildSandboxRegistryWithSkills. That
-        // path needs the full SkillDefinition (loaded from SkillPackageLoader),
-        // not just the SkillEntity — recreating it here would duplicate the
-        // V2 path. Phase 1.2 refactor will lift the sandbox build into the
-        // AbstractAbEvalRunner.skill subclass.
-        throw new UnsupportedOperationException(
-                "SkillSurface.injectForSandbox: Phase 1.2 (AbstractAbEvalRunner.skill subclass) "
-                        + "will pull sandbox plumbing from SkillAbEvalService.runSingleScenario "
-                        + "into this hook. Until then call SkillAbEvalService directly.");
+        // Phase 1.2: stash the version under the sandbox session id so
+        // downstream Phase 1.3 dispatch can recover "which skill version is
+        // active for this sandbox session". The V2 per-scenario sandbox build
+        // inside SkillAbEvalService.runSingleScenario still owns the full
+        // SkillDefinition load path (skillPackageLoader.loadFromDirectory) —
+        // that's intentional: rebuilding the registry per scenario keeps
+        // file fixtures isolated. The map is registry-only, no I/O.
+        //
+        // Passing version=null deletes the entry (used by external callers to
+        // tear down after a sandbox session ends — Phase 1.3+).
+        if (ctx == null || ctx.sessionId() == null || ctx.sessionId().isBlank()) {
+            throw new IllegalArgumentException(
+                    "SandboxContext.sessionId is required for injectForSandbox");
+        }
+        if (version == null) {
+            injectedBySession.remove(ctx.sessionId());
+        } else {
+            injectedBySession.put(ctx.sessionId(), version);
+        }
+    }
+
+    /**
+     * Phase 1.2 helper — return the {@link SkillEntity} most recently injected
+     * for the given sandbox session, or {@code null} when no entry exists.
+     * Not used by {@code AbstractAbEvalRunner.run()} in Phase 1.2 (the
+     * SkillAbEvalService subclass passes the version directly through
+     * runEvalSet). Reserved for Phase 1.3 surface-aware dispatch.
+     */
+    public SkillEntity getInjectedVersion(String sessionId) {
+        return sessionId == null ? null : injectedBySession.get(sessionId);
     }
 
     @Override

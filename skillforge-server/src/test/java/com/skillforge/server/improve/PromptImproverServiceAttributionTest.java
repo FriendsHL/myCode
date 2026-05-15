@@ -72,7 +72,8 @@ class PromptImproverServiceAttributionTest {
                 llmProviderFactory,
                 new ObjectMapper(),
                 coordinatorExecutor,
-                props);
+                props,
+                org.mockito.Mockito.mock(com.skillforge.server.improve.surface.PromptSurface.class));
     }
 
     private AgentEntity agent(long id) {

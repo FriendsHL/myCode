@@ -80,7 +80,8 @@ class SkillAbEvalServiceMultiTurnTest {
                 skillEvalHistoryRepository, agentService, scenarioLoader,
                 sandboxFactory, evalEngineFactory, evalJudgeTool, skillPackageLoader,
                 new ObjectMapper(), broadcaster, coordinatorExecutor, loopExecutor,
-                skillRegistry, abCompletedEventPublisher);
+                skillRegistry, abCompletedEventPublisher,
+                org.mockito.Mockito.mock(com.skillforge.server.improve.surface.SkillSurface.class));
 
         when(loopExecutor.submit(anyCallable())).thenAnswer(inv -> {
             Callable<LoopResult> callable = inv.getArgument(0);

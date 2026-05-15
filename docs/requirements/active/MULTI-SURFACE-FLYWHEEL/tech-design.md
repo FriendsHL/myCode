@@ -21,8 +21,8 @@ Template Method，把 3 个 surface 的 A/B 评测共同骨架收口。
 **phase 拆分**：
 
 - **Phase 1.0** ✅ Phase 1.0 调研 + 5 ratify 锁定（2026-05-15）
-- **Phase 1.1** ⏳ behavior_rule surface 落地 + OptimizableSurface 接口填实 + 3 实现类 + JPA IT
-- **Phase 1.2** ⏳ AbstractAbEvalRunner Template Method 抽取 + 重构现有 2 service 共用骨架
+- **Phase 1.1** ✅ behavior_rule surface 落地 + OptimizableSurface 接口填实 + 3 实现类 + JPA IT（2026-05-15 commit `6da1801`，1627 test BUILD SUCCESS，核心 7+1 文件 0 diff）
+- **Phase 1.2** ✅ AbstractAbEvalRunner Template Method 填实 + SkillAbEvalService / PromptImproverService 重构继承 + Surface inject 状态机（2026-05-15，1637 test BUILD SUCCESS = 1627 baseline + 10 new；零行为漂移；新增：AbstractAbEvalRunnerTest×4 / SkillSurfaceInjectTest×3 / PromptSurfaceInjectTest×3；核心 7+1 文件 0 diff）
 - **Phase 1.3** ⏳ CanaryAllocator 泛型化 + behavior_rule canary 接入 + V3 attribution dispatchBehaviorRuleSurface
 - **Phase 1.4** ⏳ Dashboard behavior rule panel（复用 V2 canary panel 模板）
 - **Phase Final** ⏳ e2e + 真启 cron 跑一遍 + 归档
@@ -247,17 +247,30 @@ public abstract class AbstractAbEvalRunner<V> {
 }
 ```
 
-### 3.3 现有代码 → 重构 map
+### 3.3 现有代码 → 重构 map（Phase 1.2 落地实测）
 
-| 现有方法 | Phase 1.2 重构后 |
-|---|---|
-| `SkillAbEvalService.runAbTestAsync` 200 行 | 继承 `AbstractAbEvalRunner<SkillEntity>` + 实现 4 hook 共 ~80 行；公共骨架走 abstract `run` |
-| `PromptImproverService.runImprovementAsync` 150 行 | 继承 `AbstractAbEvalRunner<PromptVersionEntity>` + 4 hook ~60 行 |
-| `AbEvalPipeline.run` 100 行 | 抽进 abstract `runEvalSet` 公共方法 |
+| 现有方法 | Phase 1.2 落地形态 | 状态 |
+|---|---|---|
+| `SkillAbEvalService.runAbTestAsync` 200 行 | 继承 `AbstractAbEvalRunner<SkillEntity>`；orchestrator 保留 RUNNING/COMPLETED/FAILED 状态机 + 广播 + tryPublishAbCompleted；5 hook（runEvalSet 切 baseline-lookup vs candidate-scenario-loop 两路 / judgeAndCompare / shouldPromote / promoteIfNeeded / inject by SkillSurface）；ThreadLocal `SkillRunState` 在 orchestrator + hooks 之间传递 abRun / scenarios / agentDef / accumulator | ✅ 完成 |
+| `PromptImproverService.runImprovementAsync` 80 行 | 继承 `AbstractAbEvalRunner<PromptVersionEntity>`；orchestrator 保留 LLM 生成 + FAILED handling；5 hook（runEvalSet 切 baseline-evalRun-rate vs candidate=delegates to abEvalPipeline.run / judgeAndCompare / shouldPromote=true 让 PromotionService 内部 gate 判 / promoteIfNeeded=delegates to PromotionService.evaluateAndPromote / inject by PromptSurface）；baseline 用 synthetic placeholder `PromptVersionEntity`（never persisted）做对象身份区分 | ✅ 完成 |
+| `AbEvalPipeline.run` 100 行 | **不动**（Phase 1.2 改 prompt runEvalSet candidate 路径直接 delegate 给它，preserves all 4 abRun field writes + scenarioResults JSON）— Phase 1.3+ 看 behavior_rule eval shape 再决定要不要抽公共 | ⏸️ 不变 |
 
-零行为漂移目标：现有 `SkillAbEvalServiceTest` + `PromptAbRunIT` + `AbEvalPipelineTest` 全绿。
-**重构前先把 Phase 1.1 behavior_rule surface 跑通**，验证 6-method 接口形态真 work，再 Phase
-1.2 抽 Template Method —— 避免 plan.md "过早抽象 = 大失败" footgun。
+**runEvalSet 设计选择 A（5 hook 设计 — brief 推荐）**：
+- 接受第 5 个 abstract hook，让子类自己实现 eval 跑法的差异
+- baseline-vs-candidate 区分由子类 internal 状态决定（Skill 用 `version == state.baseline` 引用相等；Prompt 同款）
+- 替代方案 B（公共 EvalService 接口注入）推迟到 Phase 1.3+，behavior_rule 真做 eval 时再统一
+
+**DI 循环破解**：`SkillSurface` → `SkillAbEvalService.promoteCandidate` 依赖 + `SkillAbEvalService extends AbstractAbEvalRunner<SkillEntity>` 的 super(SkillSurface) 构造器形成循环；用 `@Lazy SkillSurface` 在 SkillAbEvalService 构造器破除（super() 只存引用不调方法，Spring proxy 安全）。PromptSurface ↔ PromptImproverService 同款。
+
+**Iron Law 验证**：
+- 核心 7+1 文件 git diff = 0 ✅
+- 1637 test BUILD SUCCESS = 1627 baseline + 10 new ✅
+- 零行为漂移：现有 SkillAbEvalServiceMultiTurnTest×2 + SkillAbEvalServiceRunBaselineOnlyTest + SkillAbEvalServiceManualPromoteTest×4 + SkillAbEvalServiceAggregateBaselineHistoryTest + PromptImproverServiceTest + PromptImproverServiceAttributionTest×4 全过
+
+**Phase 1.2 新增 test**：
+- `AbstractAbEvalRunnerTest` × 4（happy-path hook 顺序 / shouldPromote=false 短路 / null 守护 / null surface 守护）
+- `SkillSurfaceInjectTest` × 3（registry put/get / null version 删除 / 空 sessionId 拒绝）
+- `PromptSurfaceInjectTest` × 3（同上）
 
 ---
 
@@ -512,3 +525,5 @@ aborted-tx bug。
 
 - 2026-05-15：claude 初稿（Phase 1.0 调研报告衍生）；5 ratify 决策全 user 锁定（lifecycle hook→V5 / 6-method 接口 / 4-hook Template Method / canary 跨 surface 互斥 / behavior_rule LLM=defaultProvider）；Phase 1.1 scope 锁定
 - 2026-05-15：tech-design 中文化（user 偏好）
+- 2026-05-15：**Phase 1.1 交付**——V82 migration + OptimizableSurface<V> 6-method 接口 + SandboxContext / SandboxSurfaceFactory placeholder + 3 surface 实现（SkillSurface / PromptSurface adapter；BehaviorRuleSurface 真新实现 + 5min TTL cache）+ BehaviorRuleImproverService（V3.1 attribution audit-trail rethrow 模式）+ BehaviorRulePromotionService（partial UNIQUE 保活）+ SurfaceRegistry + AbstractAbEvalRunner skeleton + 10 new test（3 ImproverServiceTest + 3 SurfaceRegistryTest + 4 PersistenceIT）。核心 7+1 文件 0 diff，1627 test BUILD SUCCESS
+- 2026-05-15：**Phase 1.2 交付**——AbstractAbEvalRunner.run() 5-step Template Method 填实（ratify #3 顺序锁定）+ 5th abstract hook `runEvalSet` 加入（dev judgment：避免强行统一 V2 per-scenario sandbox vs V3 monolithic pipeline）+ SkillAbEvalService extends AbstractAbEvalRunner<SkillEntity>（runAbTestAsync 走 template，V64 partial-UNIQUE promote 路径保留，baseline 用 synthetic placeholder SkillEntity 做对象身份区分避免无谓的 parent skill 查询）+ PromptImproverService extends AbstractAbEvalRunner<PromptVersionEntity>（runImprovementAsync 走 template，ThreadLocal `PromptRunState` 共享 hook 状态，shouldPromote 永远返回 true 由 PromotionService 真 gate）+ SkillSurface/PromptSurface 加 sessionId-keyed `injectedBySession` ConcurrentMap + `@Lazy` 切构造器循环 + 10 new test（AbstractAbEvalRunnerTest×4 / SkillSurfaceInjectTest×3 / PromptSurfaceInjectTest×3）。**1637 test BUILD SUCCESS = 1627 baseline + 10 new**，零行为漂移（既有 PromptImproverServiceTest / PromptImproverServiceAttributionTest / SkillAbEvalServiceMultiTurnTest / SkillAbEvalServiceRunBaselineOnlyTest / SkillAbEvalServiceManualPromoteTest / SkillAbEvalServiceAggregateBaselineHistoryTest 等套件全绿），核心 7+1 文件继续 0 diff

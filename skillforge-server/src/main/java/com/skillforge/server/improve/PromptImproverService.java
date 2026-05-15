@@ -13,6 +13,8 @@ import com.skillforge.server.entity.EvalTaskEntity;
 import com.skillforge.server.entity.PromptAbRunEntity;
 import com.skillforge.server.entity.PromptVersionEntity;
 import com.skillforge.server.eval.attribution.FailureAttribution;
+import com.skillforge.server.improve.surface.PromptSurface;
+import com.skillforge.server.improve.surface.SandboxContext;
 import com.skillforge.server.repository.AgentRepository;
 import com.skillforge.server.repository.EvalTaskRepository;
 import com.skillforge.server.repository.PromptAbRunRepository;
@@ -20,6 +22,7 @@ import com.skillforge.server.repository.PromptVersionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
@@ -34,8 +37,29 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.stream.Collectors;
 
+/**
+ * MULTI-SURFACE-FLYWHEEL V4 Phase 1.2 — refactored to extend
+ * {@link AbstractAbEvalRunner} of {@link PromptVersionEntity}. The public API
+ * (startImprovement / startImprovementFromAttribution) is preserved bit-for-bit;
+ * only the {@link #runImprovementAsync} internal body now delegates the A/B
+ * eval + evaluateAndPromote sequence to {@code AbstractAbEvalRunner.run()},
+ * which calls the 5 hooks implemented at the bottom of this file
+ * (runEvalSet / judgeAndCompare / shouldPromote / promoteIfNeeded plus inject
+ * via {@link PromptSurface}).
+ *
+ * <p>Behavior contract: identical to pre-Phase 1.2 — V3.1 synchronous LLM
+ * fill on attribution path (REQUIRES_NEW + audit-trail rethrow) is preserved
+ * unchanged; {@link AbEvalPipeline#run} is still the candidate-side eval
+ * mechanism (the candidate-side {@code runEvalSet} hook delegates to it,
+ * so abEvalPipeline.run still writes abRun fields exactly as before);
+ * {@link PromptPromotionService#evaluateAndPromote} still owns the real
+ * gate logic (delta threshold + 24h cooldown + decline tracking + paused
+ * flag). The refactor is structural only; the existing
+ * {@code PromptImproverServiceTest} + {@code PromptImproverServiceAttributionTest}
+ * compile + pass with a mock {@link PromptSurface}.
+ */
 @Service
-public class PromptImproverService {
+public class PromptImproverService extends AbstractAbEvalRunner<PromptVersionEntity> {
 
     private static final Logger log = LoggerFactory.getLogger(PromptImproverService.class);
 
@@ -53,6 +77,15 @@ public class PromptImproverService {
     private final ExecutorService coordinatorExecutor;
     private final String defaultProviderName;
 
+    /**
+     * Phase 1.2 — per-run ephemeral state shared between
+     * {@link #runImprovementAsync} (orchestrator) and the 5 hooks called via
+     * {@link AbstractAbEvalRunner#run}. ThreadLocal because the service is a
+     * @Service singleton but coordinatorExecutor may invoke
+     * {@link #runImprovementAsync} concurrently on different threads.
+     */
+    private final ThreadLocal<PromptRunState> currentRun = new ThreadLocal<>();
+
     public PromptImproverService(AgentRepository agentRepository,
                                   EvalTaskRepository evalRunRepository,
                                   PromptVersionRepository promptVersionRepository,
@@ -62,7 +95,12 @@ public class PromptImproverService {
                                   LlmProviderFactory llmProviderFactory,
                                   ObjectMapper objectMapper,
                                   @Qualifier("abEvalCoordinatorExecutor") ExecutorService coordinatorExecutor,
-                                  LlmProperties llmProperties) {
+                                  LlmProperties llmProperties,
+                                  @Lazy PromptSurface promptSurface) {
+        // @Lazy on promptSurface breaks the DI cycle: PromptSurface's @Lazy
+        // injection of PromptImproverService bootstrap order. Super constructor
+        // only stores the reference (no method call), so proxy is safe.
+        super(promptSurface);
         this.agentRepository = agentRepository;
         this.evalRunRepository = evalRunRepository;
         this.promptVersionRepository = promptVersionRepository;
@@ -270,6 +308,26 @@ public class PromptImproverService {
         }
     }
 
+    /**
+     * Async improvement orchestrator — Phase 1.2 refactor. Generates the
+     * candidate via LLM (PRESERVED), then delegates the A/B eval +
+     * promote-decision sequence to {@link AbstractAbEvalRunner#run} via
+     * {@link ThreadLocal}-shared run state. The 5 hooks at the bottom of
+     * this class wrap the existing {@link AbEvalPipeline#run} +
+     * {@link PromptPromotionService#evaluateAndPromote} calls without
+     * changing their semantics.
+     *
+     * <p>Behavior preserved bit-for-bit:
+     * <ul>
+     *   <li>generateCandidatePrompt LLM fill order unchanged</li>
+     *   <li>abEvalPipeline.run still writes abRun.status RUNNING → COMPLETED,
+     *       baselinePassRate, candidatePassRate, deltaPassRate, scenarioResults</li>
+     *   <li>promotionService.evaluateAndPromote still applies its 4 gates
+     *       (delta threshold / promoted-today / 24h cooldown / paused)</li>
+     *   <li>FAILED handling on outer catch reloads abRun to avoid overwriting
+     *       a COMPLETED row set by the pipeline (same as pre-1.2)</li>
+     * </ul>
+     */
     private void runImprovementAsync(String versionId, String abRunId, String evalRunId, String agentId) {
         try {
             // Reload fresh entities from DB (we're in a new thread/transaction context)
@@ -282,17 +340,41 @@ public class PromptImproverService {
             AgentEntity agent = agentRepository.findById(Long.parseLong(agentId))
                     .orElseThrow(() -> new RuntimeException("Agent not found: " + agentId));
 
-            // 1. Generate candidate prompt via LLM
+            // 1. Generate candidate prompt via LLM (PRESERVED bit-for-bit).
             String candidatePrompt = generateCandidatePrompt(agent, evalRun, version.getImprovementRationale());
             version.setContent(candidatePrompt);
             promptVersionRepository.save(version);
 
-            // 2. Run AB eval pipeline
-            abEvalPipeline.run(abRun, version, evalRun, agent);
+            // 2. Build a synthetic baseline placeholder so the AbstractAbEvalRunner
+            //    template (which requires non-null baseline + candidate) can run.
+            //    V3 doesn't have a "baseline PromptVersionEntity" concept — the
+            //    baseline data lives in evalRun.scenarioResultsJson. The placeholder
+            //    is never persisted; the hooks use object-reference equality (via
+            //    PromptRunState.baseline) to discriminate baseline vs candidate.
+            PromptVersionEntity baselinePlaceholder = new PromptVersionEntity();
+            baselinePlaceholder.setId("baseline-placeholder-" + agentId);
+            baselinePlaceholder.setAgentId(agentId);
+            baselinePlaceholder.setContent(agent.getSystemPrompt() != null ? agent.getSystemPrompt() : "");
+            baselinePlaceholder.setStatus("active");
 
-            // 3. Evaluate and potentially promote
-            promotionService.evaluateAndPromote(abRunId, agentId);
-
+            // 3. Set up per-run state for hooks.
+            PromptRunState state = new PromptRunState(baselinePlaceholder, version, abRun, agent, evalRun);
+            currentRun.set(state);
+            try {
+                // 4. Invoke the 5-step template. Per spec §3.1 hook order
+                //    (ratified #3): inject(baseline) → runEvalSet(baseline) →
+                //    inject(candidate) → runEvalSet(candidate) → judgeAndCompare →
+                //    shouldPromote → promoteIfNeeded.
+                //    - inject*: PromptSurface stashes version in session registry (no-op for eval)
+                //    - runEvalSet(baseline): returns precomputed rate from evalRun
+                //    - runEvalSet(candidate): delegates to abEvalPipeline.run() (preserves all writes)
+                //    - shouldPromote: returns true (real gate lives in PromotionService)
+                //    - promoteIfNeeded: calls promotionService.evaluateAndPromote (real gate)
+                SandboxContext ctx = new SandboxContext(agent.getId(), abRunId, null);
+                run(abRunId, baselinePlaceholder, version, ctx);
+            } finally {
+                currentRun.remove();
+            }
         } catch (Exception e) {
             log.error("Improvement async run failed for agent {}: {}", agentId, e.getMessage(), e);
             // Reload abRun to avoid overwriting a COMPLETED status that may have been set by the pipeline
@@ -306,6 +388,98 @@ public class PromptImproverService {
             });
         }
     }
+
+    // ────────── AbstractAbEvalRunner hook implementations (Phase 1.2) ──────────
+
+    /**
+     * Hook 1 — eval-set runner. Discriminates baseline vs candidate by
+     * <i>object reference equality</i> against {@link PromptRunState#baseline}.
+     * For baseline side, returns a precomputed {@link EvalRun} reading from
+     * the historical evalRun's scenarioResultsJson (placeholder rate uses
+     * {@code evalRun.getOverallPassRate()} since AbEvalPipeline's held-out
+     * recomputation also runs on the candidate-side delegate and writes the
+     * real value into abRun; the template's EvalRun is internal-only and not
+     * persisted). For candidate side, delegates to {@link AbEvalPipeline#run}
+     * which writes all abRun fields exactly as the pre-1.2 path.
+     */
+    @Override
+    protected AbstractAbEvalRunner.EvalRun runEvalSet(SandboxContext ctx, PromptVersionEntity version) {
+        PromptRunState state = currentRun.get();
+        if (state == null) {
+            throw new IllegalStateException(
+                    "PromptImproverService.runEvalSet called outside runImprovementAsync orchestration "
+                            + "(currentRun ThreadLocal is empty)");
+        }
+        if (version == state.baseline) {
+            // Baseline side — read precomputed rate from evalRun. The held-out
+            // recomputation that abEvalPipeline.run does internally happens on
+            // the candidate-side delegate below (zero behavior drift); the
+            // value returned here is only used by the template's internal
+            // Comparison record, never persisted.
+            double baselineRate = state.evalRun != null
+                    ? state.evalRun.getOverallPassRate() : 0.0;
+            String evalRunId = state.evalRun != null ? state.evalRun.getId() : null;
+            return new AbstractAbEvalRunner.EvalRun(evalRunId, baselineRate, 0);
+        }
+        // Candidate side — delegate to abEvalPipeline which preserves all
+        // existing abRun writes (RUNNING → COMPLETED, baselinePassRate,
+        // candidatePassRate, deltaPassRate, scenarioResults, candidate
+        // version delta/abRunId writes).
+        abEvalPipeline.run(state.abRun, version, state.evalRun, state.agent);
+        double candidateRate = state.abRun.getCandidatePassRate() != null
+                ? state.abRun.getCandidatePassRate() : 0.0;
+        return new AbstractAbEvalRunner.EvalRun(state.abRun.getId(), candidateRate, 0);
+    }
+
+    @Override
+    protected AbstractAbEvalRunner.Comparison judgeAndCompare(AbstractAbEvalRunner.EvalRun baseline,
+                                                              AbstractAbEvalRunner.EvalRun candidate) {
+        return new AbstractAbEvalRunner.Comparison(baseline.passRate(), candidate.passRate(),
+                candidate.passRate() - baseline.passRate());
+    }
+
+    @Override
+    protected boolean shouldPromote(AbstractAbEvalRunner.Comparison comparison) {
+        // V3 design: the real gate logic lives inside PromotionService
+        // (delta threshold + promoted-today + 24h cooldown + paused). Always
+        // invoke promoteIfNeeded so PromotionService can apply its own gates;
+        // those gates may reject without promoting. Returning true here is
+        // NOT "always promote" — it's "always invoke the gate".
+        return true;
+    }
+
+    @Override
+    protected void promoteIfNeeded(PromptVersionEntity candidate,
+                                    AbstractAbEvalRunner.Comparison comparison) {
+        PromptRunState state = currentRun.get();
+        if (state == null) {
+            throw new IllegalStateException(
+                    "PromptImproverService.promoteIfNeeded called outside runImprovementAsync orchestration");
+        }
+        // V3 PromotionService.evaluateAndPromote owns:
+        //  - delta < threshold rejection (with decline tracking)
+        //  - promoted-today rejection
+        //  - 24h cooldown rejection
+        //  - paused-agent rejection
+        //  - atomic deprecate-old + activate-candidate + update-agent flow
+        //  - PromptPromotedEvent publish
+        promotionService.evaluateAndPromote(state.abRun.getId(),
+                String.valueOf(state.agent.getId()));
+    }
+
+    /**
+     * Per-run ephemeral state shared between {@link #runImprovementAsync} and
+     * the 5 hooks. Held in a {@link ThreadLocal} keyed by execution thread.
+     * The {@code baseline} field is a transient placeholder (never persisted)
+     * used purely for object-reference discrimination inside
+     * {@link #runEvalSet}.
+     */
+    private record PromptRunState(
+            PromptVersionEntity baseline,
+            PromptVersionEntity candidate,
+            PromptAbRunEntity abRun,
+            AgentEntity agent,
+            EvalTaskEntity evalRun) {}
 
     /**
      * V3.1 attribution-path candidate generator. Mirrors the rule structure of

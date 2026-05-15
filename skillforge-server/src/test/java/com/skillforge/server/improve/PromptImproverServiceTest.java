@@ -70,7 +70,8 @@ class PromptImproverServiceTest {
                 llmProviderFactory,
                 new com.fasterxml.jackson.databind.ObjectMapper(),
                 coordinatorExecutor,
-                props
+                props,
+                org.mockito.Mockito.mock(com.skillforge.server.improve.surface.PromptSurface.class)
         );
 
         when(promptVersionRepository.findMaxVersionNumber("10")).thenReturn(Optional.of(3));
