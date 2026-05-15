@@ -161,6 +161,16 @@ public class ChatController {
         } catch (RuntimeException e) {
             return ResponseEntity.notFound().build();
         }
+        // V3 dogfood 2026-05-15: SYSTEM sessions (userId=0, created by cron-
+        // triggered scheduled tasks for memory-curator / session-annotator /
+        // metrics-collector / attribution-curator) are read/write accessible
+        // by any authenticated user. Matches the ScheduledTaskService.get()
+        // partial-perm pattern: operators need to be able to inspect + answer
+        // paused ask_user prompts on cron-spawned sessions even though they
+        // don't "own" them.
+        if (session.getUserId() != null && session.getUserId() == 0L) {
+            return ResponseEntity.ok(session);
+        }
         if (session.getUserId() == null || !session.getUserId().equals(userId)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
