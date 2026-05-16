@@ -13,7 +13,7 @@ public final class ProviderName {
 
     public static final Set<String> CANONICAL = Set.of(
             "claude", "openai", "deepseek", "dashscope", "bailian",
-            "vllm", "ollama", "unknown"
+            "vllm", "ollama", "xiaomi-mimo", "unknown"
     );
     public static final String UNKNOWN = "unknown";
 

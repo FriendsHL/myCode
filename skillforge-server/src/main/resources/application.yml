@@ -111,8 +111,8 @@ skillforge:
         - "DBA 老手 — 跳过初级解释、直接问深问题、对效率敏感"
       max-turns: 10
       max-tokens: 4096
-      turn-timeout-ms: 25000
-      trial-budget-ms: 90000
+      turn-timeout-ms: 60000  # 2026-05-16: 25s 对 mimo-v2.5-pro reasoning model 太紧, bump to 60s
+      trial-budget-ms: 300000  # 2026-05-16: 10 turn × 60s ≈ 600s 上限, dogfood 用 300s 平衡 budget
 
   # P9-5 post-compact recovery: after a full compact, append a recovery payload (recently-read
   # file heads) so the LLM does not "lose" file context.  enabled=false skips emission while
@@ -191,7 +191,7 @@ skillforge:
     login-timeout-seconds: 300
   # LLM provider configs
   llm:
-    default-provider: bailian
+    default-provider: xiaomi-mimo  # 2026-05-16: bailian (qwen-max) API key 过期; xiaomi-mimo / mimo-v2.5-pro 为现行可用 provider
     providers:
       claude:
         type: claude

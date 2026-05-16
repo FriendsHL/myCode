@@ -329,7 +329,7 @@ const DynamicSimPanel: React.FC<DynamicSimPanelProps> = ({
         <Button
           type="link"
           size="small"
-          onClick={() => navigate(`/sessions/${row.sessionId}`)}
+          onClick={() => navigate(`/chat/${row.sessionId}`)}
         >
           View transcript →
         </Button>

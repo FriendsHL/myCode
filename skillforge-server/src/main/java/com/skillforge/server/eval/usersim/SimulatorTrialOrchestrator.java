@@ -521,6 +521,13 @@ public class SimulatorTrialOrchestrator {
         ctx.setMaxLoops(8);   // per-turn inner loop cap (one user message turn shouldn't need many iter)
         ctx.setExecutionMode("auto");
         ctx.setMaxLlmStreamTimeoutMs(20_000L);
+        // 2026-05-16: set traceId + rootTraceId per-turn so TraceLlmCallObserver /
+        // LlmTraceStore won't drop spans with "traceId required" IAE. Each turn gets
+        // a fresh trace; rootTraceId = traceId (self-root) for simplicity (single-turn
+        // observability scope, not the cross-turn aggregated trace V4 uses).
+        String turnTraceId = java.util.UUID.randomUUID().toString();
+        ctx.setTraceId(turnTraceId);
+        ctx.setRootTraceId(turnTraceId);
 
         Future<LoopResult> future = loopExecutor.submit(
                 () -> engine.run(def, userMessage, history, sessionId, null, ctx));
@@ -542,7 +549,7 @@ public class SimulatorTrialOrchestrator {
      * the V4 EvalOrchestrator's "create session + flip origin" pattern.
      */
     private SessionEntity createCandidateSession(Long agentId, EvalScenarioEntity scenario, String persona) {
-        Long ownerId = 1L;   // system agent owner
+        Long ownerId = 0L;   // 2026-05-16: SYSTEM session pattern (跟 V1/V2/V3 一致) — user_id=0 让所有 logged-in user 都能看 transcript (ChatController.requireOwnedSession line 171 例外路径)
         SessionEntity session = sessionService.createSession(ownerId, agentId, scenario.getId());
         session.setOrigin("user_sim");
         session.setTitle("UserSim Trial — " + truncate(scenario.getName(), 80)
