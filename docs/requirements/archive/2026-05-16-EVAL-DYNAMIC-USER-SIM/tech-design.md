@@ -400,7 +400,7 @@ public class DynamicSimController {
 - 验证: V1 pattern 聚类 / V2 metric 都不收 user_sim session
 - 验证: LLM cost 实测 1 candidate × 5 trial 真实花费 (记录供 V5 完成后 cron 触发可行性评估)
 
-### Phase Final — 归档 (0.5 天)
+### Phase Final — 归档 (2026-05-16 已完成)
 
 - 需求包 active → archive
 - delivery-index.md 加 V5 Phase 2/3 交付行
