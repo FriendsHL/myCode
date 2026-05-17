@@ -54,6 +54,7 @@ class UserSimulatorBootstrapTest {
     @DisplayName("swap replaces SEE_FILE placeholder with classpath resource content")
     void swap_seeFilePlaceholder_replacesWithResourceContent() {
         AgentEntity agent = newAgent("SEE_FILE:system-agents/user-simulator.system.md");
+        agent.setAgentType("system");  // SYSTEM-AGENT-TYPING Phase 1.1: isolate prompt-swap path from self-heal
         when(agentRepository.findFirstByName(UserSimulatorBootstrap.AGENT_NAME))
                 .thenReturn(Optional.of(agent));
 
@@ -73,6 +74,7 @@ class UserSimulatorBootstrapTest {
     @DisplayName("swap leaves operator-edited prompts alone (no SEE_FILE prefix)")
     void swap_alreadyOverridden_doesNotOverwrite() {
         AgentEntity agent = newAgent("operator edited prompt — do not overwrite");
+        agent.setAgentType("system");  // SYSTEM-AGENT-TYPING Phase 1.1: prevent self-heal save
         when(agentRepository.findFirstByName(UserSimulatorBootstrap.AGENT_NAME))
                 .thenReturn(Optional.of(agent));
 
@@ -85,6 +87,40 @@ class UserSimulatorBootstrapTest {
     @DisplayName("swap leaves the placeholder alone when the classpath resource is missing")
     void swap_missingResource_doesNotOverwriteWithNull() {
         AgentEntity agent = newAgent("SEE_FILE:does-not-exist.md");
+        agent.setAgentType("system");  // SYSTEM-AGENT-TYPING Phase 1.1: prevent self-heal save
+        when(agentRepository.findFirstByName(UserSimulatorBootstrap.AGENT_NAME))
+                .thenReturn(Optional.of(agent));
+
+        bootstrap.swapSystemPromptOnBoot();
+
+        verify(agentRepository, never()).save(org.mockito.ArgumentMatchers.any());
+    }
+
+    // ------------------------------------------------------------------------
+    // SYSTEM-AGENT-TYPING Phase 1.1: agent_type self-heal coverage
+    // ------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("agent_type self-heal: agent with agentType='user' gets flipped to 'system' on boot")
+    void swap_agentTypeUserUnseeded_selfHealsToSystem() {
+        AgentEntity agent = newAgent("operator hand-edited — no SEE_FILE");
+        assertThat(agent.getAgentType()).isEqualTo("user");
+        when(agentRepository.findFirstByName(UserSimulatorBootstrap.AGENT_NAME))
+                .thenReturn(Optional.of(agent));
+
+        bootstrap.swapSystemPromptOnBoot();
+
+        ArgumentCaptor<AgentEntity> saved = ArgumentCaptor.forClass(AgentEntity.class);
+        verify(agentRepository).save(saved.capture());
+        assertThat(saved.getValue().getAgentType()).isEqualTo("system");
+        assertThat(saved.getValue().getSystemPrompt()).isEqualTo("operator hand-edited — no SEE_FILE");
+    }
+
+    @Test
+    @DisplayName("agent_type self-heal is idempotent: already-system agent is not re-saved")
+    void swap_agentTypeAlreadySystem_noSelfHealSave() {
+        AgentEntity agent = newAgent("operator hand-edited — no SEE_FILE");
+        agent.setAgentType("system");
         when(agentRepository.findFirstByName(UserSimulatorBootstrap.AGENT_NAME))
                 .thenReturn(Optional.of(agent));
 

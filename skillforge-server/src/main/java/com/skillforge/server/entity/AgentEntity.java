@@ -111,6 +111,23 @@ public class AgentEntity {
     @Column(name = "mcp_server_ids", length = 512, nullable = false)
     private String mcpServerIds = "";
 
+    /**
+     * SYSTEM-AGENT-TYPING Phase 1 (V89): {@code 'user'} (default) for user-created
+     * conversational agents; {@code 'system'} for cron-driven, bootstrap-seeded
+     * platform agents (memory-curator / session-annotator / metrics-collector /
+     * attribution-curator / user-simulator). CHECK constraint {@code chk_agent_type}
+     * enforces the enum at the DB layer. Phase 2 will use this to gate FE
+     * AgentList visibility, AgentDrawer edit protection, Chat send-button gate,
+     * and the /insights/system-agents observability page.
+     *
+     * <p>Bootstraps (V69 / V75 / V79 / V81 / V85 owners) idempotently
+     * {@code setAgentType("system")} on application start as defense-in-depth so
+     * any system agent seeded after V89 still ends up typed correctly without
+     * needing a new Flyway migration.
+     */
+    @Column(name = "agent_type", nullable = false, length = 16)
+    private String agentType = "user";
+
     private boolean autoImprovePaused = false;
 
     private int abDeclineCount = 0;
@@ -350,5 +367,21 @@ public class AgentEntity {
 
     public void setLastPromotedAt(Instant lastPromotedAt) {
         this.lastPromotedAt = lastPromotedAt;
+    }
+
+    /** SYSTEM-AGENT-TYPING Phase 1 (V89). {@code 'user'} or {@code 'system'}. */
+    public String getAgentType() {
+        return agentType;
+    }
+
+    /**
+     * SYSTEM-AGENT-TYPING Phase 1 (V89). Setter coerces null to {@code 'user'} so
+     * callers / Jackson deserializers that omit the field never trip the NOT NULL
+     * constraint or chk_agent_type CHECK. The DB-side CHECK constraint
+     * (chk_agent_type IN ('user', 'system')) is the authoritative enum gate; this
+     * setter doesn't re-validate to avoid a duplicate source of truth.
+     */
+    public void setAgentType(String agentType) {
+        this.agentType = agentType != null ? agentType : "user";
     }
 }

@@ -51,6 +51,35 @@ public interface SessionAnnotationRepository
     }
 
     /**
+     * SYSTEM-AGENT-TYPING F7 Phase 1.2: recent signal rows scoped to a given
+     * {@code agent_type} (joined via {@code t_session → t_agent}), newest first.
+     * Used by {@link
+     * com.skillforge.server.sessionannotation.SessionAnnotationSignalService#findSessionsNeedingLlmAnnotation(int)}
+     * to surface user-agent candidates first so they don't get starved by the
+     * hourly-cron system agents that always dominate the global most-recent
+     * signal stream.
+     *
+     * <p>Why a native JOIN: the join target {@code t_agent.agent_type} is on a
+     * different aggregate root than {@code SessionAnnotationEntity} — modeling
+     * the relationship via JPA associations would require a synthetic
+     * {@code @ManyToOne} chain on the annotation entity that nothing else
+     * needs. Native SQL keeps the entity model focused.
+     */
+    @Query(value = """
+            SELECT sa.* FROM t_session_annotation sa
+              JOIN t_session s ON s.id = sa.session_id
+              JOIN t_agent ag ON ag.id = s.agent_id
+             WHERE sa.source = :source
+               AND ag.agent_type = :agentType
+             ORDER BY sa.created_at DESC, sa.id DESC
+             LIMIT :lim
+            """, nativeQuery = true)
+    List<SessionAnnotationEntity> findRecentBySourceAndAgentType(
+            @Param("source") String source,
+            @Param("agentType") String agentType,
+            @Param("lim") int lim);
+
+    /**
      * Phase 1.2: of the given {@code sessionIds}, returns those that already have
      * ≥ 1 row with the given {@code source} (typically {@code source='llm'}).
      * Used to filter the signal queue down to sessions still pending LLM annotation.

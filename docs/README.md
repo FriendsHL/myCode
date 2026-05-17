@@ -1,6 +1,6 @@
 # SkillForge 文档
 
-> 更新于：2026-05-16
+> 更新于：2026-05-17
 > Agent 规则：先读这里，再只打开当前任务链接到的文档。
 
 编辑 docs 前，先读 [DOCS-GOVERNANCE.md](DOCS-GOVERNANCE.md)。
@@ -19,9 +19,26 @@
 
 | ID | 标题 | 状态 | 需求包 | MRD | PRD | 技术方案 | 交付 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| _(暂无 active 主线需求；FLYWHEEL-LOOP-CLOSURE 已交付归档 2026-05-17)_ | — | — | — | — | — | — | — |
+| SYSTEM-AGENT-TYPING | Phase 2 UX (AgentList toggle + Drawer 锁 + Chat gate + SystemAgents 监控面板) | active (Phase 1 已交付 2026-05-17 ✅, Phase 2 待做 ~2-3d Mid) | [需求包](requirements/active/SYSTEM-AGENT-TYPING/) | [MRD](requirements/active/SYSTEM-AGENT-TYPING/mrd.md) | [PRD](requirements/active/SYSTEM-AGENT-TYPING/prd.md) | [技术方案](requirements/active/SYSTEM-AGENT-TYPING/tech-design.md) | _(Phase 1 已交付 见 delivery-index.md)_ |
 
 > 整体方案：[plans/PROD-OPTIMIZATION-FLYWHEEL/plan.md](plans/PROD-OPTIMIZATION-FLYWHEEL/plan.md) —— 数据飞轮 / 优化闭环 6 版本拆分（**V1-V6 全部已交付**，⑤ A/B 自动 trigger 真闭环 prompt+skill 双 surface 通）
+
+### SYSTEM-AGENT-TYPING Phase 1 — 已交付 2026-05-17 ✅（飞轮 layer 1 真闭环）
+
+DB SQL 真活反查发现 117 outcome 标注全在 system agent / 110 user agent session **0** outcome → 飞轮原料层 starvation (`findRecentByLimit("signal", cap*3=30)` createdAt DESC 让 5 system agent cron 霸占最近 30 行)。
+
+| 项 | 修法 | 状态 |
+|---|---|---|
+| 数据模型 | V89 加 `t_agent.agent_type` VARCHAR(16) NOT NULL DEFAULT 'user' + CHECK + UPDATE 5 system agent | ✅ 已交付 |
+| Entity + Bootstrap self-heal | AgentEntity 加字段 (Jackson 自动序列化无需新 DTO) + 5 Bootstrap idempotent `setAgentType('system')` 启动自愈 + 跟 prompt-swap 解耦 | ✅ 已交付 |
+| **R1 3-tier annotator fix** | `SessionAnnotationRepository.findRecentBySourceAndAgentType` 原生 SQL JOIN + `SessionAnnotationSignalService` 改 user-first / system backfill / catch-all orphan fallback | ✅ 已交付 |
+| **W1 per-tier early dedup** | Phase 2 java-reviewer 抓 edge case: Tier 1 全 LLM-annotated 时 guard 看 pre-dedup 跳 Tier 2 → 空 queue. Fix moves dedup to each tier (red-green 4 步真验) | ✅ 已交付 |
+| FE Zod schema | `schemas.ts` AgentSchema 加 `agentType: z.enum(['user', 'system']).optional().nullable()` 防 zod silent strip | ✅ 已交付 |
+| 真活验证 | BE 重启 + V89 apply + 触发 session-annotator-hourly 一轮 → **50s 内 user agent outcome 0 → 9** (Main 5 failure / Design 2 / Research 1 / Session Analyzer 1) | ✅ 已交付 |
+
+**mvn 1776/0/95 BUILD SUCCESS + Iron Law 核心 7+1 BE + 3 FE 0 diff + 3 reviewer (java/db/ts Sonnet) PASS 0 blocker + Judge Opus 1 mandatory W1 fix done**. 详见 [delivery-index.md](delivery-index.md) SYSTEM-AGENT-TYPING Phase 1 行.
+
+**Phase 2 UX 留 SYSTEM-AGENT-TYPING 同包后续 PR** (~2-3d Mid): AgentList toggle + AgentDrawer 锁 + Chat gate + SystemAgents 监控面板 + BE filter endpoint.
 
 ### V6 FLYWHEEL-LOOP-CLOSURE — 已交付 2026-05-17 ✅
 

@@ -147,38 +147,73 @@ public class SessionAnnotationSignalService {
      * Used by {@link com.skillforge.server.tool.sessionannotation.DetectSignalAnnotationsTool}
      * to forward the queue to STEP 2 of the agent pipeline.
      *
-     * <p>Implementation note (V1): we scan recent {@code source='signal'} rows + filter
-     * out sessions that already have an {@code source='llm'} row. This is a small-N
-     * query — V1 cap is 10 per invocation, and the signal table is hourly-bounded.
-     * A native JOIN would be cleaner but is deferred to Phase 1.4 if the volume
-     * exceeds 1K rows/hr (well outside any plausible V1 dogfood load).
+     * <h4>SYSTEM-AGENT-TYPING F7 Phase 1.2 — user-agent priority</h4>
+     *
+     * <p>Pre-Phase-1.2 behavior queried {@code findRecentByLimit("signal", cap*3)}
+     * uniformly by recency, then took the first {@code cap=10} grouped sessions.
+     * In production this starved <b>every</b> user-agent session because the
+     * hourly cron system agents (attribution-curator + session-annotator +
+     * metrics-collector) flood the most-recent signal stream — see prd.md F7
+     * for the 2026-05-17 SQL audit (117 outcome annotations all on system
+     * agents, 0 on user agents over 110 user-agent sessions).
+     *
+     * <p>Phase 1.2 fix uses a 3-tier candidate strategy:
+     * <ol>
+     *   <li><b>User-agent first</b>: {@code findRecentBySourceAndAgentType("user", cap*3)}
+     *       so user agents always own the front of the queue when available</li>
+     *   <li><b>System-agent backfill</b>: only if the user bucket didn't fill the
+     *       cap, query {@code findRecentBySourceAndAgentType("system", cap*3)}</li>
+     *   <li><b>Catch-all fallback</b>: if still under cap, query
+     *       {@code findRecentByLimit("signal", cap*3)} to surface orphan signals
+     *       whose session has {@code agent_id=NULL} or whose agent row was
+     *       deleted (preserves pre-Phase-1.2 behavior for pathological data)</li>
+     * </ol>
+     *
+     * <p>Each tier appends to the same {@link LinkedHashMap} keyed by sessionId, so
+     * user-agent sessions appear earlier in iteration order and are never
+     * displaced by the take-first-{@code cap} truncation at the end. Sessions
+     * already LLM-annotated are filtered identically to pre-Phase-1.2.
+     *
+     * <p>Does <b>not</b> touch {@code SessionAnnotationLlmService.DECISION HEURISTICS} —
+     * the {@code outcome} / {@code suspect_surface} enums and confidence semantics
+     * are preserved as required by F7's "不改 DECISION HEURISTICS" constraint.
      */
     @Transactional(readOnly = true)
     public List<SessionNeedingLlmDto> findSessionsNeedingLlmAnnotation(int limit) {
         int capped = Math.max(1, Math.min(limit, DEFAULT_LLM_QUEUE_LIMIT));
-        // Pull most-recent signal rows. We over-fetch ~3x then filter, then truncate.
-        // Volume in V1: ≤ hundreds of rows/hr × 6 reasons = a few thousand rows;
-        // an over-fetch factor of 3 is fine here, and the result is sorted by
-        // signal createdAt desc (newest first).
-        List<SessionAnnotationEntity> signalRows = sessionAnnotationRepository
-                .findRecentByLimit(SessionAnnotationEntity.SOURCE_SIGNAL, capped * 3);
-        if (signalRows.isEmpty()) {
-            return Collections.emptyList();
+        int overFetch = capped * 3;
+
+        // Preserve insertion order = priority order (user → system → orphan).
+        LinkedHashMap<String, List<String>> reasonsBySession = new LinkedHashMap<>();
+
+        // Tier 1: user-agent signals (F7 priority).
+        accumulateReasons(reasonsBySession,
+                sessionAnnotationRepository.findRecentBySourceAndAgentType(
+                        SessionAnnotationEntity.SOURCE_SIGNAL, "user", overFetch));
+        // Phase 2 W1 fix: dedup LLM-annotated sessions before the tier-2 guard reads
+        // size. Without this, a degenerate scenario (e.g. Tier 1 returns exactly
+        // {@code capped} user sessions that all already have source='llm') would
+        // skip Tier 2/3 and the final post-tier dedup would leave an empty queue —
+        // hiding system-agent signals the agent could otherwise annotate.
+        removeAlreadyLlmAnnotated(reasonsBySession);
+
+        // Tier 2: system-agent backfill if the user bucket didn't fill the cap.
+        if (reasonsBySession.size() < capped) {
+            accumulateReasons(reasonsBySession,
+                    sessionAnnotationRepository.findRecentBySourceAndAgentType(
+                            SessionAnnotationEntity.SOURCE_SIGNAL, "system", overFetch));
+            removeAlreadyLlmAnnotated(reasonsBySession);
         }
 
-        // Preserve insertion order = most-recent-first.
-        Map<String, List<String>> reasonsBySession = new LinkedHashMap<>();
-        for (SessionAnnotationEntity row : signalRows) {
-            reasonsBySession.computeIfAbsent(row.getSessionId(), k -> new ArrayList<>())
-                    .add(row.getAnnotationType());
+        // Tier 3: catch-all fallback for orphan signal rows (session.agent_id=NULL,
+        // or t_agent row deleted) — preserves pre-Phase-1.2 surface so we don't
+        // regress on pathological data. The over-fetch limit applies again here.
+        if (reasonsBySession.size() < capped) {
+            accumulateReasons(reasonsBySession,
+                    sessionAnnotationRepository.findRecentByLimit(
+                            SessionAnnotationEntity.SOURCE_SIGNAL, overFetch));
+            removeAlreadyLlmAnnotated(reasonsBySession);
         }
-
-        // Sessions that already have an LLM annotation are excluded so the agent
-        // doesn't repeatedly process the same session each hour.
-        List<String> sessionIds = new ArrayList<>(reasonsBySession.keySet());
-        List<String> withLlm = sessionAnnotationRepository
-                .findSessionIdsWithSource(sessionIds, SessionAnnotationEntity.SOURCE_LLM);
-        reasonsBySession.keySet().removeAll(withLlm);
 
         if (reasonsBySession.isEmpty()) {
             return Collections.emptyList();
@@ -199,6 +234,42 @@ public class SessionAnnotationSignalService {
             out.add(new SessionNeedingLlmDto(e.getKey(), agentName, List.copyOf(e.getValue())));
         }
         return out;
+    }
+
+    /**
+     * Accumulator helper that adds annotation reasons to the running map, grouped
+     * by {@code sessionId}. Preserves insertion order (the caller relies on this
+     * to keep priority tiers — user before system before orphan).
+     */
+    private static void accumulateReasons(LinkedHashMap<String, List<String>> map,
+                                          List<SessionAnnotationEntity> rows) {
+        for (SessionAnnotationEntity row : rows) {
+            map.computeIfAbsent(row.getSessionId(), k -> new ArrayList<>())
+                    .add(row.getAnnotationType());
+        }
+    }
+
+    /**
+     * Phase 2 W1 fix: filter out sessions that already have a {@code source='llm'}
+     * annotation row, in place. Called after each tier so the per-tier guard
+     * ({@code size() < capped}) measures the post-dedup count — otherwise a tier
+     * fully populated with already-LLM-annotated sessions silently skips
+     * subsequent tiers and produces an empty queue.
+     *
+     * <p>Small-N LLM-filter query (~10s of sessions per cap=10 invocation × 3 tiers
+     * worst case). The repeated calls re-query overlapping session lists — the
+     * overhead is sub-millisecond at V1 dogfood volumes, and avoiding it would
+     * require threading a "remaining slots" counter through accumulateReasons
+     * which obscures the tier logic.
+     */
+    private void removeAlreadyLlmAnnotated(LinkedHashMap<String, List<String>> map) {
+        if (map.isEmpty()) return;
+        List<String> sessionIds = new ArrayList<>(map.keySet());
+        List<String> withLlm = sessionAnnotationRepository
+                .findSessionIdsWithSource(sessionIds, SessionAnnotationEntity.SOURCE_LLM);
+        if (!withLlm.isEmpty()) {
+            map.keySet().removeAll(withLlm);
+        }
     }
 
     /**

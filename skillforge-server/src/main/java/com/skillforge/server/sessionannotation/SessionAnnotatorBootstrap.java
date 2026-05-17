@@ -68,6 +68,13 @@ public class SessionAnnotatorBootstrap {
             return;
         }
         AgentEntity agent = opt.get();
+        // SYSTEM-AGENT-TYPING Phase 1.1: defense-in-depth — ensure agent_type='system'
+        // on every boot. See MemoryCuratorBootstrap for the structural rationale.
+        if (!"system".equals(agent.getAgentType())) {
+            agent.setAgentType("system");
+            agentRepository.save(agent);
+            log.info("[SessionAnnotatorBootstrap] agentId={} agent_type self-healed to 'system'", agent.getId());
+        }
         String current = agent.getSystemPrompt();
         if (current == null || !current.startsWith(SEE_FILE_SENTINEL_PREFIX)) {
             // Already swapped, or operator hand-edited — leave alone.

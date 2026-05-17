@@ -71,6 +71,17 @@ public class MemoryCuratorBootstrap {
             return;
         }
         AgentEntity agent = opt.get();
+        // SYSTEM-AGENT-TYPING Phase 1.1: defense-in-depth — ensure agent_type='system'
+        // on every boot, regardless of whether the prompt-swap path runs. This survives
+        // operator hand-edits to the prompt (which short-circuit the swap below) and
+        // future system agents seeded after V89 that the migration UPDATE didn't know
+        // about by name. Saves only when the value is actually different to avoid
+        // gratuitously updating updated_at.
+        if (!"system".equals(agent.getAgentType())) {
+            agent.setAgentType("system");
+            agentRepository.save(agent);
+            log.info("[MemoryCuratorBootstrap] agentId={} agent_type self-healed to 'system'", agent.getId());
+        }
         String current = agent.getSystemPrompt();
         if (current == null || !current.startsWith(SEE_FILE_SENTINEL_PREFIX)) {
             // Already swapped, or operator hand-edited — leave alone.

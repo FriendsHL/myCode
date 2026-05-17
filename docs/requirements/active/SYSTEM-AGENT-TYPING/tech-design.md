@@ -4,14 +4,17 @@
 id: SYSTEM-AGENT-TYPING
 status: design-draft
 prd: ./prd.md
-risk: Low
-mode: mid
+risk: Mid
+mode: full
 created: 2026-05-16
+updated: 2026-05-17
 ---
 
 ## TL;DR
 
-t_agent 加 1 列 + 5 Bootstrap 一行 update + 3 FE 改动 (AgentList toggle / AgentDrawer 锁 / Chat send 禁) + 1 新 page (SystemAgents 监控)。Mid 档 ~2-3 工作日。0 BE 新 entity / table，0 schema 重构。
+**Phase 1 (本次 PR, Full ~1-1.5d)**: t_agent 加 1 列 (V89) + 5 Bootstrap 一行 update + FE Zod schema 加字段 + session-annotator user agent 覆盖修复 (BE-Dev 先 systematic-debugging 取证 3 hypothesis 再 fix)。**核心目标：飞轮 layer 1 root cause = user agent failure 进飞轮**
+
+**Phase 2 (独立后续 PR, Mid ~2-3d)**: 3 FE 改动 (AgentList toggle / AgentDrawer 锁 / Chat send 禁) + 1 新 page (SystemAgents 监控) + BE 新 endpoint。UX 增强不阻塞 Phase 1 落地。
 
 ## 现状证据 (2026-05-16 grep)
 
@@ -44,7 +47,7 @@ mcp_server_ids TEXT
 
 | ID | Name | Migration | Bootstrap |
 |---|---|---|---|
-| 6 | memory-curator | V68/V69 | MemoryCuratorBootstrap (?) |
+| 6 | memory-curator | V68/V69 | MemoryCuratorBootstrap |
 | 7 | session-annotator | V75 | SessionAnnotatorBootstrap |
 | 8 | metrics-collector | V79 | MetricsCollectorBootstrap |
 | 9 | attribution-curator | V81 | AttributionCuratorBootstrap |
@@ -63,20 +66,22 @@ mcp_server_ids TEXT
 | 决策 | 结论 | 理由 |
 |---|---|---|
 | 加新字段 vs 复用 owner_id / is_public | **加新字段 `agent_type` enum** | owner_id 不可靠 (V69 NULL / V75-85 用 1); is_public 也不可靠 (user 可创公开 agent); 显式 typing 最清晰 |
-| 默认值 | **'user' DEFAULT** | 大部分 agent 是 user 创建; 加 V87 UPDATE 5 个已知 system agent |
+| 默认值 | **'user' DEFAULT** | 大部分 agent 是 user 创建; 加 V89 UPDATE 5 个已知 system agent |
 | FE filter 形态 | **AgentList 顶部 toggle + agentType=user 默认** | 用户日常看的是自己 agent; toggle 是 progressive disclosure |
 | Edit 保护 | **关键字段 read-only + Banner 警告** | 比完全 lock 更友好; status toggle 仍允许临时 disable |
 | Chat send gate | **检测 agentType='system' 直接 disable send button + banner** | 用户读完整 OK; send 禁止防破系统 |
 | 监控面板位置 | **新建 pages/SystemAgents.tsx + (可选) Insights 6th tab** | 主 page 干净；如果嵌 Insights 则跟 OptimizationEvents / BehaviorRuleEvolution / DynamicSim 同构 |
 | BE 新 endpoint | **复用 GET /api/agents?agentType= + 新 GET /api/system-agents/monitor** | monitor endpoint 跨表聚合 (t_agent + t_scheduled_task + 各产出表) 不在普通 agent endpoint 里 |
-| 5 Bootstrap update | **idempotent path 加 setAgentType('system')** | 启动时自愈, 防 V87 UPDATE 漏掉某 agent |
+| 5 Bootstrap update | **idempotent path 加 setAgentType('system')** | 启动时自愈, 防 V89 UPDATE 漏掉某 agent |
 
 ## 数据模型
 
-### V87 migration
+### V89 migration
+
+> V87 已被 `V87__disable_canary_metrics_collector.sql`（V6 FLYWHEEL-LOOP-CLOSURE）占, V88 已被 `V88__add_candidate_uuid_sidecar_columns.sql`（V6 同包）占。本包用 V89。
 
 ```sql
--- V87__add_agent_type.sql
+-- V89__add_agent_type.sql
 
 -- 1) 加 column + CHECK
 ALTER TABLE t_agent ADD COLUMN agent_type VARCHAR(16) NOT NULL DEFAULT 'user';
@@ -283,20 +288,30 @@ INSIGHTS_TABS.push({ key: 'system-agents', label: 'System Agents' });
 
 ## 实施计划
 
-### Phase 1.0 — 证伪 + 红测试 (0.5 天)
+### Phase 1.0 — 证伪 + 红测试 (0.5 天) ✅ DONE 2026-05-17
 
-- grep 5 Bootstrap class 真实文件名 + idempotent path 实际位置
-- grep AgentEntity / AgentResponse 现有 fields 防 V87 字段名冲突
-- 红测试: `AgentTypeMigrationIT` 锁 V87 前 t_agent 无 agent_type column
+- grep 5 Bootstrap class 真实文件名 + idempotent path 实际位置（5 个都确认）
+- grep AgentEntity 现有 fields 防 V89 字段名冲突（28 列, 无冲突）
+- **AgentResponse DTO 不存在** — AgentController 直接返 AgentEntity, Jackson 自动序列化, Phase 1.1 简化为 entity + bootstrap 无 Controller 改动
+- F7 systematic-debugging 3 hypothesis 取证 → **B 确认（findRecentByLimit cap*3=30 createdAt DESC 全 system + LinkedHashMap first cap=10 全 system → user agent starved）**
+- 红测试 (real-run fail evidence):
+  - `SessionAnnotationSignalServiceUserAgentCoverageTest` (Mockito unit) → "Expecting actual: 0L to be greater than or equal to: 1L" FAIL ✓
+  - `AgentTypeMigrationIT` (gated `-Dskillforge.runMigrationIT=true`, 同 EvalTaskMigrationIT 型) — Docker 起后 red
 
-### Phase 1.1 — BE: V87 + Entity + Bootstrap + Controller (1 天)
+### Phase 1.1 — BE: V89 migration + Entity + 5 Bootstrap (0.5-1 天)
 
-- V87 migration
-- AgentEntity / AgentResponse 加字段
-- 5 Bootstrap idempotent update 加 setAgentType
-- AgentController 加 agentType filter
-- SystemAgentMonitorController + DTO + 跨表 aggregation query
-- BE tests: AgentControllerTest + SystemAgentMonitorControllerTest
+- `V89__add_agent_type.sql` migration
+- AgentEntity 加 agentType + getter/setter（无需新 DTO）
+- 5 Bootstrap (`MemoryCuratorBootstrap` / `SessionAnnotatorBootstrap` / `MetricsCollectorBootstrap` / `AttributionCuratorBootstrap` / `UserSimulatorBootstrap`) idempotent update path 加 `setAgentType("system")`（放在 findFirstByName 之后、prompt-swap 短路 return 之前 — 启动自愈跟 prompt-swap 解耦）
+- BE tests: AgentEntityTest + AgentRepository.findByAgentType + 5 Bootstrap idempotent setAgentType test
+
+### Phase 1.2 — BE: session-annotator user agent coverage 修复 (0.5 天)
+
+- 基于 Phase 1.0 取证（**Hypothesis B 确认 starvation**），实施 **选项 R1** = repo 层加 JOIN 查询:
+  - `SessionAnnotationRepository.findRecentByAgentType(source, agentType, limit)` JPQL JOIN t_session + t_agent 过滤 agent_type
+  - `SessionAnnotationSignalService.findSessionsNeedingLlmAnnotation`：调 2 次（user signals 全收 + system signals 填充到 capped）
+- 跑 `SessionAnnotationSignalServiceUserAgentCoverageTest` 必须由 red → green
+- 不改 `SessionAnnotationLlmService.DECISION HEURISTICS` (outcome/suspect_surface enum 不变)
 
 ### Phase 1.2 — FE: AgentList toggle + AgentDrawer 锁 + Chat gate (1 天)
 
@@ -329,7 +344,7 @@ INSIGHTS_TABS.push({ key: 'system-agents', label: 'System Agents' });
 ## 风险与边界
 
 ### Low Risk
-- V87 ALTER + UPDATE 在小表 t_agent (~10 rows) 上瞬秒完成
+- V89 ALTER + UPDATE 在小表 t_agent (~10 rows) 上瞬秒完成
 - agent_type 默认 'user' 向后兼容现有 user agent
 - Bootstrap idempotent update 保 server restart 自愈
 
@@ -346,7 +361,7 @@ INSIGHTS_TABS.push({ key: 'system-agents', label: 'System Agents' });
 
 ## 测试计划
 
-- BE: V87 migration IT + AgentControllerTest agentType filter + SystemAgentMonitorControllerTest aggregation
+- BE: V89 migration IT + SessionAnnotationSignalServiceUserAgentCoverageTest (Phase 1) / AgentControllerTest agentType filter + SystemAgentMonitorControllerTest aggregation (Phase 2 后续)
 - FE: AgentList.test (toggle / badge) + AgentDrawer.test (system readonly) + Chat.test (send disabled) + SystemAgents.test (cards 渲染)
 - e2e manual: dashboard 真访问 + 5 个 system agent 真可看 / 真不可改
 

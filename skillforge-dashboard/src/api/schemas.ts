@@ -38,6 +38,10 @@ export const AgentSchema = z.object({
   // field zod silently strips the BE-returned value, AgentDrawer's `agent as ... & { maxLoops? }`
   // cast becomes a no-op, and saved maxLoops never re-renders after refresh.
   maxLoops: z.number().int().nullable().optional(),
+  // BE: AgentEntity.agentType String 'user' | 'system' (V89 migration, SYSTEM-AGENT-TYPING Phase 1).
+  // 加在此处防 zod silent strip (见 maxLoops 字段同款 footgun pattern).
+  // Phase 2 UX (AgentList toggle / Drawer 锁 / Chat gate) 在独立后续 PR 消费此字段.
+  agentType: z.enum(['user', 'system']).optional().nullable(),
 });
 export type AgentDto = z.infer<typeof AgentSchema>;
 

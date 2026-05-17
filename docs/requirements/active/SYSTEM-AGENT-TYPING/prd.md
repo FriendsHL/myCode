@@ -4,16 +4,17 @@
 id: SYSTEM-AGENT-TYPING
 status: design-draft
 owner: youren
-priority: P2
-risk: Low
+priority: P1
+risk: Mid
 mrd: ./mrd.md
 tech_design: ./tech-design.md
 created: 2026-05-16
+updated: 2026-05-17
 ---
 
 ## 摘要
 
-`t_agent` 加 `agent_type` enum 'user' / 'system' 字段 + V87 migration 显式标 5 个已知 system agent + AgentList FE 默认隐藏 + AgentDrawer 锁定 system agent 关键字段 + 集中观察面板 `/insights/system-agents`。
+`t_agent` 加 `agent_type` enum 'user' / 'system' 字段 + V89 migration 显式标 5 个已知 system agent + session-annotator user agent outcome coverage 修复（Phase 1）+ AgentList FE 默认隐藏 + AgentDrawer 锁定 system agent 关键字段 + 集中观察面板 `/insights/system-agents`（Phase 2 后续 PR）。
 
 ## 用户流程
 
@@ -46,9 +47,9 @@ created: 2026-05-16
 
 ## 功能需求
 
-### F1. 数据模型: t_agent.agent_type
+### F1. 数据模型: t_agent.agent_type （Phase 1）
 
-**V87 migration**:
+**V89 migration**（V87 已被 V87__disable_canary_metrics_collector.sql 占，V88 已被 V88__add_candidate_uuid_sidecar_columns.sql 占）:
 ```sql
 ALTER TABLE t_agent ADD COLUMN agent_type VARCHAR(16) NOT NULL DEFAULT 'user';
 ALTER TABLE t_agent ADD CONSTRAINT chk_agent_type CHECK (agent_type IN ('user', 'system'));
@@ -60,10 +61,9 @@ UPDATE t_agent SET agent_type='system' WHERE name IN (
 );
 ```
 
-**AgentEntity / DTO**:
-- 加 `String agentType` 字段 + getter/setter
-- API response `AgentResponse` 加 agentType
-- Bootstrap (UserSimulatorBootstrap / AttributionCuratorBootstrap / etc.) 设 agentType='system' (idempotent update)
+**AgentEntity**:
+- 加 `String agentType` 字段 + getter/setter（`AgentController` 直接返 AgentEntity，Jackson 自动序列化，**无需新 DTO** — 来自 2026-05-17 be-dev Phase 1.0 取证）
+- Bootstrap (UserSimulatorBootstrap / AttributionCuratorBootstrap / etc.) 设 agentType='system' (idempotent update path 加在 findFirstByName 之后、prompt-swap 短路 return 之前)
 
 ### F2. FE AgentList filter + visual badge
 
@@ -101,12 +101,37 @@ UPDATE t_agent SET agent_type='system' WHERE name IN (
 - 新加 `GET /api/system-agents/monitor` 返 5 个 system agent + 聚合 metrics (per-agent 7d trigger/output count)
 - 不新加 entity / table
 
-### F6. Chat page gate
+### F6. Chat page gate (Phase 2 后续)
 
 - Chat page (`/chat/:sessionId?`) 检测 selected agent.agentType='system' 时:
   - Send button disabled
   - Banner: "System agents are read-only via Chat. Use admin tools to configure."
 - 但**read 完整** (transcripts / tool_use blocks / etc.) 都正常显示
+
+### F7. session-annotator user agent 覆盖修复 (Phase 1 — 飞轮 layer 1 root cause)
+
+**问题陈述** (2026-05-17 DB SQL 取证):
+- 268 production session, 117 outcome 标注**全在 system agent** (attribution-curator 63 / metrics-collector 24 / session-annotator 29 / memory-curator 1)
+- user agent (Main Assistant 58 + Design 23 + Research 15 + Code 14 = 110 session) **0 个 outcome 标注**
+- session-annotator system prompt + `SessionAnnotationSignalService` 代码 grep 都没显式 `is_public` / agent 过滤，但实际效果是 user agent 完全没标 → 真 root cause 在 STEP 1 DetectSignalAnnotations 内部 list 逻辑 或 STEP 2 LLM `cap=10` 优先级
+
+**3 hypothesis (BE-Dev systematic-debugging Phase 1 取证选一)**:
+- **A**: `DetectSignalAnnotations.detectAndPersist` 内部 list 排除 user agent
+- **B**: STEP 2 LLM `cap=10` 优先 system agent（因为 system agent failure 更频繁先被 LLM 看到，user agent 永远到不了 list 前 10）
+- **C**: user agent session signal 太弱（LLM_CALL span error / tool_failure / agent_error 不够）
+
+**修复方向（取决于取证）**:
+- 若 A → 删 list 逻辑里的 filter，全 production session 都进 candidate list
+- 若 B → 改 cap=10 排序逻辑，优先 user agent (priority 1) + system agent (priority 2)
+- 若 C → 改 system prompt STEP 1 让 LLM 显式提到 user agent session 也要 annotate（兜底），不指望 deterministic signal
+
+**不改**:
+- `SessionAnnotationLlmService` 的 DECISION HEURISTICS（outcome / suspect_surface enum 不变）
+- annotation_value 5 值 (success / partial_success / failure / cancelled / unclear)
+
+**验收**:
+- 真活：BE 重启 + 手动触发 `session-annotator-hourly` 跑一轮，psql 验证 `t_session_annotation` 表里 `Main Assistant` agent_id outcome 标注 >0
+- IT: `SessionAnnotationSignalServiceUserAgentCoverageIT` — mock 3 个 user agent session, 跑 detectAndPersist → 验证 sessions_needing_llm 列表包含它们
 
 ## 非目标
 
@@ -119,10 +144,29 @@ UPDATE t_agent SET agent_type='system' WHERE name IN (
 
 ## 验收标准
 
-### 代码
-- [ ] V87 migration 加 t_agent.agent_type column + UPDATE 5 个 system agent
-- [ ] AgentEntity / AgentResponse 加 agentType + serializer
-- [ ] 5 个 Bootstrap class 在 idempotent update 时设 agentType='system'
+### Phase 1 — 本次 PR（必须全绿才 commit）
+
+**代码**
+- [ ] **V89** migration 加 t_agent.agent_type column + UPDATE 5 个 system agent
+- [ ] AgentEntity 加 agentType + getter/setter（Jackson 自动序列化无需新 DTO）
+- [ ] 5 个 Bootstrap class 在 idempotent update 时设 agentType='system' (启动自愈)
+- [ ] F7: BE-Dev systematic-debugging Phase 1 取证报告（A/B/C 哪个 true + 修复方案）
+- [ ] F7: 修对应 service / system prompt 让 user agent 进 sessions_needing_llm 列表
+- [ ] FE `schemas.ts` AgentSchema 加 agentType field（防 zod silent strip）
+
+**测试**
+- [ ] V89 migration IT: agent_type 字段在 + 5 个 system agent 标对
+- [ ] AgentEntity.agentType getter/setter + AgentRepository.findByAgentType 测试
+- [ ] SessionAnnotationSignalServiceUserAgentCoverageIT (F7 IT)
+
+**验证**
+- [ ] mvn -pl skillforge-server -am test → BUILD SUCCESS（无 regression）
+- [ ] tsc + npm build EXIT=0
+- [ ] Iron Law 核心 7+1 + 3 FE 文件 git diff = 0
+- [ ] 真活：BE 重启 + 手动触发 session-annotator-hourly cron 一轮，psql 查 user agent outcome 标注 >0
+
+### Phase 2 — 后续 PR（不阻塞本次）
+
 - [ ] BE `GET /api/agents` 接 agentType filter (user/system/all default user)
 - [ ] BE 新 `GET /api/system-agents/monitor` endpoint + DTO
 - [ ] FE AgentList 加 Show system agents toggle + 视觉 badge
@@ -130,18 +174,8 @@ UPDATE t_agent SET agent_type='system' WHERE name IN (
 - [ ] FE Chat page 检测 system agent 时 send disabled + banner
 - [ ] FE pages/SystemAgents.tsx + 监控卡片
 - [ ] FE (可选) Insights.tsx 加 'system-agents' 第 6 tab
-
-### 测试
-- [ ] V87 migration 跑过 + agent_type 字段在 + 5 个 system agent 标对
 - [ ] AgentControllerTest 加 agentType filter case
-- [ ] FE AgentList.test.tsx 加 toggle / badge case
-- [ ] FE Chat.test.tsx 加 system agent send disabled case
-- [ ] FE SystemAgents.test.tsx 加监控卡片渲染
-
-### 验证
-- [ ] mvn -pl skillforge-server -am test → BUILD SUCCESS
-- [ ] tsc + npm build EXIT=0
-- [ ] Iron Law 核心 7+1 + 3 FE 文件 git diff = 0
+- [ ] FE AgentList.test.tsx + Chat.test.tsx + SystemAgents.test.tsx
 - [ ] dashboard 真启动: AgentList default 只显示 5 个 user agent + toggle 出 system / Insights system-agents tab 显示 cron 调度 + manual run 可触发
 
 ## 后续 backlog

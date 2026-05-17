@@ -2,12 +2,12 @@
 
 ---
 id: SYSTEM-AGENT-TYPING
-mode: mid
+mode: full
 status: design-draft
-priority: P2
-risk: Low
+priority: P1
+risk: Mid
 created: 2026-05-16
-updated: 2026-05-16
+updated: 2026-05-17
 ---
 
 ## 摘要
@@ -21,9 +21,17 @@ V1-V5 累计交付了 5 个 system agent（memory-curator / session-annotator / 
 
 ## 范围
 
-Mid 档，~2-3 工作日:
+### Phase 1 — 本次 PR（Full 档，~1-1.5d）
 
-1. **数据模型加 `agent_type`**: `t_agent.agent_type` enum 'user' / 'system'，V87 migration 默认 'user' + 5 个已知 system agent 显式设 'system'
+数据基建 + 飞轮原料覆盖 fix（用户 2026-05-17 strategic discussion 拍板"先解决飞轮 user agent 失败不进飞轮 = layer 1 root cause"）：
+
+1. **数据模型加 `agent_type`**: `t_agent.agent_type` enum 'user' / 'system'，**V89** migration（V87 已被 V87__disable_canary_metrics_collector.sql 占）默认 'user' + 5 个已知 system agent 显式设 'system'
+6. **session-annotator user agent 覆盖修复**（新加）: 当前 117 outcome 标注全在 system agent (attribution-curator 63 / metrics-collector 24 / session-annotator 29 / memory-curator 1)，user agent (Main Assistant 58 + Design Agent 23 + Research 15 + Code Agent 14 = 110 session) **0 个 outcome 标注**。BE-Dev 先 systematic-debugging Phase 1 取证（grep + SQL 确认 3 个 hypothesis 中哪个为真：A=DetectSignalAnnotations 排除 user agent / B=STEP 2 LLM cap=10 优先 system / C=user agent session signal 太弱），再修 session-annotator pipeline（system prompt + DetectSignalAnnotationsTool / SessionAnnotationSignalService 取决于取证）让 user agent session 也进 sessions_needing_llm 列表 + 真被 STEP 2 LLM 标 outcome。**agent_type 字段作为 dispatcher 决定优先级的 input（user agent 优先 STEP 2 LLM 标注），不是过滤器**
+
+### Phase 2 — 后续 PR（独立小包，按需排期）
+
+UX 增强（用户 2026-05-17 表态"不需要太自动化、人工参与优先"，UX 不是紧手）：
+
 2. **FE AgentList 默认隐藏 system agent**：加 toggle "Show system agents" (默认 off)；显示时加 visual badge 区分
 3. **System agent 编辑保护**：AgentDrawer 检测 agent_type='system' 时，只读关键字段 (name / model_id / system_prompt / tool_ids)，仅允许 enabled toggle + 监控
 4. **System agent 不可发起 chat**：Chat page 检测 agent_type='system' 时禁 send button (admin override 可绕过)

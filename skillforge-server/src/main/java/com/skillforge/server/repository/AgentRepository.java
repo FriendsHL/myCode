@@ -28,6 +28,15 @@ public interface AgentRepository extends JpaRepository<AgentEntity, Long> {
      */
     Optional<AgentEntity> findFirstByName(String name);
 
+    /**
+     * SYSTEM-AGENT-TYPING Phase 1 (V89): list all agents of a given type.
+     * {@code agentType} is the {@code agent_type} column constrained by
+     * {@code chk_agent_type} to {@code 'user'} or {@code 'system'}. Used by
+     * F7 (Phase 1.2) session-annotator pipeline to bias LLM-queue toward
+     * user-agent sessions, and by Phase 2 admin / observability surfaces.
+     */
+    List<AgentEntity> findByAgentType(String agentType);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT a FROM AgentEntity a WHERE a.id = :id")
     Optional<AgentEntity> findByIdForUpdate(@Param("id") Long id);

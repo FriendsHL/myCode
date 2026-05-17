@@ -184,8 +184,22 @@ class SessionAnnotationSignalServiceTest {
         SessionAnnotationEntity sigB = signalRow("sess-B", "agent_error");
         SessionAnnotationEntity sigC = signalRow("sess-C", "high_token");
 
-        when(sessionAnnotationRepository.findRecentByLimit(eq("signal"), org.mockito.ArgumentMatchers.anyInt()))
+        // SYSTEM-AGENT-TYPING F7 Phase 1.2: service now uses 3-tier candidate strategy.
+        // For this filter-coverage test we put all 3 signal rows in Tier 1 (user-agent
+        // bucket); Tier 2 and Tier 3 should not be invoked because Tier 1 already
+        // populates 3 distinct sessions and the LLM-filter passes 2 of them.
+        when(sessionAnnotationRepository.findRecentBySourceAndAgentType(
+                eq("signal"), eq("user"), org.mockito.ArgumentMatchers.anyInt()))
                 .thenReturn(List.of(sigA, sigB, sigC));
+        // Tier 2 stub (system-agent bucket) — strict mode would warn on absence even if
+        // not invoked when cap not yet filled. Mark lenient.
+        org.mockito.Mockito.lenient().when(sessionAnnotationRepository.findRecentBySourceAndAgentType(
+                eq("signal"), eq("system"), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(List.of());
+        // Tier 3 catch-all stub
+        org.mockito.Mockito.lenient().when(sessionAnnotationRepository.findRecentByLimit(
+                eq("signal"), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(List.of());
         when(sessionAnnotationRepository.findSessionIdsWithSource(
                 org.mockito.ArgumentMatchers.anyCollection(), eq("llm")))
                 .thenReturn(List.of("sess-B"));  // sess-B already LLM-annotated
