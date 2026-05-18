@@ -16,6 +16,18 @@ updated: 2026-05-18
 
 补齐 `system-skills/skill-creator/` skill 的 evaluation 实施 (V1 时 SKILL.md 写了概念没真做). 加 scripts/ + evals/ + `SkillCreatorService.evaluateSkillDraft` + V91 schema + dashboard report panel. 跨 4 skill 创建入口 (上传 / 下载 / 自然语言 / extract) 统一接 evaluation gate. 不动 V1-V7 飞轮 9 步主路径.
 
+## r1 spec review fix (2026-05-18 architect Opus verify)
+
+architect Opus spec review 抓 6 个 spec-vs-code 真 blocker, **本 spec 已 r2 fix**, 详 tech-design.md 内 r2 注:
+- A1 4 入口 hook signature 重写跟现 code 真 align (`SkillService.uploadSkill` / `SkillImportService.importSkill(Path,...)` / `extractFromRecentSessions(Long, Long) → int`)
+- A2 SubAgent async 收集模式: 改 2 阶段 (sync dispatchEvaluation + async `onSubAgentRunCompleted` AFTER_COMMIT listener, 跟 V6 OptimizationEventAutoTriggerListener 同款 pattern)
+- A3 EvalJudgeTool signature 改 3-arg + 返 `EvalJudgeMultiTurnOutput` (compositeScore + overallScore); latency/cost 是 EvalOrchestrator wall-time + token 算
+- A4 cleanupEphemerals 参数改 `List<String>` (EvalScenarioEntity.id 是 String UUID)
+- A5 V91 加 `target_agent_id BIGINT` + `candidate_skill_id BIGINT` + `source VARCHAR(64)` 3 column (现 SkillDraftEntity 缺), 加 transient SkillEntity 物化时机 doc
+- A6 source 加 column (跟 A5 一起)
+
+Plus SubAgentTool schema 扩 `skillIdsOverride` (现 schema 无字段); B3 risk 章节补 3 个 footgun (async × @Transactional / transient 物化 / 5 维 score 拼合).
+
 ## 决策记录 (2026-05-18 用户拍板)
 
 | # | 决策点 | 选项 |
@@ -27,7 +39,7 @@ updated: 2026-05-18
 | D5 | baseline | **NO_SKILL** — target agent skillIds=[] 完全不挂 skill 重跑 (clean baseline 不复用原 session 历史 response) |
 | D6 | 输出形态 | benchmark.json + LLM 总结 + dashboard report panel (with/without pass_rate + delta + token + latency) |
 | D7 | delta < 阈值处理 | **status='rejected'** + LLM 总结 + **不 allow force-promote** (低质量直接挡, operator 看 reject reason iterate) |
-| D8 | 数据 schema 复用 | **`t_skill_draft`** 加 `evaluation_result_json` 字段 + source 加 `'skill-creator-eval'` 枚举 + status 加 `'rejected'`, 跟现 'extract_from_sessions' / 'attribution' / 'manual' 并列 |
+| D8 | 数据 schema 复用 | **`t_skill_draft`** V91 加 4 column (target_agent_id BIGINT / candidate_skill_id BIGINT / **source VARCHAR(64) NULL — 现 entity 无此字段, V91 加**, enum 'upload'/'marketplace'/'natural-language'/'extract-from-sessions'/'attribution'/'manual' / evaluation_result_json TEXT) + status 加 'evaluated_passed'/'rejected' 枚举 |
 
 ## 功能需求
 

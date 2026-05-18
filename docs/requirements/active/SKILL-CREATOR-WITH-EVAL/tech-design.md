@@ -66,11 +66,19 @@ system-skills/skill-creator/
 
 ## 数据模型
 
-### V91 migration
+### V91 migration (r2 fix 后 — 加 target_agent_id / candidate_skill_id / source 共 4 column)
+
+**r1 spec review verify gap**: SkillDraftEntity 真实字段没有 `targetAgentId` / `candidateSkillId` / `source`. agentId 当前只能从 sourceSessionId → t_session.agent_id 反查; candidateSkillId 当前在 approveDraft 才物化. V91 加 3 个新 column 让评测前提显式:
 
 ```sql
--- V91__skill_draft_evaluation_result.sql
+-- V91__skill_draft_evaluation.sql
 
+ALTER TABLE t_skill_draft ADD COLUMN target_agent_id BIGINT NULL;
+-- 评测目标 agent (评测时 SubAgent fork 用) — extract path 从 sourceSession.agent_id 反查写入; 上传/marketplace path 操作员指定; 自然语言 path 当前 agent 自身
+ALTER TABLE t_skill_draft ADD COLUMN candidate_skill_id BIGINT NULL;
+-- 评测时 transient render SkillEntity 的 id (SkillCreatorService.renderToTransientSkillEntity 写入) — evaluateSkillDraft 完成后 cleanup or 接 approve flow promote 成正式 skill
+ALTER TABLE t_skill_draft ADD COLUMN source VARCHAR(64) NULL;
+-- 创建来源枚举: 'upload' / 'marketplace' / 'natural-language' / 'extract-from-sessions' / 'attribution' / 'manual' (跟现有 status 字段同款 free-form VARCHAR 不加 CHECK)
 ALTER TABLE t_skill_draft ADD COLUMN evaluation_result_json TEXT NULL;
 
 -- evaluation_result_json shape (Jackson serialize):
@@ -116,7 +124,11 @@ public String getEvaluationResultJson() { return evaluationResultJson; }
 public void setEvaluationResultJson(String json) { this.evaluationResultJson = json; }
 ```
 
-### EvaluationResult Java record (Jackson 序列化)
+### EvaluationResult Java record (r2 fix — judge tool 真返 2 score / orchestrator 算 3 维)
+
+**r1 spec review verify**: `EvalJudgeTool.judgeMultiTurnConversation(EvalScenario, ScenarioRunResult, MultiTurnTranscript)` 真返 `EvalJudgeMultiTurnOutput { compositeScore, overallScore, perTurnScores, attribution, rationale }`. **不返 quality/efficiency/latency/cost 5 维**. latency/cost 是 EvalOrchestrator wall-time + token 算的, judge tool 只返 score quality.
+
+benchmark.json shape 改 (judge 出 + orchestrator metric 拼):
 
 ```java
 public record EvaluationResult(
@@ -130,152 +142,241 @@ public record EvaluationResult(
     String evaluatorVersion
 ) {
     public record SkillMetrics(
-        double passRate,
-        double quality,
-        double efficiency,
-        long latencyMs,
-        double costUsd
+        double compositeScore,    // from EvalJudgeTool.judgeMultiTurnConversation EvalJudgeMultiTurnOutput.compositeScore (0..1, judge 综合分)
+        double overallScore,      // from EvalJudgeTool overall (0..1, holistic)
+        double passRate,          // 算: count(compositeScore >= 0.7) / N scenarios — Service 拼
+        long avgLatencyMs,        // orchestrator wall-time per scenario 平均
+        double totalCostUsd       // orchestrator token cost 总
     ) {}
 }
 ```
 
-## 服务层
+## 服务层 (r2 fix — SubAgent async + judge tool 真 signature + transient SkillEntity 物化时机)
 
-### SkillCreatorService.evaluateSkillDraft
+### SubAgent async 收集模式 (r1 critical fix)
+
+**r1 spec review verify**: SubAgentTool 是 **async dispatch** (CLAUDE.md "结果自动回推, 不要轮询"). `evaluateSkillDraft` 不能 sync forkAndRun + @Transactional. 改 design:
+
+**Option A (推荐)**: 不让 evaluateSkillDraft 跨 SubAgent async 边界, 改成**两阶段**:
+1. **Phase eval-dispatch** (sync, @Transactional): render transient SkillEntity 拿 `candidate_skill_id` → 写入 t_skill_draft → 创 2N ephemeral SubAgent run 行 (t_subagent_run, V1 已有) 待跑
+2. **Phase eval-await** (async, listener pattern): 监听 SubAgent run 完成 event → 所有 2N child session 都到 status=completed → aggregate + judge + 写 evaluation_result_json (REQUIRES_NEW transaction)
+
+实施 via `@TransactionalEventListener(SubAgentRunCompletedEvent, AFTER_COMMIT)` + 计数器, 跟 V6 OptimizationEventAutoTriggerListener pattern 同款.
+
+或 **Option B (简化)**: SubAgent 现接口添 `awaitCompletion(runId, timeoutMs)` 同步 wait, evaluateSkillDraft 内串行 await 2N run. 简单但失去 async parallelism.
+
+**本期采 Option A** — 利用 V6 已有 AFTER_COMMIT listener pattern, 跟 SkillAbCompletedEvent 同款架构.
+
+### SubAgentTool schema 扩 (r1 verify gap)
+
+**r1 spec review verify**: SubAgentTool 现 schema (action/agentId/agentName/task/runId/maxLoops) **无 skillIdsOverride 字段**. 需扩:
+
+```java
+// SubAgentTool.SubAgentDispatchInput 加字段:
+public record SubAgentDispatchInput(
+    String action,           // 现有
+    Long agentId,            // 现有
+    String agentName,        // 现有
+    String task,             // 现有
+    String runId,            // 现有
+    Integer maxLoops,        // 现有
+    List<Long> skillIdsOverride  // NEW: evaluateSkillDraft 传 [draftSkillId] or [] for with/without
+) {}
+```
+
+SubAgentRegistry / SubAgentService dispatch 时若 `skillIdsOverride != null` → in-memory clone AgentEntity + 替换 skillIds (不写 DB).
+
+### SkillCreatorService.evaluateSkillDraft (r2 fix)
 
 ```java
 @Service
 public class SkillCreatorService {
 
     private final SubAgentTool subAgentTool;
+    private final SubAgentRegistry subAgentRegistry;       // V1 已有, 跟踪 active child run
     private final EvalJudgeTool evalJudgeTool;
     private final EvalScenarioRepository scenarioRepository;
     private final EphemeralScenarioCleanupService cleanupService;
     private final SkillDraftRepository draftRepository;
-    private final LlmProviderFactory llmProviderFactory;
+    private final SkillStorageService skillStorageService; // V6 已有 render transient SkillEntity
+    private final SessionRepository sessionRepository;     // 反查 agentId from sourceSessionId
+    private final ApplicationEventPublisher eventPublisher;
     private final ObjectMapper objectMapper;
 
     private static final double PASS_RATE_DELTA_THRESHOLD = 0.05; // 5pp
 
     /**
-     * Evaluate a SkillDraft via SubAgent fork × 2 (with_skill / without_skill).
-     *
-     * @param draftId target draft ID
-     * @param scenarios ephemeral EvalScenarioEntity list (already persisted with status='ephemeral')
-     * @return EvaluationResult containing benchmark + LLM summary
+     * Phase eval-dispatch (sync, @Transactional):
+     * 1. resolve target_agent_id (from draft.targetAgentId 或 sourceSessionId 反查)
+     * 2. render transient SkillEntity (复用 V6 R3 promoteDraftToTransientSkill pattern) → set draft.candidateSkillId
+     * 3. dispatch 2N SubAgent run (async, skillIdsOverride 切 with/without) — runId 写入 t_subagent_run
+     * 4. 返 List<SubAgentRunId> 给 caller; 真 await + judge 在 Phase eval-await
      */
     @Transactional
-    public EvaluationResult evaluateSkillDraft(Long draftId, List<EvalScenarioEntity> scenarios) {
-        SkillDraftEntity draft = draftRepository.findById(draftId)
-            .orElseThrow(() -> new IllegalArgumentException("Draft not found: " + draftId));
+    public List<String> dispatchEvaluation(Long draftId, List<String> ephemeralScenarioIds) {
+        SkillDraftEntity draft = draftRepository.findById(draftId).orElseThrow(...);
 
+        // 1. resolve target_agent_id
         Long targetAgentId = draft.getTargetAgentId();
-        // skillId for "with_skill" path — draft 已 rendered to SkillEntity (transient)
-        Long draftSkillId = draft.getCandidateSkillId();
-
-        List<TranscriptResult> withResults = new ArrayList<>();
-        List<TranscriptResult> withoutResults = new ArrayList<>();
-
-        try {
-            for (EvalScenarioEntity scenario : scenarios) {
-                // Fork SubAgent × 2 per scenario
-                String withTranscript = forkAndRun(targetAgentId, scenario, List.of(draftSkillId), "with_skill");
-                String withoutTranscript = forkAndRun(targetAgentId, scenario, List.of(), "without_skill");
-
-                // Judge each transcript
-                JudgeResult withJudge = evalJudgeTool.judgeMultiTurnConversation(withTranscript, scenario);
-                JudgeResult withoutJudge = evalJudgeTool.judgeMultiTurnConversation(withoutTranscript, scenario);
-
-                withResults.add(new TranscriptResult(scenario.getId(), withTranscript, withJudge));
-                withoutResults.add(new TranscriptResult(scenario.getId(), withoutTranscript, withoutJudge));
-            }
-
-            // Aggregate benchmark
-            SkillMetrics withSkill = aggregate(withResults);
-            SkillMetrics withoutSkill = aggregate(withoutResults);
-            SkillMetrics delta = computeDelta(withSkill, withoutSkill);
-
-            // LLM summary
-            String summary = generateSummary(draft, withSkill, withoutSkill, delta);
-
-            EvaluationResult result = new EvaluationResult(
-                withSkill, withoutSkill, delta, summary,
-                scenarios.stream().map(EvalScenarioEntity::getSourceSessionId).toList(),
-                scenarios.size(),
-                Instant.now(),
-                "skill-creator-1.0"
-            );
-
-            // Persist + status update
-            draft.setEvaluationResultJson(objectMapper.writeValueAsString(result));
-            draft.setStatus(delta.passRate() >= PASS_RATE_DELTA_THRESHOLD ? "evaluated_passed" : "rejected");
-            draftRepository.save(draft);
-
-            return result;
-        } finally {
-            // V6 ephemeral cleanup
-            cleanupService.cleanupEphemerals(scenarios.stream().map(EvalScenarioEntity::getId).toList());
+        if (targetAgentId == null && draft.getSourceSessionId() != null) {
+            targetAgentId = sessionRepository.findById(draft.getSourceSessionId())
+                .map(SessionEntity::getAgentId).orElseThrow(...);
+            draft.setTargetAgentId(targetAgentId);
         }
+
+        // 2. render transient SkillEntity (V6 R3 promoteDraftToTransientSkill 同款 pattern)
+        SkillEntity transientSkill = renderToTransientSkillEntity(draft);
+        draft.setCandidateSkillId(transientSkill.getId());
+        draftRepository.save(draft);
+
+        // 3. dispatch 2N SubAgent run
+        List<String> runIds = new ArrayList<>();
+        for (String scenarioId : ephemeralScenarioIds) {
+            EvalScenarioEntity scenario = scenarioRepository.findById(scenarioId).orElseThrow(...);
+            runIds.add(dispatchOne(targetAgentId, scenario.getTask(), List.of(transientSkill.getId()), draftId, scenarioId, "with_skill"));
+            runIds.add(dispatchOne(targetAgentId, scenario.getTask(), List.of(),                       draftId, scenarioId, "without_skill"));
+        }
+        return runIds;
     }
 
-    private String forkAndRun(Long agentId, EvalScenarioEntity scenario, List<Long> skillIdsOverride, String baseline) {
-        // Use SubAgentTool to fork sub-session with clean context
-        // Returns transcript string
+    /**
+     * Phase eval-await (async, AFTER_COMMIT listener — 跟 V6 OptimizationEventAutoTriggerListener 同款 pattern):
+     * 1. 监听 SubAgentRunCompletedEvent
+     * 2. 计数 draft 关联 runIds 完成数, 满 2N → trigger aggregate + judge + write evaluation_result
+     */
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    @Async
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void onSubAgentRunCompleted(SubAgentRunCompletedEvent event) {
+        // 找 draft, 看 2N runId 全 completed → aggregate + judge + write
+        // judge call signature (r1 fix 后):
+        //   evalJudgeTool.judgeMultiTurnConversation(scenario, scenarioRunResult, transcript)
+        //   返 EvalJudgeMultiTurnOutput { compositeScore, overallScore, perTurnScores, attribution, rationale }
+        // orchestrator-style metric (latency/cost) 自己从 t_subagent_run 行算 wall-time + tokenCost
+        ...
+        draft.setEvaluationResultJson(json);
+        draft.setStatus(delta.passRate() >= PASS_RATE_DELTA_THRESHOLD ? "evaluated_passed" : "rejected");
+        draftRepository.save(draft);
+
+        cleanupService.cleanupEphemerals(scenarioIds);  // r1 fix: List<String> not List<Long>
     }
 
-    private SkillMetrics aggregate(List<TranscriptResult> results) { ... }
-    private SkillMetrics computeDelta(SkillMetrics w, SkillMetrics wo) { ... }
-    private String generateSummary(SkillDraftEntity draft, SkillMetrics w, SkillMetrics wo, SkillMetrics delta) {
-        // LLM call: 给 draft.skillMd + 2 path benchmark → 让 LLM 总结 "这 skill 加/减 value 原因"
+    private SkillEntity renderToTransientSkillEntity(SkillDraftEntity draft) {
+        // 复用 V6 R3 SkillDraftService.promoteDraftToTransientSkill pattern:
+        // - SkillStorageService.allocate path
+        // - SkillCreatorService.render(draft, allocatedPath) 写磁盘 SKILL.md
+        // - SkillEntity name suffix "_eval_<short-uuid>" + source="skill-creator-eval-transient" 双 pivot
+        // - 评测完 cleanup or 接 approve flow promote 成正式 skill
+    }
+
+    private String dispatchOne(Long agentId, String task, List<Long> skillIds, Long draftId, String scenarioId, String baselineLabel) {
+        // 用 SubAgentTool 异步派发, runId 写入 t_subagent_run
+        // metadata 含 draftId / scenarioId / baselineLabel 用于 await listener match
     }
 }
 ```
 
-### 4 入口 hook 接入
-
-**入口 1+2 (SkillImportService.importSkill)**:
+### EvalJudgeTool 真 signature (r1 fix)
 
 ```java
-public SkillEntity importSkill(MultipartFile zip, Long userId, String sourceType) {
+// 现 V5 EvalJudgeTool.java line 252 真 signature:
+public EvalJudgeMultiTurnOutput judgeMultiTurnConversation(
+    EvalScenario scenario,
+    ScenarioRunResult runResult,
+    MultiTurnTranscript transcript
+)
+// 返 record { compositeScore, overallScore, perTurnScores, attribution, rationale }
+// onSubAgentRunCompleted 内: build MultiTurnTranscript from t_session_message (child session) + ScenarioRunResult metric
+```
+
+### EphemeralScenarioCleanupService (r1 fix 参数类型)
+
+```java
+// V6 真 signature (verify):
+public void cleanupEphemerals(List<String> ephemeralIds)  // String, NOT Long (EvalScenarioEntity.id 是 String UUID)
+```
+
+### 4 入口 hook 接入 (r1 fix — signature 跟现 code 真对齐)
+
+**r1 spec review verify**: 入口 1/2/4 真路径跟 spec 写的不一样, 重写 hook 代码:
+
+**入口 1 (用户上传 — `SkillController.uploadSkill` → `SkillService.uploadSkill`)**:
+
+```java
+// SkillController.uploadSkill (line 254 现 endpoint @PostMapping("/upload"))
+// 真路径: SkillService.uploadSkill(MultipartFile zip, Long ownerId), NOT SkillImportService.importSkill
+
+public SkillEntity uploadSkill(MultipartFile zip, Long ownerId) {
     // 现有: 解 zip + 写磁盘 + 注册 SkillEntity
-    // 新加: 提取 zip 内 evals/evals.json → 转 ephemeral scenarios
-    List<EvalScenarioEntity> scenarios = extractEvalsFromZip(zip);
+    // 新加: 解 zip 内 evals/evals.json → 转 ephemeral scenarios → 调 evaluateSkillDraft
+    Path extractedPath = storageService.allocate(...);
+    extractZipTo(zip, extractedPath);
+
+    List<EvalScenarioEntity> scenarios = parseEvalsJson(extractedPath.resolve("evals/evals.json"));
     if (!scenarios.isEmpty()) {
-        SkillDraftEntity draft = createDraftFromImport(zip, sourceType);
-        EvaluationResult result = skillCreatorService.evaluateSkillDraft(draft.getId(), scenarios);
-        if (result.delta().passRate() < PASS_RATE_DELTA_THRESHOLD) {
-            // status='rejected' 不 attach 给 agent
-            throw new SkillEvaluationFailedException(result.llmSummary());
-        }
+        SkillDraftEntity draft = buildDraftFromExtracted(extractedPath, ownerId, "upload");
+        draftRepository.save(draft);
+        scenarioRepository.saveAll(scenarios);
+
+        // dispatch 后 async 跑, sync return draft id 给用户; 真评测结果通过 dashboard 看
+        List<String> runIds = skillCreatorService.dispatchEvaluation(draft.getId(), scenarios.stream().map(EvalScenarioEntity::getId).toList());
+        return null; // dispatch only, real status update in onSubAgentRunCompleted listener
     }
-    // 通过 (无 evals 或 delta 够) → 正常 attach
-    return registerSkill(zip);
+    // 无 evals → 正常 attach (no eval gate)
+    return registerSkillSync(extractedPath, ownerId);
 }
 ```
 
-**入口 3 (skill-creator skill SubAgent path)**:
-
-skill-creator skill 自己处理 (SKILL.md step 4-5 instruction + scripts/ + agent runtime). 内部调:
-- `SkillDraftService.createDraftFromNaturalLanguage(userPrompt, agentId)` → SkillDraftEntity
-- `SkillCreatorService.evaluateSkillDraft(draftId, scenariosFromAgentDialog)` (agent 通过 SubAgentTool 跟 user 对话 step 1 收 test cases)
-
-**入口 4 (SkillDraftService.extractFromRecentSessions)**:
+**入口 2 (Marketplace 下载 — `SkillImportService.importSkill(Path, SkillSource, Long, boolean)`)**:
 
 ```java
-public SkillDraftEntity extractFromRecentSessions(Long agentId) {
-    // 现有: 拿 N session + LLM 抽 pattern → 生 SkillDraft
-    SkillDraftEntity draft = ...;
+// 真 signature: importSkill(Path sourcePath, SkillSource source, Long ownerId, boolean allowMediumRisk)
+public SkillEntity importSkill(Path sourcePath, SkillSource source, Long ownerId, boolean allowMediumRisk) {
+    // 现有: V1 SKILL-IMPORT 流程, 复制 sourcePath → 注册 SkillEntity + security scan
+    // 新加: parse sourcePath/evals/evals.json + 类似入口 1 流程
+    List<EvalScenarioEntity> scenarios = parseEvalsJson(sourcePath.resolve("evals/evals.json"));
+    if (!scenarios.isEmpty()) {
+        SkillDraftEntity draft = buildDraftFromMarketplace(sourcePath, ownerId, source);
+        draftRepository.save(draft);
+        scenarioRepository.saveAll(scenarios);
+
+        skillCreatorService.dispatchEvaluation(draft.getId(), scenarios.stream().map(EvalScenarioEntity::getId).toList());
+        return null;
+    }
+    return registerSkillSync(sourcePath, ownerId);
+}
+```
+
+**入口 3 (自然语言描述 — skill-creator skill SubAgent path)**:
+
+skill-creator skill 自己处理 (SKILL.md step 4-5 instruction + new `scripts/run-eval.md` SubAgent prompt template + agent runtime). 内部:
+- agent step 1 顺手问用户给 2-3 test case → 写到 ephemeral EvalScenarioEntity (status='ephemeral')
+- agent step 2-3 生 SKILL.md → 写 SkillDraftEntity (source='natural-language', target_agent_id=current agent)
+- agent step 4-5 调 `SkillCreatorService.dispatchEvaluation(draftId, scenarioIds)`
+- agent step 6 listener (onSubAgentRunCompleted) 自动跑 aggregate + judge + write evaluation_result + status
+
+**入口 4 (Extract from sessions — `SkillDraftService.extractFromRecentSessions(Long, Long) → int`)**:
+
+```java
+// 真 signature: extractFromRecentSessions(Long agentId, Long userId) → int (count of drafts saved)
+// 现有流程: 拿 N session + LLM 抽 → saveAll N draft → 返 count
+public int extractFromRecentSessions(Long agentId, Long userId) {
+    // 现有 (V1 PROD-LABEL-CLUSTER)
     List<SessionEntity> sourceSessions = ...;
+    List<SkillDraftEntity> drafts = llm.extractPatternToDrafts(sourceSessions);
+    drafts.forEach(d -> { d.setSource("extract-from-sessions"); d.setTargetAgentId(agentId); });
+    drafts = draftRepository.saveAll(drafts);
 
-    // 新加: 转 ephemeral scenarios → evaluate
-    List<EvalScenarioEntity> scenarios = sourceSessions.stream()
-        .map(s -> createEphemeralScenarioFromSession(s))
-        .toList();
-    scenarioRepository.saveAll(scenarios);
-
-    EvaluationResult result = skillCreatorService.evaluateSkillDraft(draft.getId(), scenarios);
-    // draft.status 已被 evaluate 改: 'evaluated_passed' / 'rejected'
-    return draft;
+    // 新加: 对每个 draft 转 ephemeral scenarios (用关联 source sessions 那批) → dispatch
+    for (SkillDraftEntity draft : drafts) {
+        List<EvalScenarioEntity> scenarios = sourceSessionsForDraft(draft, sourceSessions).stream()
+            .map(s -> createEphemeralScenarioFromSession(s))
+            .toList();
+        scenarioRepository.saveAll(scenarios);
+        skillCreatorService.dispatchEvaluation(draft.getId(), scenarios.stream().map(EvalScenarioEntity::getId).toList());
+    }
+    // async listener 自动跑 aggregate + write result + status
+    return drafts.size();
 }
 ```
 
@@ -374,9 +475,17 @@ Rejected tab 显示:
 ## 风险与边界
 
 ### Mid Risk
-- SubAgent fork × 2 per scenario × N scenarios = 2N sub-sessions / per draft evaluation. cost 可能高 (e.g. 3 scenario = 6 SubAgent calls).
+
+- SubAgent fork × 2 per scenario × N scenarios = 2N sub-sessions / per draft evaluation. cost 可能高 (e.g. 3 scenario = 6 SubAgent calls). 当 N>10 总 SubAgent run >20, 接 V1 SubAgentRegistry MAX_ACTIVE_CHILDREN_PER_PARENT 容量 check (现 V1 实施 verify)
 - LLM judge composite_score quality 依赖 V5 EvalJudgeTool prompt, 不动. 改 prompt 是 EVAL-ASSERTIONS-EVIDENCE backlog.
 - delta threshold (5pp default) 可能过严或过松, dogfood 1-2 周后调.
+
+### r1 fix 新加 footgun (r1 spec review surface)
+
+- **SubAgent async × @Transactional 边界**: `evaluateSkillDraft` 分两阶段 (dispatch sync / await async listener), 跟 V6 OptimizationEventAutoTriggerListener 同款 pattern. Listener 用 `@TransactionalEventListener(AFTER_COMMIT) + @Async + @Transactional(REQUIRES_NEW)` 三重注解防 Spring 6.1+ P11 教训 (CLAUDE.md flywheel-loop-closure ratify 3 已锁)
+- **transient SkillEntity 物化时机**: `evaluateSkillDraft.dispatchEvaluation` 必须先 render transient SkillEntity 拿 candidate_skill_id 给 SubAgent attach. 复用 V6 R3 `SkillDraftService.promoteDraftToTransientSkill` pattern (写磁盘 + SkillEntity name "_eval_<8char>" 后缀 + source="skill-creator-eval-transient" 双 pivot). 评测完 cleanup or 接 approve flow promote
+- **5 维 score 拼合来源**: EvalJudgeTool 真返 2 维 (compositeScore + overallScore), latency/cost 是 EvalOrchestrator wall-time + token. Listener aggregate 时拼合: judge 出 score + 自己从 t_subagent_run 算 latency / cost. spec EvaluationResult.SkillMetrics 改 5 字段 (compositeScore / overallScore / passRate / avgLatencyMs / totalCostUsd) 反映真拼合
+- **SubAgentTool schema 扩**: SubAgent 现 schema 无 `skillIdsOverride`, 必须扩字段. 影响: SubAgentTool.java + SubAgentService.java dispatch 时 in-memory clone AgentEntity 替换 skillIds. 跟 SkillSandboxFactory.buildSandboxRegistryWithSkills (V2 已有) 同款 pattern
 
 ### Low Risk
 - V91 schema 加 nullable column 不破现有 SkillDraft.

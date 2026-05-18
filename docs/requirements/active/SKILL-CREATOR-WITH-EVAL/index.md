@@ -16,6 +16,16 @@ V1 时已建 `system-skills/skill-creator/SKILL.md` (7 步 workflow 含 evaluati
 
 本需求**补齐 evaluation 实施** —— 跟 cc [agentskills.io evaluating-skills](https://agentskills.io/skill-creation/evaluating-skills) 同款 with-skill vs without-skill 对照 + LLM judge + benchmark + rejected 处理. 复用现 SkillForge 框架 (SubAgent 异步派发 / EvalJudgeTool V5 judgeMultiTurnConversation / t_skill_draft / EphemeralScenarioCleanupService V6 pattern), **不动 V1-V7 飞轮主路径**, 不动 Iron Law 核心 7+1 BE + 3 FE.
 
+## r1 spec review fix (2026-05-18)
+
+architect Opus spec review (subagent + team `skill-creator-with-eval-review` 双 reviewer) 抓 6 个 spec-vs-code 真 blocker, **本 spec 已 r2 fix** (详 prd.md "r1 spec review fix" + tech-design.md 内 r2 注). 关键 fix:
+- 4 入口 hook signature 跟现 code 真 align
+- SubAgent async 收集模式改 2 阶段 (dispatchEvaluation + AFTER_COMMIT listener V6 pattern)
+- EvalJudgeTool 真 signature 3-arg + 返 EvalJudgeMultiTurnOutput
+- V91 加 4 column (现 SkillDraftEntity 缺 target_agent_id/candidate_skill_id/source)
+- SubAgentTool schema 扩 skillIdsOverride
+- risk 章节补 3 footgun
+
 ## 范围
 
 Full pipeline, ~1 周:
