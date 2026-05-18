@@ -16,6 +16,18 @@ updated: 2026-05-18
 
 补齐 `system-skills/skill-creator/` skill 的 evaluation 实施 (V1 时 SKILL.md 写了概念没真做). 加 scripts/ + evals/ + `SkillCreatorService.evaluateSkillDraft` + V91 schema + dashboard report panel. 跨 4 skill 创建入口 (上传 / 下载 / 自然语言 / extract) 统一接 evaluation gate. 不动 V1-V7 飞轮 9 步主路径.
 
+## r2 spec review fix (2026-05-18 architect Opus re-review, subagent path — team agent stuck)
+
+r1 fix 后 architect Opus r2 re-review 抓 4 新 must-fix (2 blocker + 2 warning) — r1 fix 真正解 4/6 blocker (A3/A4/A6 + SubAgentTool schema 扩 + risk 3 footgun ✓), 但 A1/A2/A5 各漏一刀. **本 spec 已 r3 inline fix**:
+
+- **r3-blocker-1**: `draftId Long → String` (SkillDraftEntity.id 真是 String UUID, verify line 18-19) — 3 处 occurrences 全 fix
+- **r3-blocker-2**: `SubAgentRunCompletedEvent` 不存在 (grep verify 0 file) → 改 callback hook pattern (path b: SkillCreatorEvalCoordinator 直接 hook `SubAgentRegistry.onSessionLoopFinished` callback, **不动 SubAgentRegistry 核心 Iron Law**)
+- **r3-warning-3**: 入口 2 `importSkill(...)` return type `SkillEntity → ImportResult` (verify SkillImportService.java:107)
+- **r3-warning-4**: MAX_ACTIVE_CHILDREN_PER_PARENT=5 vs 2N dispatch — 采 **serial dispatch** 模式不超 cap (V1 SubAgentRegistry.java:43 verify)
+- **r3-nit**: Phase 编号顺序乱 (1.0/1.1/1.2/1.3/**2**/1.6/Final) → 修正 1.0/1.1/1.2/1.3/2.0/3.0/4.0 严格顺序
+
+team agent infra 3 个 reviewer (architect × 2 + code-reviewer × 1) 全 stuck idle 不 act on spawn brief, 切 subagent path 拿到详 grep verify 行号 verdict + r3 inline fix 完.
+
 ## r1 spec review fix (2026-05-18 architect Opus verify)
 
 architect Opus spec review 抓 6 个 spec-vs-code 真 blocker, **本 spec 已 r2 fix**, 详 tech-design.md 内 r2 注:

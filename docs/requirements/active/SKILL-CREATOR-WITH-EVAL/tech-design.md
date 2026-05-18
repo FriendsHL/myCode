@@ -153,19 +153,28 @@ public record EvaluationResult(
 
 ## 服务层 (r2 fix — SubAgent async + judge tool 真 signature + transient SkillEntity 物化时机)
 
-### SubAgent async 收集模式 (r1 critical fix)
+### SubAgent async 收集模式 (r3 fix — SubAgentRunCompletedEvent 不存在, 改 callback hook)
 
-**r1 spec review verify**: SubAgentTool 是 **async dispatch** (CLAUDE.md "结果自动回推, 不要轮询"). `evaluateSkillDraft` 不能 sync forkAndRun + @Transactional. 改 design:
+**r1 spec review verify**: SubAgentTool 是 **async dispatch** (CLAUDE.md "结果自动回推, 不要轮询"). `evaluateSkillDraft` 不能 sync forkAndRun + @Transactional.
 
-**Option A (推荐)**: 不让 evaluateSkillDraft 跨 SubAgent async 边界, 改成**两阶段**:
-1. **Phase eval-dispatch** (sync, @Transactional): render transient SkillEntity 拿 `candidate_skill_id` → 写入 t_skill_draft → 创 2N ephemeral SubAgent run 行 (t_subagent_run, V1 已有) 待跑
-2. **Phase eval-await** (async, listener pattern): 监听 SubAgent run 完成 event → 所有 2N child session 都到 status=completed → aggregate + judge + 写 evaluation_result_json (REQUIRES_NEW transaction)
+**r3 fix (subagent r2 review 发现 spec 引用 `SubAgentRunCompletedEvent` event 在 code 不存在)**: SubAgent 真完成路径走 `SubAgentRegistry.onSessionLoopFinished(sessionId, finalMessage, status, ...)` callback (verify `SubAgentRegistry.java:181`), 不发 Spring ApplicationEvent. 改 design (避免动核心 SubAgentRegistry 触 Iron Law):
 
-实施 via `@TransactionalEventListener(SubAgentRunCompletedEvent, AFTER_COMMIT)` + 计数器, 跟 V6 OptimizationEventAutoTriggerListener pattern 同款.
+**采路径 (b)** — 不动 SubAgentRegistry, 加 `SkillCreatorEvalCoordinator` 直接 hook callback:
 
-或 **Option B (简化)**: SubAgent 现接口添 `awaitCompletion(runId, timeoutMs)` 同步 wait, evaluateSkillDraft 内串行 await 2N run. 简单但失去 async parallelism.
+1. **Phase eval-dispatch** (sync, @Transactional, in SkillCreatorService): 
+   - render transient SkillEntity 拿 `candidate_skill_id` → 写入 t_skill_draft
+   - dispatch 2N SubAgent run (**serial 不 parallel** — see "并发 cap" 下方 r3 fix 4)
+   - 给每个 SubAgent run 注册 callback listener via `SubAgentRegistry.registerCompletionCallback(runId, evalCoordinator::onSubAgentDone)` (或同款 hook 接口 — Phase 1.0 取证 verify 真接口名)
+   - 写 `SkillCreatorEvalRun` (新轻量 entity 或复用现 t_subagent_run metadata) 跟踪 N×2 child session 状态 + 计数器
 
-**本期采 Option A** — 利用 V6 已有 AFTER_COMMIT listener pattern, 跟 SkillAbCompletedEvent 同款架构.
+2. **Phase eval-await** (async, `SkillCreatorEvalCoordinator.onSubAgentDone(runId, transcript, status)`): 
+   - 收到 callback → 写 transcript 到 t_subagent_run / 计数器+1
+   - 全 2N 完成 → trigger aggregate + judge + write evaluation_result (新 transaction REQUIRES_NEW)
+   - 不依赖 Spring ApplicationEvent / @TransactionalEventListener (避免 SubAgentRegistry 改动)
+
+**对比 V6 pattern**: V6 OptimizationEventAutoTriggerListener 用 @TransactionalEventListener 是因为 V6 自己 publish event (OptimizationEventStageChangeEvent). SubAgent 这条路径 V1 已用 callback, 复用 callback 不重发 event 更 align Iron Law.
+
+**path (a) 备选** (不采): 改 SubAgentRegistry 加 `publishEvent(new SubAgentRunCompletedEvent(...))` — 动核心 SubAgentRegistry (Iron Law 红灯), 不推荐.
 
 ### SubAgentTool schema 扩 (r1 verify gap)
 
@@ -213,7 +222,8 @@ public class SkillCreatorService {
      * 4. 返 List<SubAgentRunId> 给 caller; 真 await + judge 在 Phase eval-await
      */
     @Transactional
-    public List<String> dispatchEvaluation(Long draftId, List<String> ephemeralScenarioIds) {
+    public List<String> dispatchEvaluation(String draftId, List<String> ephemeralScenarioIds) {
+        // r3 fix: SkillDraftEntity.id 是 String UUID (verify SkillDraftEntity.java:18-19), spec 之前误写 Long
         SkillDraftEntity draft = draftRepository.findById(draftId).orElseThrow(...);
 
         // 1. resolve target_agent_id
@@ -269,7 +279,7 @@ public class SkillCreatorService {
         // - 评测完 cleanup or 接 approve flow promote 成正式 skill
     }
 
-    private String dispatchOne(Long agentId, String task, List<Long> skillIds, Long draftId, String scenarioId, String baselineLabel) {
+    private String dispatchOne(Long agentId, String task, List<Long> skillIds, String draftId, String scenarioId, String baselineLabel) {
         // 用 SubAgentTool 异步派发, runId 写入 t_subagent_run
         // metadata 含 draftId / scenarioId / baselineLabel 用于 await listener match
     }
@@ -327,12 +337,12 @@ public SkillEntity uploadSkill(MultipartFile zip, Long ownerId) {
 }
 ```
 
-**入口 2 (Marketplace 下载 — `SkillImportService.importSkill(Path, SkillSource, Long, boolean)`)**:
+**入口 2 (Marketplace 下载 — `SkillImportService.importSkill(Path, SkillSource, Long, boolean) → ImportResult`)**:
 
 ```java
-// 真 signature: importSkill(Path sourcePath, SkillSource source, Long ownerId, boolean allowMediumRisk)
-public SkillEntity importSkill(Path sourcePath, SkillSource source, Long ownerId, boolean allowMediumRisk) {
-    // 现有: V1 SKILL-IMPORT 流程, 复制 sourcePath → 注册 SkillEntity + security scan
+// 真 signature (verify SkillImportService.java:107): importSkill(...) → ImportResult (NOT SkillEntity, r3 fix)
+public ImportResult importSkill(Path sourcePath, SkillSource source, Long ownerId, boolean allowMediumRisk) {
+    // 现有: V1 SKILL-IMPORT 流程, 复制 sourcePath → 注册 SkillEntity + security scan, 返 ImportResult
     // 新加: parse sourcePath/evals/evals.json + 类似入口 1 流程
     List<EvalScenarioEntity> scenarios = parseEvalsJson(sourcePath.resolve("evals/evals.json"));
     if (!scenarios.isEmpty()) {
@@ -341,9 +351,9 @@ public SkillEntity importSkill(Path sourcePath, SkillSource source, Long ownerId
         scenarioRepository.saveAll(scenarios);
 
         skillCreatorService.dispatchEvaluation(draft.getId(), scenarios.stream().map(EvalScenarioEntity::getId).toList());
-        return null;
+        return ImportResult.evaluating(draft.getId()); // V1 ImportResult.skipped() / evaluating() 同款 enum-tagged result
     }
-    return registerSkillSync(sourcePath, ownerId);
+    return registerSkillSync(sourcePath, ownerId); // 返 ImportResult.success(skillEntity)
 }
 ```
 
@@ -423,6 +433,8 @@ Rejected tab 显示:
 
 ## 实施计划
 
+**r3 Phase 编号修正**: 原 Phase 1.6 dogfood 排在 Phase 2 review 后导致顺序乱 (1.0/1.1/1.2/1.3/2/1.6/Final). r3 改 Phase 编号为 1.0/1.1/1.2/1.3/2.0/3.0/4.0 严格顺序:
+
 ### Phase 1.0 — 证伪 + 红测试 (~0.5 天)
 
 - grep 现有 SubAgentTool payload shape + EvalJudgeTool.judgeMultiTurnConversation signature
@@ -453,18 +465,18 @@ Rejected tab 显示:
 - api/skillDrafts.ts 加 endpoint 拿 rejected list
 - FE test: SkillDraftEvaluationReport.test.tsx + Rejected tab render
 
-### Phase 2 — Reviewer 对抗 1 轮 + Judge (~0.5 天)
+### Phase 2.0 — Reviewer 对抗 1 轮 + Judge (~0.5 天)
 
 - java-reviewer (Opus, diff 估 ~1500-2000 lines 用 Opus 防 Sonnet stall) + typescript-reviewer 并行
 - Judge Opus 仲裁
 - mandatory fix 1 round
 
-### Phase 1.6 — Dogfood e2e (~0.5 天)
+### Phase 3.0 — Dogfood e2e (~0.5 天)
 
 - BE 重启 + V91 apply
 - Manual e2e: 用 Main Assistant attach skill-creator skill → 自然语言 "创建 csv-analyzer skill" → 看 agent step 1 问 test case → step 4-5 SubAgent × 2 真跑 → benchmark.json 真生 → t_skill_draft.status 改对 → dashboard report panel 真显
 
-### Phase Final (~0.5 天)
+### Phase 4.0 Final (~0.5 天)
 
 - 归档 active → archive
 - delivery-index.md + todo.md + README.md 同步
@@ -476,7 +488,7 @@ Rejected tab 显示:
 
 ### Mid Risk
 
-- SubAgent fork × 2 per scenario × N scenarios = 2N sub-sessions / per draft evaluation. cost 可能高 (e.g. 3 scenario = 6 SubAgent calls). 当 N>10 总 SubAgent run >20, 接 V1 SubAgentRegistry MAX_ACTIVE_CHILDREN_PER_PARENT 容量 check (现 V1 实施 verify)
+- SubAgent fork × 2 per scenario × N scenarios = 2N sub-sessions / per draft evaluation. cost 可能高 (e.g. 3 scenario = 6 SubAgent calls). **r3 fix (subagent r2 review 发现 V1 SubAgentRegistry.MAX_ACTIVE_CHILDREN_PER_PARENT=5 verify SubAgentRegistry.java:43)**: N=3 scenario × 2 = 6 已超 5 cap. 采 **serial dispatch** 模式 (不 parallel): SkillCreatorEvalCoordinator 跑 2N child session 按顺序 dispatch + await callback, 不超 cap. 失去 parallel wall-time 加速但 LLM token cost 是 N\*2\*avg_session_seconds 数量级, serial vs parallel 总 wall-time 差异 (~minutes for typical scenario) 评测可接受 (用户不要求实时). 如未来 N 很大, 加 `EVALUATION_QUOTA_OVERRIDE` 独立 cap (e.g. cap=20) 单独 quota 评测路径用 — backlog
 - LLM judge composite_score quality 依赖 V5 EvalJudgeTool prompt, 不动. 改 prompt 是 EVAL-ASSERTIONS-EVIDENCE backlog.
 - delta threshold (5pp default) 可能过严或过松, dogfood 1-2 周后调.
 

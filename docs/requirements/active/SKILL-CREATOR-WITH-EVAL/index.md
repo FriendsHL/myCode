@@ -16,6 +16,17 @@ V1 时已建 `system-skills/skill-creator/SKILL.md` (7 步 workflow 含 evaluati
 
 本需求**补齐 evaluation 实施** —— 跟 cc [agentskills.io evaluating-skills](https://agentskills.io/skill-creation/evaluating-skills) 同款 with-skill vs without-skill 对照 + LLM judge + benchmark + rejected 处理. 复用现 SkillForge 框架 (SubAgent 异步派发 / EvalJudgeTool V5 judgeMultiTurnConversation / t_skill_draft / EphemeralScenarioCleanupService V6 pattern), **不动 V1-V7 飞轮主路径**, 不动 Iron Law 核心 7+1 BE + 3 FE.
 
+## r2 spec review fix (2026-05-18, subagent path — team agent stuck)
+
+r1 fix 后 architect Opus r2 re-review 抓 4 新 must-fix (2 blocker + 2 warning). **本 spec 已 r3 inline fix**:
+- draftId Long → String (SkillDraftEntity.id 真 String UUID)
+- SubAgentRunCompletedEvent 不存在 → callback hook pattern (不动 SubAgentRegistry)
+- importSkill return type → ImportResult
+- MAX_ACTIVE_CHILDREN_PER_PARENT=5 vs 2N — serial dispatch
+- Phase 编号顺序乱修正
+
+详 prd.md "r2 spec review fix" section + tech-design.md 内 r3 fix 注.
+
 ## r1 spec review fix (2026-05-18)
 
 architect Opus spec review (subagent + team `skill-creator-with-eval-review` 双 reviewer) 抓 6 个 spec-vs-code 真 blocker, **本 spec 已 r2 fix** (详 prd.md "r1 spec review fix" + tech-design.md 内 r2 注). 关键 fix:
