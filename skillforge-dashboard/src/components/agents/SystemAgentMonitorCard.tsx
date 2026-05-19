@@ -26,15 +26,6 @@ interface SystemAgentMonitorCardProps {
   scheduledTaskId: number | null;
 }
 
-const STATUS_COLOR: Record<NonNullable<SystemAgentMonitorRow['lastRunStatus']>, string> = {
-  running: 'processing',
-  success: 'success',
-  failure: 'error',
-  skipped: 'default',
-  timeout: 'warning',
-  paused: 'default',
-};
-
 const OUTPUT_LABEL: Record<SystemAgentMonitorRow['outputEntityType'], string> = {
   annotations: 'annotations',
   proposals: 'proposals',
