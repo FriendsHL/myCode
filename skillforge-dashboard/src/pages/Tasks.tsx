@@ -1,13 +1,11 @@
 import React, { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Typography, Table, Tag, Tooltip, Select, Space, Button } from 'antd';
+import { Tooltip } from 'antd';
 import { useQuery } from '@tanstack/react-query';
-import type { ColumnsType } from 'antd/es/table';
 import { listTaskRuns, type TaskRunItem, type TaskRunSource } from '../api/tasks';
 import SchedulesPage from './Schedules';
 import TabBar from '../components/TabBar';
-
-const { Text } = Typography;
+import '../components/tasks/tasks.css';
 
 /**
  * Unified Tasks page — shows runs across all subsystems (scheduled tasks,
@@ -15,31 +13,26 @@ const { Text } = Typography;
  * have a single feed for "what has been running".
  */
 
-const SOURCE_OPTIONS: { value: TaskRunSource; label: string; color: string }[] = [
-  { value: 'scheduled_task', label: 'Scheduled', color: 'blue' },
-  { value: 'subagent', label: 'SubAgent', color: 'purple' },
-  { value: 'skill_evolution', label: 'Skill Evolution', color: 'gold' },
-  { value: 'skill_ab', label: 'Skill A/B', color: 'cyan' },
-  { value: 'prompt_ab', label: 'Prompt A/B', color: 'magenta' },
-  { value: 'collab', label: 'Collab', color: 'geekblue' },
+const SOURCE_OPTIONS: { value: TaskRunSource; label: string }[] = [
+  { value: 'scheduled_task', label: 'Scheduled' },
+  { value: 'subagent', label: 'SubAgent' },
+  { value: 'skill_evolution', label: 'Skill Evo' },
+  { value: 'skill_ab', label: 'Skill A/B' },
+  { value: 'prompt_ab', label: 'Prompt A/B' },
+  { value: 'collab', label: 'Collab' },
 ];
-const SOURCE_COLOR: Record<TaskRunSource, string> = SOURCE_OPTIONS.reduce(
-  (acc, o) => ({ ...acc, [o.value]: o.color }),
-  {} as Record<TaskRunSource, string>,
-);
 const SOURCE_LABEL: Record<TaskRunSource, string> = SOURCE_OPTIONS.reduce(
   (acc, o) => ({ ...acc, [o.value]: o.label }),
   {} as Record<TaskRunSource, string>,
 );
 
-function statusColor(status: string | null): string {
-  if (!status) return 'default';
+function statusClass(status: string | null): string {
+  if (!status) return 's-default';
   const s = status.toLowerCase();
-  if (['success', 'completed', 'promoted', 'ok'].includes(s)) return 'green';
-  if (['failure', 'failed', 'error', 'timeout'].includes(s)) return 'red';
-  if (['running', 'pending', 'initialized', 'in_progress'].includes(s)) return 'processing';
-  if (['skipped', 'cancelled', 'paused'].includes(s)) return 'default';
-  return 'blue';
+  if (['success', 'completed', 'promoted', 'ok'].includes(s)) return 's-success';
+  if (['failure', 'failed', 'error', 'timeout'].includes(s)) return 's-failure';
+  if (['running', 'pending', 'initialized', 'in_progress'].includes(s)) return 's-running';
+  return 's-default';
 }
 
 function fmtRelative(iso: string | null): string {
@@ -66,223 +59,44 @@ function fmtDuration(start: string | null, end: string | null): string {
   return `${(ms / 60_000).toFixed(1)}m`;
 }
 
-/* ─── Stats bar (mirrors Schedules stats pattern) ─── */
-
-const statsBar: React.CSSProperties = {
-  display: 'flex',
-  gap: 12,
-  marginBottom: 20,
-};
-
-const statItem: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 8,
-  padding: '8px 14px',
-  background: 'var(--bg-surface)',
-  border: '1px solid var(--border-1)',
-  borderRadius: 'var(--radius-md)',
-  fontSize: 'var(--font-size-sm)',
-};
-
-const statCount: React.CSSProperties = {
-  fontFamily: 'var(--font-mono)',
-  fontSize: 16,
-  fontWeight: 500,
-  color: 'var(--fg-1)',
-};
-
-const statLabel: React.CSSProperties = {
-  color: 'var(--fg-3)',
-  fontSize: 12,
-};
-
-/* ─── Empty state ─── */
-
-const emptyWrap: React.CSSProperties = {
-  padding: '48px 24px',
-  textAlign: 'center',
-};
-
-const emptyIcon: React.CSSProperties = {
-  width: 56,
-  height: 56,
-  margin: '0 auto 16px',
-  background: 'var(--bg-hover)',
-  borderRadius: 'var(--radius-lg)',
-  display: 'grid',
-  placeItems: 'center',
-  color: 'var(--fg-4)',
-};
-
-const emptyTitle: React.CSSProperties = {
-  fontSize: 15,
-  fontWeight: 500,
-  color: 'var(--fg-2)',
-  margin: '0 0 6px',
-};
-
-const emptyDesc: React.CSSProperties = {
-  fontSize: 'var(--font-size-sm)',
-  color: 'var(--fg-4)',
-  margin: 0,
-};
-
-/* ─── Main component ─── */
+const PAGE_SIZE = 25;
 
 const Tasks: React.FC = () => {
   const [activeTab, setActiveTab] = useState('runs');
   const [source, setSource] = useState<TaskRunSource | undefined>(undefined);
-  const [limit] = useState(50);
+  const [page, setPage] = useState(1);
 
   const { data, isLoading, refetch, isFetching } = useQuery({
-    queryKey: ['task-runs', source, limit],
-    queryFn: () => listTaskRuns({ source, limit }).then((r) => r.data ?? []),
+    queryKey: ['task-runs', source, 200],
+    queryFn: () => listTaskRuns({ source, limit: 200 }).then((r) => r.data ?? []),
     refetchInterval: 30_000,
   });
 
   const rows: TaskRunItem[] = data ?? [];
 
-  /* Stats computed from all rows (unfiltered) */
-  const { data: allRows = [] } = useQuery({
-    queryKey: ['task-runs', undefined, 200],
-    queryFn: () => listTaskRuns({ limit: 200 }).then((r) => r.data ?? []),
-    staleTime: 30_000,
-  });
-
   const stats = useMemo(() => {
-    const running = allRows.filter((r) => {
+    const running = rows.filter((r) => {
       const s = (r.status ?? '').toLowerCase();
       return s === 'running' || s === 'pending' || s === 'in_progress';
     }).length;
-    const failed = allRows.filter((r) => {
+    const failed = rows.filter((r) => {
       const s = (r.status ?? '').toLowerCase();
       return s === 'failed' || s === 'error' || s === 'timeout';
     }).length;
-    const succeeded = allRows.filter((r) => {
+    const succeeded = rows.filter((r) => {
       const s = (r.status ?? '').toLowerCase();
       return s === 'success' || s === 'completed' || s === 'promoted' || s === 'ok';
     }).length;
-    return { total: allRows.length, running, failed, succeeded };
-  }, [allRows]);
+    return { total: rows.length, running, failed, succeeded };
+  }, [rows]);
 
-  const columns: ColumnsType<TaskRunItem> = [
-    {
-      title: 'Source',
-      dataIndex: 'source',
-      key: 'source',
-      width: 140,
-      render: (s: TaskRunSource) => (
-        <Tag color={SOURCE_COLOR[s]} style={{ fontSize: 12 }}>
-          {SOURCE_LABEL[s]}
-        </Tag>
-      ),
-      filters: SOURCE_OPTIONS.map((o) => ({ text: o.label, value: o.value })),
-      onFilter: (val, row) => row.source === val,
-    },
-    {
-      title: 'Name',
-      dataIndex: 'name',
-      key: 'name',
-      width: 220,
-      render: (name: string) => (
-        <Text style={{ fontSize: 12, fontFamily: 'var(--font-mono)' }}>{name}</Text>
-      ),
-    },
-    {
-      title: 'Status',
-      dataIndex: 'status',
-      key: 'status',
-      width: 110,
-      render: (status: string) => (
-        <Tag color={statusColor(status)} style={{ fontSize: 12 }}>
-          {status}
-        </Tag>
-      ),
-    },
-    {
-      title: 'Triggered',
-      dataIndex: 'triggeredAt',
-      key: 'triggeredAt',
-      width: 130,
-      render: (iso: string | null) =>
-        iso ? (
-          <Tooltip title={new Date(iso).toLocaleString()}>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              {fmtRelative(iso)}
-            </Text>
-          </Tooltip>
-        ) : (
-          <Text type="secondary">—</Text>
-        ),
-    },
-    {
-      title: 'Duration',
-      key: 'duration',
-      width: 100,
-      render: (_v, row) => (
-        <Text style={{ fontSize: 12, fontFamily: 'var(--font-mono)' }}>
-          {fmtDuration(row.triggeredAt, row.finishedAt)}
-        </Text>
-      ),
-    },
-    {
-      title: 'Session',
-      dataIndex: 'sessionId',
-      key: 'sessionId',
-      width: 130,
-      render: (sid: string | null) =>
-        sid ? (
-          // V3 dogfood 2026-05-15: link to /chat/<sid> so paused (ask_user)
-          // sessions can be resumed in-context. /traces still searchable from
-          // chat top-bar if user wants raw trace.
-          <Link
-            to={`/chat/${sid}`}
-            style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}
-          >
-            {sid.slice(0, 8)}…
-          </Link>
-        ) : (
-          <Text type="secondary">—</Text>
-        ),
-    },
-    {
-      title: 'Detail',
-      dataIndex: 'detail',
-      key: 'detail',
-      render: (msg: string | null) =>
-        msg ? (
-          <Tooltip title={msg} placement="topLeft">
-            <Text ellipsis style={{ fontSize: 12, maxWidth: 320, display: 'inline-block' }}>
-              {msg}
-            </Text>
-          </Tooltip>
-        ) : (
-          <Text type="secondary">—</Text>
-        ),
-    },
-    {
-      title: 'Error',
-      dataIndex: 'errorMessage',
-      key: 'errorMessage',
-      width: 220,
-      render: (msg: string | null) =>
-        msg ? (
-          <Tooltip title={msg} placement="topLeft">
-            <Text type="danger" ellipsis style={{ fontSize: 12, maxWidth: 200, display: 'inline-block' }}>
-              {msg}
-            </Text>
-          </Tooltip>
-        ) : null,
-    },
-  ];
+  const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const pagedRows = rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   const TAB_ITEMS = [
     { key: 'runs', label: 'Runs' },
     { key: 'schedules', label: 'Schedules' },
   ];
-
-  const contentMaxWidth: React.CSSProperties = { maxWidth: 1400, margin: '0 auto' };
 
   if (activeTab === 'schedules') {
     return (
@@ -298,7 +112,7 @@ const Tasks: React.FC = () => {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - var(--header-height, 44px))' }}>
       <TabBar tabs={TAB_ITEMS} activeTab={activeTab} onSwitch={setActiveTab} />
-      <div style={{ flex: 1, minHeight: 0, overflow: 'auto', scrollbarGutter: 'stable', padding: 'var(--sp-6, 24px) var(--sp-8, 32px)', ...contentMaxWidth }}>
+      <div style={{ flex: 1, minHeight: 0, overflow: 'auto', scrollbarGutter: 'stable', padding: 'var(--sp-6, 24px) var(--sp-8, 32px)', maxWidth: 1400, margin: '0 auto', width: '100%', boxSizing: 'border-box' }}>
         {/* Header */}
         <div style={{ marginBottom: 'var(--sp-6, 24px)' }}>
           <h1 style={{ fontFamily: 'var(--font-serif)', fontSize: 28, fontWeight: 500, letterSpacing: '-0.02em', color: 'var(--fg-1)', margin: '0 0 4px', lineHeight: 1.2 }}>
@@ -310,63 +124,124 @@ const Tasks: React.FC = () => {
         </div>
 
         {/* Stats */}
-        <div style={statsBar}>
-          <div style={statItem}>
-            <span style={statCount}>{stats.total}</span>
-            <span style={statLabel}>total</span>
+        <div className="tasks-stats">
+          <div className="tasks-stat">
+            <span className="tasks-stat-n">{stats.total}</span>
+            <span className="tasks-stat-l">total</span>
           </div>
-          <div style={statItem}>
-            <span style={{ ...statCount, color: 'var(--color-warn, #d49a3a)' }}>{stats.running}</span>
-            <span style={statLabel}>running</span>
+          <div className="tasks-stat">
+            <span className="tasks-stat-n" style={{ color: 'var(--color-warn)' }}>{stats.running}</span>
+            <span className="tasks-stat-l">running</span>
           </div>
-          <div style={statItem}>
-            <span style={{ ...statCount, color: 'var(--color-err, #b8412f)' }}>{stats.failed}</span>
-            <span style={statLabel}>failed</span>
+          <div className="tasks-stat">
+            <span className="tasks-stat-n" style={{ color: 'var(--color-err)' }}>{stats.failed}</span>
+            <span className="tasks-stat-l">failed</span>
           </div>
-          <div style={statItem}>
-            <span style={{ ...statCount, color: 'var(--color-ok, #5c8a4a)' }}>{stats.succeeded}</span>
-            <span style={statLabel}>succeeded</span>
+          <div className="tasks-stat">
+            <span className="tasks-stat-n" style={{ color: 'var(--color-ok)' }}>{stats.succeeded}</span>
+            <span className="tasks-stat-l">succeeded</span>
           </div>
         </div>
 
         {/* Toolbar */}
-        <Space style={{ marginBottom: 16 }} size="middle">
-          <Select<TaskRunSource | undefined>
-            allowClear
-            placeholder="Filter by source"
-            value={source}
-            onChange={(v) => setSource(v)}
-            options={SOURCE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
-            style={{ width: 200 }}
-          />
-          <Button onClick={() => refetch()} loading={isFetching}>
-            Refresh
-          </Button>
-          <Text type="secondary" style={{ fontSize: 12 }}>
+        <div className="tasks-toolbar">
+          <div className="tasks-source-filter">
+            <button
+              className={source == null ? 'on' : ''}
+              onClick={() => { setSource(undefined); setPage(1); }}
+            >
+              All
+            </button>
+            {SOURCE_OPTIONS.map((o) => (
+              <button
+                key={o.value}
+                className={source === o.value ? 'on' : ''}
+                onClick={() => { setSource(source === o.value ? undefined : o.value); setPage(1); }}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+          <button className="tasks-refresh" onClick={() => refetch()} disabled={isFetching}>
+            {isFetching ? '↻ Loading…' : '↻ Refresh'}
+          </button>
+          <span className="tasks-toolbar-count">
             {rows.length} run{rows.length === 1 ? '' : 's'}
-          </Text>
-        </Space>
+          </span>
+        </div>
 
         {/* Table or empty state */}
-        {!isLoading && rows.length === 0 ? (
-          <div style={emptyWrap}>
-            <div style={emptyIcon}>
+        {isLoading ? (
+          <div className="tasks-empty">
+            <p className="tasks-empty-title">Loading…</p>
+          </div>
+        ) : rows.length === 0 ? (
+          <div className="tasks-empty">
+            <div className="tasks-empty-icon">
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
               </svg>
             </div>
-            <p style={emptyTitle}>No task runs yet</p>
-            <p style={emptyDesc}>Runs from scheduled tasks, sub-agents, skill evolution, and A/B evals will appear here.</p>
+            <p className="tasks-empty-title">No task runs yet</p>
+            <p className="tasks-empty-desc">Runs from scheduled tasks, sub-agents, skill evolution, and A/B evals will appear here.</p>
           </div>
         ) : (
-          <Table<TaskRunItem>
-            rowKey="runId"
-            columns={columns}
-            dataSource={rows}
-            loading={isLoading}
-            pagination={{ pageSize: 25, showSizeChanger: false }}
-            size="small"
-          />
+          <>
+            <div className="tasks-table">
+              <div className="tasks-table-h">
+                <span>Source</span>
+                <span>Name</span>
+                <span>Status</span>
+                <span>Triggered</span>
+                <span>Duration</span>
+                <span>Session</span>
+                <span>Detail</span>
+                <span>Error</span>
+              </div>
+              {pagedRows.map((row) => (
+                <div className="tasks-row" key={row.runId}>
+                  <span className={`tasks-source-badge src-${row.source}`}>
+                    {SOURCE_LABEL[row.source] ?? row.source}
+                  </span>
+                  <Tooltip title={row.name}>
+                    <span className="tasks-mono">{row.name}</span>
+                  </Tooltip>
+                  <span className={`tasks-status-badge ${statusClass(row.status)}`}>
+                    {row.status ?? '—'}
+                  </span>
+                  <Tooltip title={row.triggeredAt ? new Date(row.triggeredAt).toLocaleString() : undefined}>
+                    <span className="tasks-dim">{fmtRelative(row.triggeredAt)}</span>
+                  </Tooltip>
+                  <span className="tasks-mono">{fmtDuration(row.triggeredAt, row.finishedAt)}</span>
+                  {row.sessionId ? (
+                    <Link to={`/chat/${row.sessionId}`} className="tasks-link">
+                      {row.sessionId.slice(0, 8)}…
+                    </Link>
+                  ) : (
+                    <span className="tasks-dim">—</span>
+                  )}
+                  <Tooltip title={row.detail ?? undefined} placement="topLeft">
+                    <span className="tasks-detail">{row.detail ?? '—'}</span>
+                  </Tooltip>
+                  {row.errorMessage ? (
+                    <Tooltip title={row.errorMessage} placement="topLeft">
+                      <span className="tasks-err">{row.errorMessage}</span>
+                    </Tooltip>
+                  ) : (
+                    <span className="tasks-dim">—</span>
+                  )}
+                </div>
+              ))}
+            </div>
+            {/* Pagination */}
+            {totalPages > 1 && (
+              <div className="tasks-pagination">
+                <button disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>← Prev</button>
+                <span className="tasks-pagination-info">Page {page} / {totalPages}</span>
+                <button disabled={page >= totalPages} onClick={() => setPage((p) => Math.min(totalPages, p + 1))}>Next →</button>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
