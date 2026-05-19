@@ -3,6 +3,8 @@ package com.skillforge.server.skill;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.skillforge.core.model.AgentDefinition;
+import com.skillforge.core.model.SkillDefinition;
+import com.skillforge.core.skill.SkillRegistry;
 import com.skillforge.server.entity.AgentEntity;
 import com.skillforge.server.entity.EvalScenarioEntity;
 import com.skillforge.server.entity.SessionEntity;
@@ -120,6 +122,25 @@ public class SkillCreatorService {
     private final ApplicationEventPublisher eventPublisher;
 
     /**
+     * SKILL-CREATOR-PHASE-1.6 Phase 1.1 F3 fix (2026-05-19): in-memory
+     * registry surface so {@link #renderTransientCandidateSkill} can register
+     * the transient {@link SkillDefinition} before child-session dispatch.
+     * Without this, {@code ChatService.runLoop:705}
+     * {@code skillRegistry.getSkillDefinition(candidateName)} returns
+     * {@code Optional.empty()} for the with_skill baseline → silent skip
+     * → A/B comparison degrades to "agent w/ existing skills" vs "agent w/
+     * no skills" instead of the intended "agent w/ candidate" vs "agent
+     * w/o candidate" comparison.
+     *
+     * <p>Implementation follows V5 {@code SkillAbEvalService.buildSkillDefinition}
+     * line 838-860 — same in-memory pattern (no disk write), no
+     * {@code SkillPackageLoader.loadFromDirectory} call required because
+     * {@code SkillRegistry.registerSkillDefinition} is a pure
+     * {@code ConcurrentHashMap.put}. Nullable for the 0-arg legacy ctor.
+     */
+    private final SkillRegistry skillRegistry;
+
+    /**
      * Legacy 0-arg ctor — preserves the render-only path exercised by the
      * existing {@code SkillCreatorServiceTest#render_producesParseableSkillMd}
      * unit test (which builds {@code new SkillCreatorService()} directly).
@@ -138,6 +159,7 @@ public class SkillCreatorService {
         this.subAgentRegistry = null;
         this.objectMapper = null;
         this.eventPublisher = null;
+        this.skillRegistry = null;
     }
 
     /**
@@ -148,6 +170,10 @@ public class SkillCreatorService {
      * <p>Phase 1.1 B1-fix (2026-05-18): {@link ApplicationEventPublisher} added
      * so the synchronous dispatch can defer the async loop start to an
      * AFTER_COMMIT listener (avoids the chatAsync-sees-uncommitted-state race).
+     *
+     * <p>Phase 1.6 F3 fix (2026-05-19): {@link SkillRegistry} added so the
+     * transient candidate is actually discoverable by name lookup in the
+     * dispatch path — see {@link #skillRegistry} javadoc.
      */
     @Autowired
     public SkillCreatorService(SkillDraftRepository draftRepository,
@@ -159,7 +185,8 @@ public class SkillCreatorService {
                                 AgentService agentService,
                                 SubAgentRegistry subAgentRegistry,
                                 ObjectMapper objectMapper,
-                                ApplicationEventPublisher eventPublisher) {
+                                ApplicationEventPublisher eventPublisher,
+                                SkillRegistry skillRegistry) {
         this.draftRepository = draftRepository;
         this.skillRepository = skillRepository;
         this.scenarioRepository = scenarioRepository;
@@ -170,6 +197,7 @@ public class SkillCreatorService {
         this.subAgentRegistry = subAgentRegistry;
         this.objectMapper = objectMapper;
         this.eventPublisher = eventPublisher;
+        this.skillRegistry = skillRegistry;
     }
 
     /**
@@ -456,17 +484,98 @@ public class SkillCreatorService {
         transientSkill.setSystem(false);
         transientSkill.setRiskLevel("low");
 
-        // For Phase 1.1 minimal scope we don't write the SKILL.md to disk —
-        // the eval-time SubAgent child reads the skill from SkillRegistry by
-        // name, and the listener (Phase 1.1 coordinator) only needs the
-        // database row to identify the candidate. Phase 1.6 dogfood will
-        // re-evaluate whether the engine needs the on-disk artifact too;
-        // current SkillAbEvalService path uses SandboxSkillRegistryFactory
-        // which doesn't require disk presence. (Approval path -- not Phase 1.1
-        // -- will materialize the skill to disk if/when operator promotes.)
+        // Phase 1.6 F3 fix (2026-05-19): in-memory registry, no disk write.
+        // V5 SkillAbEvalService.buildSkillDefinition (line 838-860) already
+        // production-tested this pattern — registerSkillDefinition is a pure
+        // ConcurrentHashMap.put, the with_skill child's SubAgent loop reads
+        // the SkillDefinition straight from the registry by name. Setting
+        // skillPath=null is intentional: this transient SkillEntity is never
+        // promoted-to-production (eval-only sidecar) and the SubAgent path
+        // doesn't require disk presence (verify Phase 1.0 (e): ChatService.runLoop
+        // line 705 walks agentDef.getSkillIds() → skillRegistry.getSkillDefinition
+        // by name, no file load). Cleanup in SkillCreatorEvalCoordinator's
+        // aggregate finish (mirrors EphemeralScenarioCleanupService semantics).
         transientSkill.setSkillPath(null);
 
-        return skillRepository.save(transientSkill);
+        SkillEntity saved = skillRepository.save(transientSkill);
+
+        // Register the in-memory SkillDefinition so the with_skill baseline
+        // can actually attach the candidate. Skip silently if skillRegistry
+        // isn't wired (legacy fixtures using the 0-arg ctor).
+        if (skillRegistry != null) {
+            SkillDefinition def = buildInMemoryDefinition(saved, draft);
+            try {
+                skillRegistry.registerSkillDefinition(def);
+                log.debug("SkillCreatorService.renderTransientCandidateSkill: "
+                                + "registered transient SkillDefinition in registry name='{}' draftId={}",
+                        def.getName(), draft.getId());
+            } catch (RuntimeException ex) {
+                // Don't let registry failure orphan a half-saved SkillEntity —
+                // log + continue. The eval will silently degrade to "no candidate
+                // attached" for with_skill side (back to pre-F3 behavior).
+                log.warn("SkillCreatorService.renderTransientCandidateSkill: failed to "
+                                + "register transient SkillDefinition '{}' in SkillRegistry — "
+                                + "with_skill baseline will silently skip the candidate; "
+                                + "eval will degrade to existing-skills-vs-empty A/B: {}",
+                        saved.getName(), ex.getMessage());
+            }
+        }
+
+        return saved;
+    }
+
+    /**
+     * Phase 1.6 F3 fix (2026-05-19) — build an in-memory
+     * {@link SkillDefinition} for the transient eval candidate, mirroring
+     * the V5 {@code SkillAbEvalService.buildSkillDefinition} pattern
+     * (line 838-860). The body uses {@code draft.promptHint} verbatim — that's
+     * the LLM-extracted SKILL.md content — wrapped with a minimal
+     * header. SkillRegistry stores the result by {@code def.getName()} which
+     * matches the persisted {@code SkillEntity.name} so child sessions'
+     * {@code skill_overrides_json=[..., name]} actually hits.
+     */
+    private static SkillDefinition buildInMemoryDefinition(SkillEntity skill, SkillDraftEntity draft) {
+        SkillDefinition def = new SkillDefinition();
+        def.setId(String.valueOf(skill.getId()));
+        def.setName(skill.getName());
+        def.setDescription(skill.getDescription());
+
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("# ").append(skill.getName()).append("\n\n");
+        if (skill.getDescription() != null && !skill.getDescription().isBlank()) {
+            prompt.append(skill.getDescription()).append("\n\n");
+        }
+        if (draft.getPromptHint() != null && !draft.getPromptHint().isBlank()) {
+            prompt.append(draft.getPromptHint()).append("\n\n");
+        }
+        if (skill.getTriggers() != null && !skill.getTriggers().isBlank()) {
+            prompt.append("**Use when:** ").append(skill.getTriggers()).append("\n\n");
+        }
+        if (skill.getRequiredTools() != null && !skill.getRequiredTools().isBlank()) {
+            prompt.append("**Required tools:** ").append(skill.getRequiredTools()).append("\n");
+        }
+        def.setPromptContent(prompt.toString());
+
+        if (skill.getTriggers() != null && !skill.getTriggers().isBlank()) {
+            def.setTriggers(splitCsv(skill.getTriggers()));
+        }
+        if (skill.getRequiredTools() != null && !skill.getRequiredTools().isBlank()) {
+            def.setRequiredTools(splitCsv(skill.getRequiredTools()));
+            // allowed-tools mirrors required-tools for the eval candidate (V5 does
+            // the same for promoted transients) — without it the agent loop's
+            // tool-gate check rejects the call as "skill didn't declare tool".
+            def.setAllowedTools(splitCsv(skill.getRequiredTools()));
+        }
+        return def;
+    }
+
+    private static List<String> splitCsv(String csv) {
+        List<String> out = new ArrayList<>();
+        for (String s : csv.split(",")) {
+            String t = s.trim();
+            if (!t.isEmpty()) out.add(t);
+        }
+        return out;
     }
 
     /**

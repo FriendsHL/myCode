@@ -469,11 +469,10 @@ const SessionList: React.FC = () => {
         </header>
 
         {/*
-          SYSTEM-AGENT-TYPING Phase 2 UX refactor — segmented control
-          replacing Ant Design Tabs. Custom .type-seg matches the
-          existing .view-seg visual language.
+          SYSTEM-AGENT-TYPING Phase 2 UX refactor — underline tabs matching
+          the SkillList Skills/Drafts tab pattern.
         */}
-        <div className="type-seg" data-testid="session-type-tabs" style={{ marginBottom: 8 }}>
+        <div className="underline-tabs" data-testid="session-type-tabs">
           {SESSION_TAB_KEYS.map((k) => (
             <button
               key={k}

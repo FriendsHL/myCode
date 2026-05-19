@@ -210,6 +210,17 @@ const SkillDraftsPage: React.FC = () => {
     navigate(`/chat?prefill=${encodeURIComponent(prefill)}&draftId=${encodeURIComponent(id)}`);
   }, [drafts, navigate]);
 
+  /**
+   * SKILL-CREATOR-PHASE-1.6 (F4) — refresh the drafts list after the operator
+   * triggers an evaluation so the badge flips to "Evaluating…" immediately.
+   * The BE also broadcasts `session_updated` so the badge will refresh again
+   * via WS but invalidating the query gives a deterministic UX on the
+   * dashboard regardless of WS subscription state.
+   */
+  const handleEvaluationTriggered = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['skill-drafts', currentUserId] });
+  }, [queryClient, currentUserId]);
+
   /** Approve all low-risk drafts (similarity < 60%) */
   const handleApproveAllSafe = useCallback(() => {
     const safeDrafts = pendingDrafts.filter(d => (d.similarity ?? 0) < SUGGEST_MERGE_THRESHOLD);
@@ -369,6 +380,7 @@ const SkillDraftsPage: React.FC = () => {
               onApprove={handleApproveDraft}
               onDiscard={handleDiscardDraft}
               onIterate={handleIterateDraft}
+              onEvaluationTriggered={handleEvaluationTriggered}
               approving={approveMutation.isPending && approveMutation.variables?.id === selectedDraft.id}
               discarding={discardMutation.isPending && discardMutation.variables === selectedDraft.id}
             />

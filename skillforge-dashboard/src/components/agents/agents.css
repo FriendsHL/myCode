@@ -1374,49 +1374,6 @@
 [data-theme="dark"] .sess-status.s-error   { background: rgba(184, 65, 47, 0.15);  color: #e89090; }
 [data-theme="dark"] .sess-status.s-waiting { background: rgba(212, 154, 58, 0.18); color: #d4b86e; }
 
-/* ============== TYPE SEG (User / System tab switcher) ============== */
-
-.type-seg {
-  display: inline-flex;
-  background: var(--bg-surface);
-  border: 1px solid var(--border-1);
-  border-radius: 7px;
-  padding: 2px;
-  gap: 0;
-}
-.type-seg button {
-  border: 0;
-  background: transparent;
-  font: inherit;
-  color: var(--fg-3);
-  padding: 5px 14px;
-  border-radius: 5px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--font-size-xs);
-  white-space: nowrap;
-  transition: background var(--transition-base), color var(--transition-base);
-}
-.type-seg button:hover:not(.on) {
-  color: var(--fg-2);
-}
-.type-seg button.on {
-  background: var(--bg-hover);
-  color: var(--fg-1);
-  box-shadow: var(--shadow-1);
-}
-.type-seg .type-seg-count {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--fg-4);
-  margin-left: 2px;
-}
-.type-seg button.on .type-seg-count {
-  color: var(--fg-3);
-}
-
 /* ============== AGENT TYPE BADGE ============== */
 
 .agent-type-badge {
@@ -1484,28 +1441,72 @@
   background: var(--bg-surface);
   color: var(--fg-2);
   font: inherit;
-  font-size: 11px;
-  padding: 3px 8px;
-  border-radius: 4px;
+  font-size: var(--font-size-xs);
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  transition: border-color var(--transition-base), color var(--transition-base);
+  gap: 5px;
+  transition: border-color var(--transition-base), color var(--transition-base), background var(--transition-base);
 }
-.system-monitor-actions button:hover:not(:disabled) {
+.system-monitor-actions button:hover:not(:disabled):not(.primary) {
   color: var(--fg-1);
-  border-color: var(--border-2);
+  border-color: var(--border-medium);
+  background: var(--bg-hover);
 }
 .system-monitor-actions button:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 .system-monitor-actions button.primary {
+  border: 0;
   background: var(--accent);
-  color: var(--text-on-accent, #fff);
-  border-color: transparent;
+  color: var(--text-on-accent);
+  font-weight: 500;
 }
 .system-monitor-actions button.primary:hover:not(:disabled) {
   filter: brightness(0.92);
+}
+
+/* ============== UNDERLINE TABS (User / System switcher) ============== */
+
+.underline-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  border-bottom: 1px solid var(--border-1);
+  flex-shrink: 0;
+}
+.underline-tabs button {
+  padding: 10px 16px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--fg-3);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  transition: color var(--transition-base);
+}
+.underline-tabs button:hover:not(.on) {
+  color: var(--fg-2);
+}
+.underline-tabs button.on {
+  color: var(--fg-1);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+  cursor: default;
+}
+.underline-tab-badge {
+  margin-left: 6px;
+  background: var(--accent);
+  color: var(--text-on-accent, #fff);
+  border-radius: 10px;
+  padding: 1px 7px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
 }

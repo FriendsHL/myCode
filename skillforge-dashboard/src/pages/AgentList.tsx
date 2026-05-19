@@ -348,11 +348,10 @@ const AgentList: React.FC = () => {
         </header>
 
         {/*
-          SYSTEM-AGENT-TYPING Phase 2 UX refactor — segmented control
-          replacing the Ant Design Tabs. Custom .type-seg matches the
-          existing .view-seg visual language.
+          SYSTEM-AGENT-TYPING Phase 2 UX refactor — underline tabs matching
+          the SkillList Skills/Drafts tab pattern.
         */}
-        <div className="type-seg" data-testid="agent-type-tabs" style={{ marginBottom: 8 }}>
+        <div className="underline-tabs" data-testid="agent-type-tabs">
           {TAB_KEYS.map((k) => (
             <button
               key={k}

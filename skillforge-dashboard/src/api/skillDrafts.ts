@@ -79,3 +79,54 @@ export const PASS_RATE_DELTA_THRESHOLD = 0.05;
 export function isPassingResult(result: EvaluationResult): boolean {
   return result.delta.passRate >= PASS_RATE_DELTA_THRESHOLD;
 }
+
+/**
+ * SKILL-CREATOR-PHASE-1.6 (FE F4) — manual evaluation trigger payload.
+ *
+ * Mirrors the BE Phase 1.2 controller `POST /api/skill-drafts/{id}/evaluate`
+ * `@RequestBody` shape (camelCase Jackson default). Operator selects a target
+ * agent (filtered to `agentType=user`) in `TriggerEvaluationModal` and
+ * optionally narrows the source-session set; if `scenarios` is omitted the BE
+ * falls back to the draft's own `sourceSessionId` (or `firstByCreatedAt` for
+ * extract-from-sessions drafts).
+ *
+ * **java.md known footgun #6 (FE-BE contract)**: when be-dev lands Phase 1.2,
+ * a grep of `SkillDraftController.evaluate` must confirm `@RequestBody` field
+ * names match `targetAgentId` / `scenarios` / `threshold` 1:1. Renaming any
+ * field here requires a synchronised BE change (silent reflection failure
+ * otherwise: BE deserialises null, evaluation runs against unrelated agent /
+ * uses wrong threshold, single-test coverage on either side won't catch it).
+ *
+ * `threshold` is sent only when an operator overrides the BE default of 5pp;
+ * Ratify decision keeps the UI hardcoded at 5pp for Phase 1.6 (slider exposed
+ * in Phase 1.7) so this field is reserved for future use but already wired.
+ */
+export interface TriggerEvaluationPayload {
+  /** Target agent id — operator picks from `getAgents('user')`. Required. */
+  targetAgentId: number;
+  /** Optional source-session ids; omit to let BE pick the default. */
+  scenarios?: string[];
+  /** Optional delta threshold override (BE default 0.05 = 5pp). */
+  threshold?: number;
+}
+
+/**
+ * Response shape from BE Phase 1.2 controller. BE writes
+ * `t_skill_draft.status='evaluating'` synchronously then dispatches the eval
+ * coordinator on AFTER_COMMIT (Phase 1.1-1.3 archive pattern). FE wired to
+ * the `session_updated` WS broadcast so the badge flips to "Evaluating…"
+ * without a refetch.
+ */
+export interface TriggerEvaluationResponse {
+  draftId: string;
+  status: 'evaluating';
+}
+
+export const triggerEvaluation = (
+  draftId: string,
+  payload: TriggerEvaluationPayload,
+) =>
+  api.post<TriggerEvaluationResponse>(
+    `/skill-drafts/${draftId}/evaluate`,
+    payload,
+  );

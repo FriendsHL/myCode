@@ -167,11 +167,10 @@ function ChatSidebar({
     <aside className="side">
       <div className="side-head">
         {/*
-          SYSTEM-AGENT-TYPING Phase 2 UX refactor — sidebar segmented control
-          splitting agent list by agentType. Custom .type-seg matches the
-          existing .view-seg visual language.
+          SYSTEM-AGENT-TYPING Phase 2 UX refactor — underline tabs matching
+          the SkillList Skills/Drafts tab pattern. Shorter labels for sidebar.
         */}
-        <div className="type-seg" data-testid="chat-agent-type-tabs" style={{ marginBottom: 4 }}>
+        <div className="underline-tabs" data-testid="chat-agent-type-tabs">
           {(['user', 'system'] as const).map((k) => (
             <button
               key={k}

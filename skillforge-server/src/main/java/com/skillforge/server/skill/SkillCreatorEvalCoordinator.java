@@ -3,11 +3,21 @@ package com.skillforge.server.skill;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.skillforge.core.skill.SkillRegistry;
+import com.skillforge.server.entity.EvalScenarioEntity;
 import com.skillforge.server.entity.SessionEntity;
 import com.skillforge.server.entity.SkillDraftEntity;
+import com.skillforge.server.entity.SkillEntity;
+import com.skillforge.server.eval.EvalJudgeMultiTurnOutput;
+import com.skillforge.server.eval.EvalJudgeTool;
+import com.skillforge.server.eval.MultiTurnTranscript;
+import com.skillforge.server.eval.ScenarioRunResult;
+import com.skillforge.server.eval.scenario.EvalScenario;
 import com.skillforge.server.improve.EphemeralScenarioCleanupService;
+import com.skillforge.server.repository.EvalScenarioDraftRepository;
 import com.skillforge.server.repository.SessionRepository;
 import com.skillforge.server.repository.SkillDraftRepository;
+import com.skillforge.server.repository.SkillRepository;
 import com.skillforge.server.service.ChatService;
 import com.skillforge.server.service.event.SessionLoopFinishedEvent;
 import org.slf4j.Logger;
@@ -98,15 +108,111 @@ public class SkillCreatorEvalCoordinator {
     private final ChatService chatService;
 
     /**
-     * Test-only ctor — preserves the Phase 1.1 5-case unit tests that don't
-     * exercise the {@link #onSkillEvalDispatchReady} fire path. Calling that
-     * method on this instance is a no-op (returns early on null chatService).
+     * SKILL-CREATOR-PHASE-1.6 Phase 1.1 (2026-05-19): real LLM-as-judge call
+     * replaces the runtime_status proxy (D12 deviation). Per-child-session
+     * transcript is rendered via {@link MultiTurnTranscriptBuilder}, paired with
+     * a {@link ScenarioRunResult} adapter built from the child session metrics
+     * + the {@link EvalScenarioEntity} → {@link EvalScenario} adapter (same
+     * shape as {@code AbEvalPipeline.toEvalScenario}). Nullable in legacy
+     * fixtures that exercise the proxy path only — see
+     * {@link #aggregateSideViaJudge(java.util.List, java.util.Map)} fallback.
+     */
+    private final EvalJudgeTool evalJudgeTool;
+
+    /**
+     * Phase 1.1: scenarios are looked up by id (extracted from each child
+     * session's {@code eval_context_json.scenarioId}) so the judge call has
+     * access to {@code task} + {@code oracle.expected}. Nullable for legacy
+     * fixtures.
+     */
+    private final EvalScenarioDraftRepository scenarioRepository;
+
+    /**
+     * Phase 1.1: transcript renderer (lazy bean wiring same as
+     * {@link #chatService} since this lives in the same module). Nullable
+     * for legacy fixtures.
+     */
+    private final MultiTurnTranscriptBuilder transcriptBuilder;
+
+    /**
+     * Phase 1.6 F3 fix (2026-05-19): in-memory unregister of the transient
+     * SkillDefinition after aggregation completes. Pairs with
+     * {@code SkillCreatorService.renderTransientCandidateSkill}'s registerSkillDefinition.
+     * Skipping this would leak the {@code _eval_<8char>} entry in the
+     * registry indefinitely — harmless in dev (just clutter) but in prod
+     * a long-running BE would accumulate dead candidates.
+     *
+     * <p>Nullable for legacy fixtures.
+     */
+    private final SkillRegistry skillRegistry;
+
+    /**
+     * Phase 1.6 F3: lookup of the transient candidate's name (the {@code
+     * SkillEntity.name} that got registered) so we can unregister by name.
+     * Nullable for legacy fixtures.
+     */
+    private final SkillRepository skillRepository;
+
+    /**
+     * Phase 1.1 D12-fix (2026-05-19, Phase 1.6): judge-score → 0..1 normalize
+     * divisor. {@link EvalJudgeTool#judgeMultiTurnConversation} returns
+     * {@code compositeScore} / {@code overallScore} in 0..100 (verified
+     * Phase 1.0); {@link EvaluationResult.SkillMetrics} stores 0..1
+     * (FE depends on this scale). All arithmetic stays in 0..1 from here.
+     */
+    private static final double JUDGE_SCORE_SCALE = 100.0;
+
+    /**
+     * Test-only ctor — preserves Phase 1.1 5-case unit tests + the
+     * Phase 1.6 Phase 1.0 red-test anchor. Calling
+     * {@link #onSkillEvalDispatchReady} on this instance is a no-op (chatService
+     * null), and {@link #onSessionLoopFinished} aggregation falls back to the
+     * pre-Phase-1.6 proxy formula when the judge / scenario deps are null
+     * (so legacy 5-case tests keep their assertions).
      */
     public SkillCreatorEvalCoordinator(SessionRepository sessionRepository,
                                         SkillDraftRepository draftRepository,
                                         EphemeralScenarioCleanupService cleanupService,
                                         ObjectMapper objectMapper) {
-        this(sessionRepository, draftRepository, cleanupService, objectMapper, null);
+        this(sessionRepository, draftRepository, cleanupService, objectMapper, null,
+                null, null, null, null, null);
+    }
+
+    /**
+     * Phase 1.6 test ctor variant — pass the judge mock + scenario repo +
+     * transcript builder to drive the new aggregate-via-judge path. Used by
+     * {@code SkillCreatorEvalCoordinatorJudgeIT} after the Phase 1.0 → 1.1
+     * red-test inversion.
+     */
+    public SkillCreatorEvalCoordinator(SessionRepository sessionRepository,
+                                        SkillDraftRepository draftRepository,
+                                        EphemeralScenarioCleanupService cleanupService,
+                                        ObjectMapper objectMapper,
+                                        EvalJudgeTool evalJudgeTool,
+                                        EvalScenarioDraftRepository scenarioRepository,
+                                        MultiTurnTranscriptBuilder transcriptBuilder) {
+        this(sessionRepository, draftRepository, cleanupService, objectMapper, null,
+                evalJudgeTool, scenarioRepository, transcriptBuilder, null, null);
+    }
+
+    /**
+     * Phase 1.6 F3 fix test ctor variant — pass the SkillRegistry +
+     * SkillRepository mocks too to exercise the candidate-skill cleanup
+     * (unregister + log) at aggregate finish. Used by F3-fix regression
+     * tests added in {@code SkillCreatorEvalCoordinatorJudgeIT}.
+     */
+    public SkillCreatorEvalCoordinator(SessionRepository sessionRepository,
+                                        SkillDraftRepository draftRepository,
+                                        EphemeralScenarioCleanupService cleanupService,
+                                        ObjectMapper objectMapper,
+                                        EvalJudgeTool evalJudgeTool,
+                                        EvalScenarioDraftRepository scenarioRepository,
+                                        MultiTurnTranscriptBuilder transcriptBuilder,
+                                        SkillRegistry skillRegistry,
+                                        SkillRepository skillRepository) {
+        this(sessionRepository, draftRepository, cleanupService, objectMapper, null,
+                evalJudgeTool, scenarioRepository, transcriptBuilder,
+                skillRegistry, skillRepository);
     }
 
     @Autowired
@@ -114,12 +220,22 @@ public class SkillCreatorEvalCoordinator {
                                         SkillDraftRepository draftRepository,
                                         EphemeralScenarioCleanupService cleanupService,
                                         ObjectMapper objectMapper,
-                                        @Lazy ChatService chatService) {
+                                        @Lazy ChatService chatService,
+                                        EvalJudgeTool evalJudgeTool,
+                                        EvalScenarioDraftRepository scenarioRepository,
+                                        MultiTurnTranscriptBuilder transcriptBuilder,
+                                        SkillRegistry skillRegistry,
+                                        SkillRepository skillRepository) {
         this.sessionRepository = sessionRepository;
         this.draftRepository = draftRepository;
         this.cleanupService = cleanupService;
         this.objectMapper = objectMapper;
         this.chatService = chatService;
+        this.evalJudgeTool = evalJudgeTool;
+        this.scenarioRepository = scenarioRepository;
+        this.transcriptBuilder = transcriptBuilder;
+        this.skillRegistry = skillRegistry;
+        this.skillRepository = skillRepository;
     }
 
     /**
@@ -289,15 +405,66 @@ public class SkillCreatorEvalCoordinator {
         // EphemeralScenarioCleanupService.cleanupEphemerals contract).
         cleanupService.cleanupEphemerals(pending.scenarioIds);
 
+        // Phase 1.6 F3 fix (2026-05-19): unregister the transient candidate
+        // SkillDefinition from the in-memory SkillRegistry. Pairs with
+        // SkillCreatorService.renderTransientCandidateSkill's registration.
+        // Skipping leaks the entry (harmless in dev, accumulates in prod).
+        unregisterTransientCandidate(draft);
+
         log.info("[SkillCreatorEvalCoordinator] draftId={} aggregated: status={} passRateDelta={}",
                 ctx.draftId, draft.getStatus(),
                 result.delta() == null ? "null" : String.format("%.3f", result.delta().passRate()));
     }
 
     /**
-     * Aggregate sibling sessions into an {@link EvaluationResult}. Phase 1.1
-     * uses a lightweight per-side aggregation; Phase 1.6 will wire the real
-     * EvalJudgeTool integration (see class javadoc).
+     * Phase 1.6 F3 fix (2026-05-19) — remove the transient candidate's
+     * {@link com.skillforge.core.model.SkillDefinition} from the in-memory
+     * registry. Best-effort: registry / repo deps null in legacy fixtures →
+     * silent no-op. Lookup failure logs a warning and continues (the
+     * aggregate already wrote its final result; leaking the registry entry
+     * is non-fatal).
+     */
+    private void unregisterTransientCandidate(SkillDraftEntity draft) {
+        if (skillRegistry == null || skillRepository == null) {
+            return;
+        }
+        Long candidateSkillId = draft.getCandidateSkillId();
+        if (candidateSkillId == null) {
+            log.debug("[SkillCreatorEvalCoordinator] draft {} has no candidateSkillId — "
+                    + "nothing to unregister", draft.getId());
+            return;
+        }
+        try {
+            SkillEntity candidate = skillRepository.findById(candidateSkillId).orElse(null);
+            if (candidate == null) {
+                log.warn("[SkillCreatorEvalCoordinator] candidateSkillId {} not found "
+                                + "for draft {} — registry entry may leak",
+                        candidateSkillId, draft.getId());
+                return;
+            }
+            skillRegistry.unregisterSkillDefinition(candidate.getName());
+            log.debug("[SkillCreatorEvalCoordinator] unregistered transient SkillDefinition "
+                            + "name='{}' for draft {}",
+                    candidate.getName(), draft.getId());
+        } catch (RuntimeException ex) {
+            log.warn("[SkillCreatorEvalCoordinator] failed to unregister transient "
+                            + "candidate skill for draft {}: {}",
+                    draft.getId(), ex.getMessage());
+        }
+    }
+
+    /**
+     * Aggregate sibling sessions into an {@link EvaluationResult}.
+     *
+     * <p>Phase 1.6 (2026-05-19): when the judge surface is wired
+     * ({@link #evalJudgeTool} / {@link #scenarioRepository} /
+     * {@link #transcriptBuilder} all non-null), aggregation goes via
+     * {@link #computeMetricsViaJudge(List, Map)} — real LLM scoring of each
+     * child session's transcript. When the judge surface isn't wired (legacy
+     * test fixtures), falls back to {@link #computeMetricsViaProxy(List)} —
+     * the Phase 1.1 runtime_status proxy. Production wiring is via the
+     * 9-arg {@code @Autowired} ctor; tests choose which path by which test
+     * ctor they construct.
      */
     private EvaluationResult aggregate(SkillDraftEntity draft, PendingState pending,
                                         List<SessionEntity> siblings) {
@@ -313,8 +480,18 @@ public class SkillCreatorEvalCoordinator {
             }
         }
 
-        EvaluationResult.SkillMetrics withMetrics = computeMetrics(withSkillSiblings);
-        EvaluationResult.SkillMetrics withoutMetrics = computeMetrics(withoutSkillSiblings);
+        boolean judgeWired = evalJudgeTool != null && scenarioRepository != null
+                && transcriptBuilder != null;
+        Map<String, EvalScenarioEntity> scenarioCache = judgeWired
+                ? loadScenarios(pending.scenarioIds)
+                : java.util.Collections.emptyMap();
+
+        EvaluationResult.SkillMetrics withMetrics = judgeWired
+                ? computeMetricsViaJudge(withSkillSiblings, scenarioCache)
+                : computeMetricsViaProxy(withSkillSiblings);
+        EvaluationResult.SkillMetrics withoutMetrics = judgeWired
+                ? computeMetricsViaJudge(withoutSkillSiblings, scenarioCache)
+                : computeMetricsViaProxy(withoutSkillSiblings);
         EvaluationResult.SkillMetrics delta = new EvaluationResult.SkillMetrics(
                 withMetrics.compositeScore() - withoutMetrics.compositeScore(),
                 withMetrics.overallScore() - withoutMetrics.overallScore(),
@@ -322,7 +499,8 @@ public class SkillCreatorEvalCoordinator {
                 withMetrics.avgLatencyMs() - withoutMetrics.avgLatencyMs(),
                 withMetrics.totalCostUsd() - withoutMetrics.totalCostUsd());
 
-        String llmSummary = buildPlaceholderSummary(draft, withMetrics, withoutMetrics, delta);
+        String llmSummary = buildPlaceholderSummary(draft, withMetrics, withoutMetrics, delta,
+                judgeWired);
         List<String> sourceSessionIds = new ArrayList<>();
         for (SessionEntity s : siblings) sourceSessionIds.add(s.getId());
 
@@ -336,24 +514,120 @@ public class SkillCreatorEvalCoordinator {
     }
 
     /**
-     * Phase 1.1 placeholder metrics computation. Each session contributes:
+     * Phase 1.6 real-judge aggregator. For each sibling session:
+     * <ol>
+     *   <li>Resolve {@link EvalScenarioEntity} from {@code eval_context_json.scenarioId}</li>
+     *   <li>Render transcript via {@link MultiTurnTranscriptBuilder#fromSession(String)}</li>
+     *   <li>Build {@link ScenarioRunResult} adapter from session metrics
+     *       (status / wall-time / token counts)</li>
+     *   <li>Call {@link EvalJudgeTool#judgeMultiTurnConversation}</li>
+     *   <li>Normalize judge {@code compositeScore} / {@code overallScore} from
+     *       0..100 → 0..1 (see {@link #JUDGE_SCORE_SCALE} — Phase 1.0 verify (a))</li>
+     * </ol>
+     *
+     * <p>Then aggregate across the side's N sessions:
      * <ul>
-     *   <li>{@code compositeScore} / {@code overallScore}: 1.0 if
-     *       {@code runtime_status='completed'}, 0.0 otherwise. This is the
-     *       crude "did the loop reach a terminal answer" proxy; Phase 1.6
-     *       wires the real EvalJudgeTool to score per-turn quality.</li>
-     *   <li>{@code passRate}: same proxy (count of completed / count total).</li>
-     *   <li>{@code avgLatencyMs}: not tracked yet — Phase 1.6 will pull from
-     *       per-session wall-time on {@code completedAt - createdAt}.</li>
-     *   <li>{@code totalCostUsd}: zero placeholder; Phase 1.6 will sum
-     *       {@code totalInputTokens + totalOutputTokens} × provider rate.</li>
+     *   <li>{@code compositeScore} = mean per-session composite (0..1)</li>
+     *   <li>{@code overallScore} = mean per-session overall (0..1)</li>
+     *   <li>{@code passRate} = count(per-session composite ≥ {@link
+     *       SkillCreatorService#SCENARIO_PASS_SCORE} 0.7) / N — cc convention</li>
+     *   <li>{@code avgLatencyMs} = mean wall-time</li>
+     *   <li>{@code totalCostUsd} = 0.0 (provider-rate lookup is a separate
+     *       backlog; ScenarioRunResult tokens are captured but not converted)</li>
      * </ul>
      *
-     * <p>The {@link EvaluationResult} shape stays stable across Phase 1.1 →
-     * 1.6 — only the per-field provenance changes. The FE
-     * {@code SkillDraftEvaluationReport.tsx} reads the same fields.
+     * <p>Failure modes (judge call throws / scenario not found / transcript
+     * empty): handled per session — that session contributes {@code (0, 0)}
+     * to the means + counts as a non-pass. Other sessions still aggregate
+     * normally. The judge contract itself never throws — it degrades to 0
+     * score (see {@code EvalJudgeTool.judgeMultiTurnConversation} catch).
      */
-    private EvaluationResult.SkillMetrics computeMetrics(List<SessionEntity> sessions) {
+    private EvaluationResult.SkillMetrics computeMetricsViaJudge(List<SessionEntity> sessions,
+                                                                  Map<String, EvalScenarioEntity> scenarioCache) {
+        if (sessions == null || sessions.isEmpty()) {
+            return new EvaluationResult.SkillMetrics(0.0, 0.0, 0.0, 0L, 0.0);
+        }
+        double sumComposite = 0.0;
+        double sumOverall = 0.0;
+        int passCount = 0;
+        long totalLatency = 0L;
+        int N = sessions.size();
+
+        for (SessionEntity s : sessions) {
+            EvalContext ctx = parseEvalContext(s.getEvalContextJson());
+            EvalScenarioEntity scenarioEntity = ctx == null ? null : scenarioCache.get(ctx.scenarioId);
+            EvalScenario scenario = scenarioEntity == null ? null : toEvalScenario(scenarioEntity);
+
+            MultiTurnTranscript transcript;
+            try {
+                transcript = transcriptBuilder.fromSession(s.getId());
+            } catch (RuntimeException ex) {
+                log.warn("[SkillCreatorEvalCoordinator] transcript build failed sessionId={}: {}",
+                        s.getId(), ex.getMessage());
+                transcript = new MultiTurnTranscript();
+            }
+
+            ScenarioRunResult runResult = buildScenarioRunResult(s,
+                    ctx == null ? null : ctx.scenarioId);
+
+            double composite01;
+            double overall01;
+            if (scenario == null) {
+                // No scenario to judge against → can't call judge; mark as 0.
+                log.warn("[SkillCreatorEvalCoordinator] sessionId={} has no resolvable scenario "
+                        + "(scenarioId={}); contributing 0/0 to aggregate", s.getId(),
+                        ctx == null ? null : ctx.scenarioId);
+                composite01 = 0.0;
+                overall01 = 0.0;
+            } else {
+                EvalJudgeMultiTurnOutput judgeOut;
+                try {
+                    judgeOut = evalJudgeTool.judgeMultiTurnConversation(scenario, runResult, transcript);
+                } catch (RuntimeException ex) {
+                    // EvalJudgeTool internally catches Exception → returns 0 score, so
+                    // this branch is defensive only (e.g. wiring bug). Don't kill the
+                    // whole side just because one session's judge call exploded.
+                    log.error("[SkillCreatorEvalCoordinator] judge call exploded sessionId={} "
+                            + "scenarioId={}", s.getId(),
+                            ctx == null ? null : ctx.scenarioId, ex);
+                    judgeOut = new EvalJudgeMultiTurnOutput();
+                    judgeOut.setCompositeScore(0.0);
+                    judgeOut.setOverallScore(0.0);
+                }
+                composite01 = clamp01(judgeOut.getCompositeScore() / JUDGE_SCORE_SCALE);
+                overall01 = clamp01(judgeOut.getOverallScore() / JUDGE_SCORE_SCALE);
+            }
+            sumComposite += composite01;
+            sumOverall += overall01;
+            if (composite01 >= SkillCreatorService.SCENARIO_PASS_SCORE) {
+                passCount++;
+            }
+            totalLatency += sessionWallTimeMs(s);
+        }
+
+        double meanComposite = sumComposite / N;
+        double meanOverall = sumOverall / N;
+        double passRate = (double) passCount / N;
+        long avgLatencyMs = totalLatency / N;
+        // Phase 1.6 TODO: per-side totalCostUsd from token counts × provider
+        // rates. ScenarioRunResult carries input/output tokens (captured from
+        // SessionEntity.totalInputTokens / totalOutputTokens) but the provider-
+        // rate lookup is a separate backlog (no per-provider cost table yet).
+        return new EvaluationResult.SkillMetrics(
+                meanComposite, meanOverall, passRate, avgLatencyMs, 0.0);
+    }
+
+    /**
+     * Phase 1.1 runtime_status proxy (D12 deviation) — retained for legacy
+     * test fixtures that don't wire the judge surface. {@link #aggregate}
+     * picks this path when {@link #evalJudgeTool} (or its sibling deps) is
+     * null. Production wiring always picks the judge path because the
+     * Spring ctor passes all four deps.
+     *
+     * <p>Per session: {@code passRate} = 1.0 if {@code runtime_status='completed'},
+     * 0.0 otherwise. {@code avgLatencyMs} = real wall-time. {@code totalCostUsd} = 0.
+     */
+    private EvaluationResult.SkillMetrics computeMetricsViaProxy(List<SessionEntity> sessions) {
         if (sessions.isEmpty()) {
             return new EvaluationResult.SkillMetrics(0.0, 0.0, 0.0, 0L, 0.0);
         }
@@ -363,28 +637,122 @@ public class SkillCreatorEvalCoordinator {
             if ("completed".equals(s.getRuntimeStatus())) {
                 completedCount++;
             }
-            if (s.getCreatedAt() != null && s.getCompletedAt() != null) {
-                long latency = s.getCompletedAt().toEpochMilli()
-                        - s.getCreatedAt().atZone(java.time.ZoneOffset.UTC).toInstant().toEpochMilli();
-                totalLatency += Math.max(0L, latency);
-            }
+            totalLatency += sessionWallTimeMs(s);
         }
         double passRate = (double) completedCount / sessions.size();
         long avgLatencyMs = totalLatency / sessions.size();
-        // Phase 1.1 placeholder: compositeScore == passRate as a crude proxy.
-        // Phase 1.6 will replace with EvalJudgeTool.judgeMultiTurnConversation output.
         return new EvaluationResult.SkillMetrics(
                 passRate, passRate, passRate, avgLatencyMs, 0.0);
     }
 
+    private Map<String, EvalScenarioEntity> loadScenarios(List<String> scenarioIds) {
+        if (scenarioIds == null || scenarioIds.isEmpty()) {
+            return java.util.Collections.emptyMap();
+        }
+        Map<String, EvalScenarioEntity> out = new LinkedHashMap<>();
+        for (String id : scenarioIds) {
+            if (id == null) continue;
+            scenarioRepository.findById(id).ifPresent(e -> out.put(id, e));
+        }
+        return out;
+    }
+
+    /**
+     * EvalScenarioEntity → EvalScenario adapter. Mirrors {@code
+     * AbEvalPipeline.toEvalScenario} (single-turn ephemerals); multi-turn
+     * is not used by skill-creator-eval (each ephemeral scenario is a
+     * single user task per Phase 1.2's
+     * {@code SkillCreatorService.buildEphemeralScenariosFromZip /
+     * buildEphemeralScenariosFromSessions}).
+     */
+    private static EvalScenario toEvalScenario(EvalScenarioEntity entity) {
+        EvalScenario scenario = new EvalScenario();
+        scenario.setId(entity.getId());
+        scenario.setName(entity.getName());
+        scenario.setDescription(entity.getDescription());
+        scenario.setCategory(entity.getCategory());
+        scenario.setSplit(entity.getSplit());
+        scenario.setTask(entity.getTask());
+        EvalScenario.ScenarioOracle oracle = new EvalScenario.ScenarioOracle();
+        oracle.setType(entity.getOracleType());
+        oracle.setExpected(entity.getOracleExpected());
+        scenario.setOracle(oracle);
+        return scenario;
+    }
+
+    /**
+     * Build a {@link ScenarioRunResult} adapter from the child SessionEntity.
+     * EvalJudgeTool's multi-turn judge reads these signals to anchor failure
+     * attribution (e.g. {@code engineThrewException} biases toward VETO,
+     * {@code hitLoopLimit} biases toward TIMEOUT-like attribution).
+     *
+     * <p>Phase 1.0 verify (d): {@code t_subagent_run} doesn't store
+     * token / cost; we pull them from the child {@link SessionEntity}
+     * ({@code totalInputTokens} / {@code totalOutputTokens}) directly.
+     */
+    private static ScenarioRunResult buildScenarioRunResult(SessionEntity session, String scenarioId) {
+        boolean completed = "completed".equals(session.getRuntimeStatus())
+                || "idle".equals(session.getRuntimeStatus());
+        boolean errored = "error".equals(session.getRuntimeStatus())
+                || "aborted_by_hook".equals(session.getRuntimeStatus());
+        boolean cancelled = "cancelled".equals(session.getRuntimeStatus());
+
+        ScenarioRunResult result;
+        if (completed) {
+            result = ScenarioRunResult.pass(scenarioId);
+        } else if (errored) {
+            result = ScenarioRunResult.error(scenarioId,
+                    "Child session runtime_status='" + session.getRuntimeStatus() + "'");
+        } else if (cancelled) {
+            result = ScenarioRunResult.timeout(scenarioId, "Cancelled");
+        } else {
+            result = ScenarioRunResult.fail(scenarioId);
+        }
+        result.setSessionId(session.getId());
+        result.setExecutionTimeMs(sessionWallTimeMs(session));
+        result.setInputTokens(session.getTotalInputTokens());
+        result.setOutputTokens(session.getTotalOutputTokens());
+        result.setRootTraceId(session.getActiveRootTraceId());
+        // loopCount / agentFinalOutput / tool-related signals: not tracked at this
+        // surface yet. Phase 1.7 dogfood may augment if attribution surfaces want
+        // them; for now judge has enough (transcript + status + oracle).
+        return result;
+    }
+
+    private static long sessionWallTimeMs(SessionEntity s) {
+        if (s.getCreatedAt() == null || s.getCompletedAt() == null) return 0L;
+        long latency = s.getCompletedAt().toEpochMilli()
+                - s.getCreatedAt().atZone(java.time.ZoneOffset.UTC).toInstant().toEpochMilli();
+        return Math.max(0L, latency);
+    }
+
+    private static double clamp01(double v) {
+        if (Double.isNaN(v)) return 0.0;
+        return Math.max(0.0, Math.min(1.0, v));
+    }
+
+    /**
+     * Build a human-readable rollup of the per-side metrics. Phase 1.6 still
+     * uses a deterministic template (no separate LLM "rollup" call); the
+     * meaningful LLM call is the per-session judge inside
+     * {@link #computeMetricsViaJudge(List, Map)}. A future Phase 1.7 may
+     * add a second LLM pass to summarize attribution / failure modes per
+     * judge {@code rationale} — tracked as backlog.
+     */
     private String buildPlaceholderSummary(SkillDraftEntity draft,
                                             EvaluationResult.SkillMetrics with,
                                             EvaluationResult.SkillMetrics without,
-                                            EvaluationResult.SkillMetrics delta) {
+                                            EvaluationResult.SkillMetrics delta,
+                                            boolean judgeWired) {
         StringBuilder sb = new StringBuilder();
-        sb.append("Skill '").append(draft.getName()).append("' evaluation completed. ");
+        sb.append("Skill '").append(draft.getName()).append("' evaluation completed");
+        sb.append(judgeWired ? " (LLM judge). " : " (runtime_status proxy). ");
         sb.append(String.format("with_skill passRate=%.0f%%, without_skill passRate=%.0f%%, delta=%+.0fpp. ",
                 with.passRate() * 100, without.passRate() * 100, delta.passRate() * 100));
+        if (judgeWired) {
+            sb.append(String.format("Mean composite (0..1): with=%.2f, without=%.2f, delta=%+.2f. ",
+                    with.compositeScore(), without.compositeScore(), delta.compositeScore()));
+        }
         if (delta.passRate() >= SkillCreatorService.PASS_RATE_DELTA_THRESHOLD) {
             sb.append("Recommended: promote (delta meets threshold ")
               .append(String.format("%.0fpp", SkillCreatorService.PASS_RATE_DELTA_THRESHOLD * 100))
@@ -392,7 +760,7 @@ public class SkillCreatorEvalCoordinator {
         } else {
             sb.append("Recommended: reject (delta below threshold ")
               .append(String.format("%.0fpp", SkillCreatorService.PASS_RATE_DELTA_THRESHOLD * 100))
-              .append("). Phase 1.6 will surface a real LLM summary here once EvalJudgeTool integration lands.");
+              .append(").");
         }
         return sb.toString();
     }

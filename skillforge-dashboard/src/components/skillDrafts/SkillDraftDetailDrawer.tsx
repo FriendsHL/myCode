@@ -20,6 +20,7 @@ import { useMemo, useState } from 'react';
 import { Tabs } from 'antd';
 import type { SkillDraft } from '../../api';
 import { SkillDraftEvaluationReport } from './SkillDraftEvaluationReport';
+import { TriggerEvaluationModal } from './TriggerEvaluationModal';
 
 const HIGH_SIMILARITY_THRESHOLD = 0.85;
 const SUGGEST_MERGE_THRESHOLD = 0.6;
@@ -65,6 +66,13 @@ interface SkillDraftDetailDrawerProps {
   onApprove: (id: string) => void;
   onDiscard: (id: string) => void;
   onIterate?: (id: string) => void;
+  /**
+   * SKILL-CREATOR-PHASE-1.6 (F4) — optional callback fired after the
+   * `triggerEvaluation` API resolves (status → 'evaluating' on the BE).
+   * Lets the parent page refresh the draft list / optimistically flip the
+   * badge without waiting for the WS broadcast.
+   */
+  onEvaluationTriggered?: (draftId: string) => void;
   approving: boolean;
   discarding: boolean;
 }
@@ -74,12 +82,14 @@ export function SkillDraftDetailDrawer({
   onApprove,
   onDiscard,
   onIterate,
+  onEvaluationTriggered,
   approving,
   discarding,
 }: SkillDraftDetailDrawerProps) {
   const [activeTab, setActiveTab] = useState<string>('overview');
   const [showPromptHint, setShowPromptHint] = useState(false);
   const [showRationale, setShowRationale] = useState(false);
+  const [triggerEvalOpen, setTriggerEvalOpen] = useState(false);
 
   const triggers = (draft.triggers ?? '')
     .split(',')
@@ -96,6 +106,13 @@ export function SkillDraftDetailDrawer({
     draft.status === 'evaluated_passed' ||
     draft.status === 'rejected';
   const isRejected = draft.status === 'rejected';
+  // SKILL-CREATOR-PHASE-1.6 (F4) — Trigger Evaluation button is allowed on
+  // 'draft' (pre-review) and 'rejected' (operator can re-run after iterating)
+  // per Ratify. Explicitly excluded from 'evaluating' so we never queue a
+  // second run while one is in-flight, and from 'approved' / 'discarded' /
+  // 'evaluated_passed' which are terminal review states.
+  const canTriggerEvaluation =
+    draft.status === 'draft' || draft.status === 'rejected';
 
   const overviewPane = (
     <div className="draft-detail-content">
@@ -291,7 +308,11 @@ export function SkillDraftDetailDrawer({
 
       {/* Footer actions — pending drafts get approve/discard; rejected drafts
           get an iterate button (skill-creator chat with prefill). Already-
-          processed drafts (approved/discarded/evaluated_passed) show nothing. */}
+          processed drafts (approved/discarded/evaluated_passed) show nothing.
+          SKILL-CREATOR-PHASE-1.6 (F4) — both 'draft' and 'rejected' states
+          additionally surface a "Trigger Evaluation" button (same row as the
+          existing actions) so the operator can run a real LLM-judge eval
+          before committing to approve/discard. */}
       {!isProcessed && (
         <div className="draft-detail-footer">
           <button
@@ -301,6 +322,16 @@ export function SkillDraftDetailDrawer({
           >
             {discarding ? 'Discarding...' : 'Discard'}
           </button>
+          {canTriggerEvaluation && (
+            <button
+              className="btn-discard"
+              onClick={() => setTriggerEvalOpen(true)}
+              data-testid="trigger-evaluation-btn"
+              disabled={approving || discarding}
+            >
+              Trigger Evaluation
+            </button>
+          )}
           <button
             className="btn-approve"
             disabled={approving || discarding}
@@ -310,16 +341,36 @@ export function SkillDraftDetailDrawer({
           </button>
         </div>
       )}
-      {isRejected && onIterate && (
+      {isRejected && (
         <div className="draft-detail-footer">
-          <button
-            className="btn-approve"
-            onClick={() => onIterate(draft.id)}
-            data-testid="iterate-btn"
-          >
-            Iterate on reject reason
-          </button>
+          {onIterate && (
+            <button
+              className="btn-discard"
+              onClick={() => onIterate(draft.id)}
+              data-testid="iterate-btn"
+            >
+              Iterate on reject reason
+            </button>
+          )}
+          {canTriggerEvaluation && (
+            <button
+              className="btn-approve"
+              onClick={() => setTriggerEvalOpen(true)}
+              data-testid="trigger-evaluation-btn"
+            >
+              Trigger Evaluation
+            </button>
+          )}
         </div>
+      )}
+
+      {canTriggerEvaluation && (
+        <TriggerEvaluationModal
+          draft={draft}
+          open={triggerEvalOpen}
+          onClose={() => setTriggerEvalOpen(false)}
+          onSuccess={onEvaluationTriggered}
+        />
       )}
     </div>
   );

@@ -144,22 +144,23 @@ const SystemAgentMonitorCard: React.FC<SystemAgentMonitorCardProps> = ({
           }
         >
           <button
+            className="primary"
             onClick={handleRunManually}
             disabled={scheduledTaskId == null}
             data-testid="run-manually-btn"
           >
-            Run Manually
+            ▶ Run
           </button>
         </Tooltip>
         <button onClick={handleViewSessions} data-testid="view-sessions-btn">
-          View Sessions
+          Sessions
         </button>
         <button
           onClick={handleViewSchedule}
           disabled={scheduledTaskId == null}
           data-testid="view-schedule-btn"
         >
-          View Schedule
+          Schedule
         </button>
       </div>
     </div>
