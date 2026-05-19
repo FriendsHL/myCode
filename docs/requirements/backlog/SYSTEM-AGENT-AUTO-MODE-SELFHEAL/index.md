@@ -1,8 +1,8 @@
 ---
 id: SYSTEM-AGENT-AUTO-MODE-SELFHEAL
 mode: light
-status: backlog
-priority: P1
+status: partially-resolved
+priority: P2
 risk: Low
 created: 2026-05-18
 updated: 2026-05-18
@@ -10,6 +10,24 @@ follows: SYSTEM-AGENT-TYPING
 ---
 
 # SYSTEM-AGENT-AUTO-MODE-SELFHEAL — 5 Bootstrap 加 executionMode='auto' self-heal 防 cron task hang on ASK
+
+## 2026-05-18 当下 partial 解决 (PATCH API 路径)
+
+User 拍板用更轻量的 path 当下 fix: **直接 PUT /api/agents/{id} body 含 executionMode='auto'** 改现 5 个 system agent (实际只改 4 个, memory-curator 本来就是 auto). 不写 Bootstrap self-heal code.
+
+**已 fix (2026-05-18)**:
+- agentId=7 session-annotator: ask → auto ✓
+- agentId=8 metrics-collector: ask → auto ✓
+- agentId=9 attribution-curator: ask → auto ✓
+- agentId=10 user-simulator: ask → auto ✓
+- agentId=6 memory-curator: 已 auto (无需改)
+
+**仍是 backlog 的部分 (未来防护)**:
+- 未来新加第 6+ 个 system agent (e.g. V93 加 cluster-curator) 仍需手动 PATCH executionMode='auto', **无 lock-in**
+- AgentEntity 默认 executionMode 是 `"ask"`, 新 system agent 创建时如果不显式 set 'auto' 会默认 ask → hang
+- 真要长期防护回到本期 backlog 原方案 (5 Bootstrap setExecutionMode self-heal pattern, 跟 V7 setAgentType 一致)
+
+**触发重启条件**: 未来加 ≥6 个 system agent 或 cron task hang 又复现时, 重启本 backlog 实施 Bootstrap pattern.
 
 ## 痛点
 

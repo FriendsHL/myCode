@@ -238,6 +238,22 @@ public class SessionEntity {
     @Transient
     private String channelPlatform;
 
+    /**
+     * SYSTEM-AGENT-DEEPLINK-NAME-FIX (2026-05-18): agent name 透传字段, 由
+     * {@link com.skillforge.server.controller.ChatController#enrichAgentName}
+     * 在返回前从 {@link com.skillforge.server.entity.AgentEntity#getName()} 注入.
+     *
+     * <p>FE `SessionList.tsx` deep-link `?agentId=N` 走 W2 fix 把 agentId 翻译
+     * 成 agent NAME setFilterAgent(name), 但 filter 时 `s.agent !== filterAgent`
+     * 比较 agent NAME, 老逻辑 normalizeSession fallback 用 `String(raw.agentId)`
+     * 数字字符串 → 永不匹配 → SessionList 空白. 本字段让 BE 把 agent NAME
+     * 透传给 FE, normalizeSession `raw.agentName` 优先, fallback 才走 agentId.
+     *
+     * <p>非持久化字段, 不影响 t_session 行 / Iron Law footgun #4 #5 不适用.
+     */
+    @Transient
+    private String agentName;
+
     public SessionEntity() {
     }
 
@@ -503,6 +519,14 @@ public class SessionEntity {
 
     public void setChannelPlatform(String channelPlatform) {
         this.channelPlatform = channelPlatform;
+    }
+
+    public String getAgentName() {
+        return agentName;
+    }
+
+    public void setAgentName(String agentName) {
+        this.agentName = agentName;
     }
 
     public String getSourceScenarioId() {

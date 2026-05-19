@@ -144,6 +144,38 @@ public class ChatController {
     }
 
     /**
+     * SYSTEM-AGENT-DEEPLINK-NAME-FIX (2026-05-18): batch-enrich {@code agentName}
+     * 透传字段, 让 FE {@code SessionList.normalizeSession} 能拿到 agent NAME
+     * (而非 fallback 走 agentId 数字字符串 → V7 W2 fix setFilterAgent(name) 比
+     * "9" !== "attribution-curator" → 0 row 空白).
+     *
+     * <p>用 distinct agentIds → agentService.getAgent loop 构 Map (典型 listSessions
+     * call distinct agents 通常 ~5-10 个, N+1 acceptable). 缺失的 agent (e.g.
+     * deleted) 跳过, FE fallback 走 agentId.
+     */
+    private void enrichAgentName(List<SessionEntity> sessions) {
+        if (sessions == null || sessions.isEmpty()) return;
+        java.util.Set<Long> distinctAgentIds = sessions.stream()
+                .map(SessionEntity::getAgentId)
+                .filter(java.util.Objects::nonNull)
+                .collect(java.util.stream.Collectors.toSet());
+        if (distinctAgentIds.isEmpty()) return;
+        Map<Long, String> nameByAgentId = new HashMap<>();
+        for (Long id : distinctAgentIds) {
+            try {
+                AgentEntity a = agentService.getAgent(id);
+                if (a != null) nameByAgentId.put(id, a.getName());
+            } catch (Exception ignore) {
+                // missing / deleted agent — leave agentName null, FE falls back to agentId
+            }
+        }
+        for (SessionEntity s : sessions) {
+            String name = nameByAgentId.get(s.getAgentId());
+            if (name != null) s.setAgentName(name);
+        }
+    }
+
+    /**
      * 内部: 校验 session 存在 + 属于 userId。
      * 返回状态码:
      *   - 200 OK + SessionEntity : session 存在且归属匹配
@@ -630,6 +662,7 @@ public class ChatController {
             sessions = sessionService.listUserSessions(userId);
         }
         enrichChannelPlatform(sessions);
+        enrichAgentName(sessions);
         return ResponseEntity.ok(sessions);
     }
 
