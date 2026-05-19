@@ -34,7 +34,7 @@ const SkillList: React.FC = () => {
   const queryClient = useQueryClient();
   const { userId: currentUserId } = useAuth();
   const { addTask, updateTask } = useTaskTracker();
-  const [showDrafts, setShowDrafts] = useState(false);
+  const [activeTab, setActiveTab] = useState<'skills' | 'drafts'>('skills');
   const [selectedAgentId, setSelectedAgentId] = useState<number | null>(null);
   const [view, setView] = useState<'grid' | 'table'>('grid');
   const [q, setQ] = useState('');
@@ -136,7 +136,7 @@ const SkillList: React.FC = () => {
           detail: `${res.data.count ?? 0} 条 draft 已在 review 队列`,
         });
       }
-      setShowDrafts(true);
+      setActiveTab('drafts');
     } catch {
       updateTask(taskId, { state: 'failed', detail: '请求失败' });
     } finally {
@@ -288,6 +288,73 @@ const SkillList: React.FC = () => {
 
   const noAgentTooltip = 'Pick a source agent first';
 
+  if (activeTab === 'drafts') {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - var(--header-height, 44px))' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 0, padding: '0 0 0 16px', borderBottom: '1px solid var(--border, #e5e7eb)', flexShrink: 0 }}>
+          <button
+            onClick={() => setActiveTab('skills')}
+            style={{
+              padding: '10px 16px',
+              background: 'none',
+              border: 'none',
+              borderBottom: '2px solid transparent',
+              color: 'var(--fg-3, #8a8a93)',
+              cursor: 'pointer',
+              fontSize: 13,
+              fontWeight: 500,
+            }}
+          >
+            Skills
+            {pendingDrafts.length > 0 && (
+              <span style={{
+                marginLeft: 6,
+                background: 'var(--accent-primary, #6366f1)',
+                color: '#fff',
+                borderRadius: 10,
+                padding: '1px 7px',
+                fontSize: 11,
+                fontWeight: 600,
+              }}>
+                {pendingDrafts.length}
+              </span>
+            )}
+          </button>
+          <button
+            style={{
+              padding: '10px 16px',
+              background: 'none',
+              border: 'none',
+              borderBottom: '2px solid var(--accent-primary, #6366f1)',
+              color: 'var(--fg-1, #111827)',
+              cursor: 'default',
+              fontSize: 13,
+              fontWeight: 600,
+            }}
+          >
+            Drafts
+            {pendingDrafts.length > 0 && (
+              <span style={{
+                marginLeft: 6,
+                background: 'var(--color-warning, #f59e0b)',
+                color: '#fff',
+                borderRadius: 10,
+                padding: '1px 7px',
+                fontSize: 11,
+                fontWeight: 600,
+              }}>
+                {pendingDrafts.length}
+              </span>
+            )}
+          </button>
+        </div>
+        <div style={{ flex: 1, minHeight: 0, overflow: 'auto', scrollbarGutter: 'stable' }}>
+          <SkillDraftsPage />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="agents-view">
       {/* Filter sidebar */}
@@ -306,44 +373,50 @@ const SkillList: React.FC = () => {
 
       {/* Main */}
       <section className="agents-main">
-        {/* Inline Drafts section — collapsed by default, toggled via pending drafts button */}
-        {showDrafts && (
-          <div style={{
-            borderBottom: '1px solid var(--border, #e5e7eb)',
-            background: 'var(--bg-surface)',
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 16px' }}>
-              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg-1)' }}>
-                Pending Skill Drafts
-                {pendingDrafts.length > 0 && (
-                  <span style={{
-                    marginLeft: 6,
-                    background: 'var(--color-warning, #f59e0b)',
-                    color: '#fff',
-                    borderRadius: 10,
-                    padding: '1px 7px',
-                    fontSize: 11,
-                    fontWeight: 600,
-                  }}>
-                    {pendingDrafts.length}
-                  </span>
-                )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 0, borderBottom: '1px solid var(--border, #e5e7eb)' }}>
+          <button
+            style={{
+              padding: '10px 16px',
+              background: 'none',
+              border: 'none',
+              borderBottom: '2px solid var(--accent-primary, #6366f1)',
+              color: 'var(--fg-1, #111827)',
+              cursor: 'default',
+              fontSize: 13,
+              fontWeight: 600,
+            }}
+          >
+            Skills
+          </button>
+          <button
+            onClick={() => setActiveTab('drafts')}
+            style={{
+              padding: '10px 16px',
+              background: 'none',
+              border: 'none',
+              borderBottom: '2px solid transparent',
+              color: 'var(--fg-3, #8a8a93)',
+              cursor: 'pointer',
+              fontSize: 13,
+              fontWeight: 500,
+            }}
+          >
+            Drafts
+            {pendingDrafts.length > 0 && (
+              <span style={{
+                marginLeft: 6,
+                background: 'var(--accent-primary, #6366f1)',
+                color: '#fff',
+                borderRadius: 10,
+                padding: '1px 7px',
+                fontSize: 11,
+                fontWeight: 600,
+              }}>
+                {pendingDrafts.length}
               </span>
-              <button
-                onClick={() => setShowDrafts(false)}
-                style={{
-                  padding: '2px 8px', background: 'none', border: '1px solid var(--border-subtle, #e5e7eb)',
-                  borderRadius: 4, cursor: 'pointer', fontSize: 12, color: 'var(--fg-3)',
-                }}
-              >
-                Hide
-              </button>
-            </div>
-            <div style={{ maxHeight: '50vh', overflow: 'auto' }}>
-              <SkillDraftsPage />
-            </div>
-          </div>
-        )}
+            )}
+          </button>
+        </div>
         <header className="agents-head">
           <div>
             <h1 className="agents-head-title">Skills</h1>
@@ -373,8 +446,8 @@ const SkillList: React.FC = () => {
                   display: 'inline-flex', alignItems: 'center', gap: 6,
                   borderStyle: 'dashed', color: 'var(--accent-primary, #6366f1)',
                 }}
-                onClick={() => setShowDrafts(v => !v)}
-                title="Toggle extracted skill drafts panel"
+                onClick={() => setActiveTab('drafts')}
+                title="Review extracted skill drafts"
               >
                 {pendingDrafts.length} pending draft{pendingDrafts.length > 1 ? 's' : ''}
               </button>
