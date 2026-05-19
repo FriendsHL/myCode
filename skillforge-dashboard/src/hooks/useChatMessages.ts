@@ -116,6 +116,13 @@ export function normalizeMessages(list: RawMessage[]): ChatMessage[] {
     const messageType = typeof m.messageType === 'string' ? m.messageType : 'normal';
     const { text, toolUseBlocks, toolResultBlocks, attachmentRefs } = extractBlocks(m.content);
 
+    // Server-side createdAt (ISO string). Surfaced on hover via msg-time. May
+    // be absent on legacy rows / pre-feature sessions — `ChatMessage.timestamp`
+    // is also optional, so passing undefined through is intentional + safe.
+    // Declared up-front so all push sites below (ask_user / summary / user /
+    // assistant) can pass the same value without recomputing the typeof guard.
+    const timestamp = typeof m.createdAt === 'string' ? m.createdAt : undefined;
+
     if (msgType === 'COMPACT_BOUNDARY') {
       // Boundary is a structural marker for context slicing, not a user-visible card.
       continue;
@@ -142,6 +149,7 @@ export function normalizeMessages(list: RawMessage[]): ChatMessage[] {
         controlId: typeof m.controlId === 'string' ? m.controlId : undefined,
         answeredAt: typeof m.answeredAt === 'string' ? m.answeredAt : undefined,
         metadata,
+        timestamp,
       });
       continue;
     }
@@ -156,7 +164,11 @@ export function normalizeMessages(list: RawMessage[]): ChatMessage[] {
         const header = Number.isFinite(compactedCount)
           ? `**${compactedCount} earlier messages were compacted**\n\n`
           : '';
-        result.push({ role: 'summary', content: `${header}${summaryText}`.trim() });
+        result.push({
+          role: 'summary',
+          content: `${header}${summaryText}`.trim(),
+          timestamp,
+        });
       }
       continue;
     }
@@ -216,7 +228,7 @@ export function normalizeMessages(list: RawMessage[]): ChatMessage[] {
             ? `**${compactedCount} earlier messages were compacted**\n\n${summaryContent}`
             : summaryContent;
           if (displayContent.trim()) {
-            result.push({ role: 'summary', content: displayContent });
+            result.push({ role: 'summary', content: displayContent, timestamp });
           }
           continue;
         }
@@ -229,6 +241,7 @@ export function normalizeMessages(list: RawMessage[]): ChatMessage[] {
         role: 'user',
         content: displayText,
         attachments: attachmentRefs.length > 0 ? attachmentRefs : undefined,
+        timestamp,
       });
     } else if (m.role === 'assistant') {
       const toolCalls = toolUseBlocks.map((b: any) => ({
@@ -244,6 +257,7 @@ export function normalizeMessages(list: RawMessage[]): ChatMessage[] {
         // RawMessage.toolCalls 类型 unknown[]，此处 narrow 成 ChatMessage.toolCalls 期望的形态。
         // 不在 RawMessage 严格类型里的原因：fallback 路径形态不固定，类型贸然窄化反而 ripple 大。
         toolCalls: toolCalls.length > 0 ? toolCalls : (m.toolCalls as ChatMessage['toolCalls']),
+        timestamp,
       });
     }
   }

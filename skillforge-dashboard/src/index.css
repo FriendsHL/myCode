@@ -2360,6 +2360,18 @@ html[data-density="spacious"] { --density: 1; }
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--fg-4);
+  /* Hover-only reveal: hidden by default, fades in on bubble hover. Keeping
+   * the element in the DOM (opacity, not display) preserves the head row's
+   * width/baseline so messages don't reflow on hover. */
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+/* A11y: keyboard / touch users have no hover state — also reveal on
+ * :focus-within so a focused interactive descendant (e.g. action button
+ * inside the bubble) surfaces the timestamp the same way mouse hover does. */
+.chat-redesign .msg:hover .msg-time,
+.chat-redesign .msg:focus-within .msg-time {
+  opacity: 1;
 }
 .chat-redesign .msg-body {
   font-size: 15px;
@@ -2377,8 +2389,8 @@ html[data-density="spacious"] { --density: 1; }
   word-break: break-word;
 }
 .chat-redesign .msg.user .msg-head { justify-content: flex-end; }
-.chat-redesign .msg.user .msg-head .msg-avatar { order: 2; }
-.chat-redesign .msg.user .msg-time { margin-left: 8px; }
+.chat-redesign .msg.user .msg-head .msg-avatar { order: -1; }
+.chat-redesign .msg.user .msg-time { margin-left: auto; }
 
 /* MULTIMODAL-MVP Phase 2: inline attachment thumbnails row above the bubble
  * text. Right-aligned (matches user-bubble flex direction), 8px gap, wraps

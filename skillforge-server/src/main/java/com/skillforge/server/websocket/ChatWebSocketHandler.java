@@ -19,6 +19,7 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
 import java.net.URI;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -206,6 +207,13 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements ChatEv
             payload.put("traceId", traceId);
         }
         payload.put("message", message);
+        // Envelope-level broadcast timestamp (Instant.now() at push time, NOT the row's
+        // t_session_message.created_at). In practice this is sub-ms after the JPA row
+        // insert and seconds-granularity FE display treats it as ≈ entity createdAt.
+        // Per-message authoritative row createdAt is available via the REST
+        // /api/chat/sessions/{id}/messages history endpoint. ISO-8601 serialization via
+        // findAndRegisterModules() above.
+        payload.put("createdAt", Instant.now());
         broadcast(sessionId, payload);
     }
 
@@ -215,6 +223,12 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements ChatEv
         payload.put("type", "messages_snapshot");
         payload.put("sessionId", sessionId);
         payload.put("messages", messages);
+        // Envelope-level broadcast timestamp (Instant.now() at push time, NOT a per-row
+        // t_session_message.created_at). Per-message authoritative createdAt is not
+        // carried on the engine in-memory Message list; FE relies on the REST
+        // /api/chat/sessions/{id}/messages history endpoint for accurate per-row
+        // timestamps when needed.
+        payload.put("createdAt", Instant.now());
         broadcast(sessionId, payload);
     }
 

@@ -25,8 +25,22 @@ import {
   IconX,
 } from './chat/ChatIcons';
 
-const formatTime = (date: Date): string =>
-  date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+// 24h HH:MM:SS — `hour12: false` is explicit so users get the same format
+// regardless of browser locale (en-US default would give "03:42:18 PM").
+// `[]` locale arg lets the browser pick its locale for any other digit-grouping
+// quirks, but hour/minute/second formatting is locked by the options.
+// Returns '' on Invalid Date (callsite passes `new Date(msg.timestamp)` which
+// is safe in the happy path — BE Jackson emits ISO Instant — but a malformed
+// legacy row should not render "Invalid Date" in the bubble header).
+const formatTime = (date: Date): string => {
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+};
 
 const ThrottledMarkdown: React.FC<{ content: string }> = ({ content }) => {
   const [rendered, setRendered] = useState(content);

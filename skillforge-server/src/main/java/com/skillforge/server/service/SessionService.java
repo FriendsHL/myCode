@@ -302,15 +302,22 @@ public class SessionService {
      */
     public record StoredMessage(long seqNo, String msgType, String messageType, String controlId,
                                 Instant answeredAt, Map<String, Object> metadata, Message message,
-                                String traceId) {
-        /** Backward-compat — defaults traceId to null. */
+                                String traceId, Instant createdAt) {
+        /** Backward-compat — defaults createdAt to null. */
+        public StoredMessage(long seqNo, String msgType, String messageType, String controlId,
+                             Instant answeredAt, Map<String, Object> metadata, Message message,
+                             String traceId) {
+            this(seqNo, msgType, messageType, controlId, answeredAt, metadata, message, traceId, null);
+        }
+
+        /** Backward-compat — defaults traceId + createdAt to null. */
         public StoredMessage(long seqNo, String msgType, String messageType, String controlId,
                              Instant answeredAt, Map<String, Object> metadata, Message message) {
-            this(seqNo, msgType, messageType, controlId, answeredAt, metadata, message, null);
+            this(seqNo, msgType, messageType, controlId, answeredAt, metadata, message, null, null);
         }
 
         public StoredMessage(long seqNo, String msgType, Map<String, Object> metadata, Message message) {
-            this(seqNo, msgType, MESSAGE_TYPE_NORMAL, null, null, metadata, message, null);
+            this(seqNo, msgType, MESSAGE_TYPE_NORMAL, null, null, metadata, message, null, null);
         }
     }
 
@@ -339,7 +346,8 @@ public class SessionService {
                     stored.controlId(),
                     stored.answeredAt(),
                     stored.metadata(),
-                    stored.traceId()
+                    stored.traceId(),
+                    stored.createdAt()
             ));
         }
         return out;
@@ -1253,7 +1261,8 @@ public class SessionService {
                     e.getAnsweredAt(),
                     metadata,
                     message,
-                    e.getTraceId()));
+                    e.getTraceId(),
+                    e.getCreatedAt()));
         }
         return out;
     }

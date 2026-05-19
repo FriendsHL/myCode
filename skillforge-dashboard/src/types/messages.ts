@@ -73,6 +73,18 @@ export interface RawMessage {
   toolCalls?: unknown[];
   traceId?: string;
   seqNo?: number;
+  /**
+   * Server-side message creation timestamp, ISO-8601 string (Jackson serializes
+   * `Instant` to ISO). Surfaced on `SessionMessageDto` + WebSocket
+   * `message_appended` / `messages_snapshot` payloads. May be absent for legacy
+   * rows / pre-feature sessions. Consumer: `normalizeMessages` copies into
+   * `ChatMessage.timestamp` so `ChatWindow` can render hover-only HH:MM:SS.
+   *
+   * Declared explicitly per java.md footgun #6 (FE-BE contract documentation):
+   * grep-able BE↔FE field-name match audit needs both sides to spell the field
+   * out, not rely on `[key: string]: unknown` passthrough.
+   */
+  createdAt?: string;
   // 允许 BE 加新字段（如 origin_span_id 等 backlog 候选列）不破坏编译。
   [key: string]: unknown;
 }
