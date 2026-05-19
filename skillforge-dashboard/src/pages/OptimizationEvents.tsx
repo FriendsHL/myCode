@@ -100,17 +100,45 @@ interface RejectFormValues {
  * second connection here scoped to attribution events so the page works even
  * when the layout WS bus isn't carrying them.
  */
-const OptimizationEvents: React.FC = () => {
+interface OptimizationEventsProps {
+  /**
+   * FLYWHEEL-VISUAL-STATUS Phase 2 (1B URL routing) — initial stage filter
+   * passed from Insights when the URL is `?tab=optimization&stage=…`. The
+   * flywheel drill-down link for G1/step6/G3 lands here pre-filtered to
+   * `proposal_pending` / `ab_passed` respectively (PRD R3 真消费 requirement).
+   */
+  initialStageFilter?: AttributionStage;
+  /** Same as above for `?agentId=N` flywheel drill-down. */
+  initialAgentIdFilter?: number;
+}
+
+const OptimizationEvents: React.FC<OptimizationEventsProps> = ({
+  initialStageFilter,
+  initialAgentIdFilter,
+}) => {
   const { userId } = useAuth();
   const queryClient = useQueryClient();
 
   // Timeline filter state — page=0 is the only default the user-facing filter
   // toggles trigger a re-query against. agentId uses InputNumber (BE accepts
   // raw long; no enum constraint).
-  const [stageFilter, setStageFilter] = useState<AttributionStage | undefined>(undefined);
-  const [agentIdFilter, setAgentIdFilter] = useState<number | undefined>(undefined);
+  // ts-B3 fix — accept initial filter from the parent Insights tab so
+  // flywheel drill-down ?stage= URL param actually narrows the table.
+  const [stageFilter, setStageFilter] = useState<AttributionStage | undefined>(initialStageFilter);
+  const [agentIdFilter, setAgentIdFilter] = useState<number | undefined>(initialAgentIdFilter);
   const [surfaceFilter, setSurfaceFilter] = useState<AttributionSurface | undefined>(undefined);
   const [page, setPage] = useState<number>(0);
+
+  // ts-B3 — re-apply initial filter when the URL `?stage=` flips (e.g.
+  // operator navigates from G1 step-card → G3 step-card without unmounting
+  // Insights). Keep the existing user-edited filter for filters the URL
+  // doesn't try to set, so we don't wipe a manually-typed agent id either.
+  useEffect(() => {
+    if (initialStageFilter !== undefined) setStageFilter(initialStageFilter);
+  }, [initialStageFilter]);
+  useEffect(() => {
+    if (initialAgentIdFilter !== undefined) setAgentIdFilter(initialAgentIdFilter);
+  }, [initialAgentIdFilter]);
 
   const [drawerEvent, setDrawerEvent] = useState<OptimizationEventDto | null>(null);
   const [drawerOpen, setDrawerOpen] = useState<boolean>(false);

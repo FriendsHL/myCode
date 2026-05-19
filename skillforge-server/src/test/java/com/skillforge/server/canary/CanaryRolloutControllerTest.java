@@ -398,4 +398,23 @@ class CanaryRolloutControllerTest {
                         .param("surfaceType", "prompt"))
                 .andExpect(status().isBadRequest());
     }
+
+    @Test
+    @DisplayName("FLYWHEEL-VISUAL-STATUS Phase 2: GET / without agentId returns cross-agent list "
+            + "(service called with agentId=null)")
+    void list_omittedAgentId_returnsCrossAgent() throws Exception {
+        // Two rollouts owned by two different agents — the global observability
+        // panel needs to display both even though the FE doesn't know an agent id yet.
+        CanaryRolloutEntity a = entity(1L, "canary", 25);
+        a.setAgentId(42L);
+        CanaryRolloutEntity b = entity(2L, "canary", 10);
+        b.setAgentId(43L);
+        when(service.listByAgent(null, null, null)).thenReturn(List.of(a, b));
+
+        mvc.perform(get("/api/canary/rollouts"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[0].agentId").value(42))
+                .andExpect(jsonPath("$[1].agentId").value(43));
+    }
 }

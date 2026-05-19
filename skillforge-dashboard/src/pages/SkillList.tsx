@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Button, Modal, Select, Tooltip, message, notification } from 'antd';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -30,11 +31,35 @@ interface AgentRow {
   name: string;
 }
 
+/**
+ * FLYWHEEL-VISUAL-STATUS Phase 2 (1B URL routing) — translate the URL
+ * `?panel=` param to a SkillDrawer tab id. Unknown / missing values fall
+ * back to the default 'readme' tab.
+ *
+ *   evolution → 'version-tree' (drawer shows the version evolution graph)
+ *   abtest    → 'ab-test'
+ *   canary    → 'ab-test' (V87 dormant — drawer has no canary tab today)
+ */
+function mapPanelParamToDrawerTab(panel: string | null): string {
+  switch (panel) {
+    case 'evolution': return 'version-tree';
+    case 'abtest':    return 'ab-test';
+    case 'canary':    return 'ab-test';
+    default:          return 'readme';
+  }
+}
+
 const SkillList: React.FC = () => {
   const queryClient = useQueryClient();
   const { userId: currentUserId } = useAuth();
   const { addTask, updateTask } = useTaskTracker();
-  const [activeTab, setActiveTab] = useState<'skills' | 'drafts'>('skills');
+  // FLYWHEEL-VISUAL-STATUS Phase 2 (1B URL routing) — `?panel=drafts`
+  // opens the Drafts tab; `?skillId=N&panel=evolution|abtest|canary` deep
+  // links into the SkillDrawer pre-opened on the chosen sub-tab.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialTab: 'skills' | 'drafts' =
+    searchParams.get('panel') === 'drafts' ? 'drafts' : 'skills';
+  const [activeTab, setActiveTab] = useState<'skills' | 'drafts'>(initialTab);
   const [selectedAgentId, setSelectedAgentId] = useState<number | null>(null);
   const [view, setView] = useState<'grid' | 'table'>('grid');
   const [q, setQ] = useState('');
@@ -275,6 +300,39 @@ const SkillList: React.FC = () => {
   });
 
   const openDetail = (s: SkillRow) => { setOpen(s); setDrawerTab('readme'); };
+
+  // FLYWHEEL-VISUAL-STATUS Phase 2 (1B URL routing) — consume
+  // `?skillId=N&panel=evolution|abtest|canary` deep links. The skillId
+  // resolves from the loaded `all` list; the panel param maps to the
+  // matching drawer tab. We drop the URL params on success so the auto-
+  // open doesn't fire again on every render.
+  //
+  // `canary` maps to `ab-test` (drawer has no dedicated canary tab; V87
+  // dormant) so we don't 404 a legit-looking deep link.
+  useEffect(() => {
+    const skillIdParam = searchParams.get('skillId');
+    const panelParam = searchParams.get('panel');
+    if (!skillIdParam) return;
+    if (all.length === 0) return; // wait for the list to load
+    const target = all.find((s) => String(s.id) === skillIdParam);
+    if (target) {
+      setOpen(target);
+      const tab = mapPanelParamToDrawerTab(panelParam);
+      setDrawerTab(tab);
+    } else {
+      message.warning(`Skill #${skillIdParam} not in your list (different owner?)`);
+    }
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('skillId');
+        next.delete('panel');
+        return next;
+      },
+      { replace: true },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams.get('skillId'), searchParams.get('panel'), all]);
 
   const openSkillById = (id: number) => {
     const target = all.find((s) => s.id === id);

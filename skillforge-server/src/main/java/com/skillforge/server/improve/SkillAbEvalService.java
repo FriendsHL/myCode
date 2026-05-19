@@ -1141,4 +1141,19 @@ public class SkillAbEvalService extends AbstractAbEvalRunner<SkillEntity> {
     public Optional<SkillAbRunEntity> getAbRun(String abRunId) {
         return skillAbRunRepository.findById(abRunId);
     }
+
+    /**
+     * FLYWHEEL-VISUAL-STATUS Phase 2: paginated global A/B run query for the
+     * observability panel. Both {@code agentId} and {@code status} are
+     * nullable; null means "no filter on that dimension". Pagination is
+     * forwarded to the repository {@code findByFilters} method.
+     */
+    @Transactional(readOnly = true)
+    public org.springframework.data.domain.Page<SkillAbRunEntity> getAbRunsByFilters(
+            String agentId, String status,
+            org.springframework.data.domain.Pageable pageable) {
+        String normalizedAgentId = (agentId == null || agentId.isBlank()) ? null : agentId;
+        String normalizedStatus = (status == null || status.isBlank()) ? null : status;
+        return skillAbRunRepository.findByFilters(normalizedAgentId, normalizedStatus, pageable);
+    }
 }

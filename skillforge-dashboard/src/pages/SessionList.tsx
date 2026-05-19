@@ -149,6 +149,18 @@ const SessionList: React.FC = () => {
   // the filter doesn't keep re-applying on subsequent renders / reloads.
   const [searchParams, setSearchParams] = useSearchParams();
   const agentIdParam = searchParams.get('agentId');
+  // FLYWHEEL-VISUAL-STATUS Phase 2 (1B URL routing) — `?annotated=true`
+  // surfaces only sessions that have at least one annotation row. BE
+  // does NOT expose this filter today (grep confirmed — no
+  // `@RequestParam("annotated")`), so the filter is approximated
+  // client-side: keep only completed (`done`/`error`) runs. annotator
+  // hourly cron only labels completed sessions so this is conservative.
+  // When BE-Dev exposes a real `?annotated=true`, the wrapper in
+  // src/api/index.ts can pass it through and this pass becomes a no-op.
+  const annotatedParam = searchParams.get('annotated');
+  const [filterAnnotated, setFilterAnnotated] = useState<boolean>(
+    annotatedParam === 'true',
+  );
   const [q, setQ] = useState('');
   const [filterStatus, setFilterStatus] = useState<string | null>(null);
   const [filterAgent, setFilterAgent] = useState<string | null>(null);
@@ -209,9 +221,13 @@ const SessionList: React.FC = () => {
       if (filterStatus && s.status !== filterStatus) return false;
       if (filterAgent && s.agent !== filterAgent) return false;
       if (filterChannel && s.channel !== filterChannel) return false;
+      // FLYWHEEL-VISUAL-STATUS Phase 2 — `annotated=true` heuristic.
+      if (filterAnnotated && !(s.status === 'done' || s.status === 'error')) {
+        return false;
+      }
       return true;
     });
-  }, [all, q, filterStatus, filterAgent, filterChannel]);
+  }, [all, q, filterStatus, filterAgent, filterChannel, filterAnnotated]);
 
   // SYSTEM-AGENT-TYPING Phase 2 W2 follow-up (2026-05-17) — surface the
   // currently-active agent filter even if it has no sessions in the loaded
@@ -450,6 +466,26 @@ const SessionList: React.FC = () => {
         {agents.map(a => (
           <FilterItem key={a} label={a} count={all.filter(x => x.agent === a).length} active={filterAgent === a} onClick={() => toggleAgent(a)} />
         ))}
+
+        <div className="agents-filters-h">Annotation</div>
+        <FilterItem
+          label="annotated only"
+          count={all.filter(x => x.status === 'done' || x.status === 'error').length}
+          active={filterAnnotated}
+          onClick={() => {
+            const next = !filterAnnotated;
+            setFilterAnnotated(next);
+            setSearchParams(
+              (prev) => {
+                const out = new URLSearchParams(prev);
+                if (next) out.set('annotated', 'true');
+                else out.delete('annotated');
+                return out;
+              },
+              { replace: true },
+            );
+          }}
+        />
 
         <div className="agents-filters-h">Channel</div>
         {channels.map(c => (

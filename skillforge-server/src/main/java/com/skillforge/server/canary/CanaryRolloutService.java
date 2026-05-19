@@ -488,17 +488,21 @@ public class CanaryRolloutService {
     }
 
     /**
-     * List rollouts for an agent + surface, optionally filtered by stage.
+     * List rollouts for a given surface, optionally filtered by agent + stage.
      * Backs the {@code GET /api/canary/rollouts?agentId=&surfaceType=&stage=}
      * dashboard endpoint.
+     *
+     * <p>FLYWHEEL-VISUAL-STATUS Phase 2: {@code agentId} is now optional —
+     * when null the cross-agent listing on the surface is returned to back the
+     * global observability panel; when present the existing per-agent finder
+     * is used.
      */
     @Transactional(readOnly = true)
     public List<CanaryRolloutEntity> listByAgent(Long agentId, String surfaceType, String stage) {
-        if (agentId == null) {
-            throw new IllegalArgumentException("agentId is required");
-        }
         String surface = normalizeSurfaceType(surfaceType);
-        List<CanaryRolloutEntity> all = canaryRepository.findByAgentIdAndSurfaceType(agentId, surface);
+        List<CanaryRolloutEntity> all = (agentId == null)
+                ? canaryRepository.findBySurfaceType(surface)
+                : canaryRepository.findByAgentIdAndSurfaceType(agentId, surface);
         if (stage == null || stage.isBlank()) {
             return all;
         }

@@ -180,12 +180,14 @@ public class CanaryRolloutController {
     }
 
     /**
-     * List/filter rollouts. {@code agentId} is required; {@code surfaceType}
-     * defaults to {@code skill}; {@code stage} (optional) filters to a single
-     * lifecycle stage.
+     * List/filter rollouts. {@code agentId} is optional (FLYWHEEL-VISUAL-STATUS
+     * Phase 2 — when null, returns cross-agent rollouts on the surface,
+     * needed by the global observability panel's "all-canary" view);
+     * {@code surfaceType} defaults to {@code skill}; {@code stage} (optional)
+     * filters to a single lifecycle stage.
      */
     @GetMapping
-    public ResponseEntity<?> list(@RequestParam Long agentId,
+    public ResponseEntity<?> list(@RequestParam(value = "agentId", required = false) Long agentId,
                                   @RequestParam(value = "surfaceType", required = false) String surfaceType,
                                   @RequestParam(value = "stage", required = false) String stage) {
         try {

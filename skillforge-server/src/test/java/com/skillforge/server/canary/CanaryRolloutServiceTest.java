@@ -608,10 +608,38 @@ class CanaryRolloutServiceTest {
     }
 
     @Test
-    @DisplayName("listByAgent rejects null agentId")
-    void listByAgent_rejectsNullAgentId() {
-        assertThatThrownBy(() -> service.listByAgent(null, "skill", null))
-                .isInstanceOf(IllegalArgumentException.class);
+    @DisplayName("FLYWHEEL-VISUAL-STATUS Phase 2: listByAgent with null agentId returns "
+            + "cross-agent list via findBySurfaceType (not findByAgentIdAndSurfaceType)")
+    void listByAgent_nullAgentId_returnsCrossAgent() {
+        CanaryRolloutEntity a = activeCanary(1L, 25);
+        a.setAgentId(42L);
+        CanaryRolloutEntity b = activeCanary(2L, 50);
+        b.setAgentId(43L);
+        when(canaryRepository.findBySurfaceType("skill")).thenReturn(List.of(a, b));
+
+        List<CanaryRolloutEntity> result = service.listByAgent(null, "skill", null);
+
+        assertThat(result).containsExactly(a, b);
+        // Ensure the per-agent finder is NOT called when agentId is null —
+        // mockito strict-stubs would fail-fast otherwise; this asserts the
+        // dispatch goes through the cross-agent finder.
+        org.mockito.Mockito.verify(canaryRepository, org.mockito.Mockito.never())
+                .findByAgentIdAndSurfaceType(org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
+    @DisplayName("FLYWHEEL-VISUAL-STATUS Phase 2: listByAgent with null agentId still applies "
+            + "stage filter in-memory")
+    void listByAgent_nullAgentId_appliesStageFilter() {
+        CanaryRolloutEntity a = activeCanary(1L, 25);
+        CanaryRolloutEntity b = activeCanary(2L, 0);
+        b.setRolloutStage(CanaryRolloutEntity.STAGE_ROLLED_BACK);
+        when(canaryRepository.findBySurfaceType("skill")).thenReturn(List.of(a, b));
+
+        List<CanaryRolloutEntity> result = service.listByAgent(null, "skill", "canary");
+
+        assertThat(result).containsExactly(a);
     }
 
     @Test

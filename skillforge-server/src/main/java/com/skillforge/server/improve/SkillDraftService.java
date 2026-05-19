@@ -1234,7 +1234,21 @@ public class SkillDraftService {
 
     @Transactional(readOnly = true)
     public List<SkillDraftEntity> getDrafts(Long ownerId) {
-        return skillDraftRepository.findByOwnerIdOrderByCreatedAtDesc(ownerId);
+        return getDrafts(ownerId, null);
+    }
+
+    /**
+     * FLYWHEEL-VISUAL-STATUS Phase 2: source-filtered overload. When
+     * {@code source} is null/blank returns the full owner-scoped list (legacy
+     * behavior); when set, filters by {@link SkillDraftEntity#source} exact
+     * match (V91 free-form provenance string).
+     */
+    @Transactional(readOnly = true)
+    public List<SkillDraftEntity> getDrafts(Long ownerId, String source) {
+        if (source == null || source.isBlank()) {
+            return skillDraftRepository.findByOwnerIdOrderByCreatedAtDesc(ownerId);
+        }
+        return skillDraftRepository.findByOwnerIdAndSourceOrderByCreatedAtDesc(ownerId, source);
     }
 
     public boolean hasPendingDrafts(Long ownerId) {

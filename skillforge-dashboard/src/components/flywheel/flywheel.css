@@ -1,0 +1,450 @@
+/*
+ * FLYWHEEL-VISUAL-STATUS Phase 2 — visual encoding for the Insights >
+ * Flywheel observability panel.
+ *
+ * Color philosophy (PRD N1 + N3, design.md "developer precision dark"):
+ *   Node type → LEFT border color (4 px) — operator scans the swim-lane
+ *                vertically to tell "what kind of step is this"
+ *   Health    → DOT in the card header — independent dimension; healthy
+ *                vs warn/stale reuses the existing color-success/warning/
+ *                error tokens so the panel reads consistent with the rest
+ *                of the dashboard.
+ *
+ * All colors reference CSS custom properties in src/index.css (dual-theme
+ * dark+light); raw hex appears only as token fallbacks.
+ */
+
+/* ─────────────────────────── Layout ─────────────────────────── */
+
+.fw-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 24px 32px 16px;
+  max-width: 1400px;
+  margin: 0 auto;
+  width: 100%;
+  gap: 20px;
+}
+
+.fw-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fw-head-title {
+  font-family: var(--font-serif, ui-serif, Georgia, serif);
+  font-size: 26px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  color: var(--fg-1, #1a1815);
+  margin: 0;
+  line-height: 1.2;
+}
+
+.fw-head-sub {
+  color: var(--fg-3, #7a7770);
+  font-size: 13px;
+  margin: 0;
+}
+
+/* Inner tabs (surface: skill / prompt / behavior_rule) */
+.fw-surface-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  border-bottom: 1px solid var(--border-subtle, #e2ded3);
+  margin-top: 4px;
+}
+
+.fw-surface-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg-3, #7a7770);
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.fw-surface-tab:hover {
+  color: var(--fg-1);
+}
+
+.fw-surface-tab.on {
+  color: var(--fg-1);
+  border-bottom-color: var(--accent-primary, #d9633a);
+  font-weight: 600;
+}
+
+.fw-surface-tab[data-empty="true"] {
+  color: var(--fg-4, #b8b3a8);
+  font-style: italic;
+}
+
+.fw-surface-tab[data-empty="true"]::after {
+  content: " · empty";
+  font-size: 11px;
+  opacity: 0.65;
+}
+
+/* ─────────────────────────── Timeline ─────────────────────────── */
+
+.fw-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 8px;
+}
+
+.fw-timeline-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.fw-timeline-group-h {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-4, #8a8780);
+  padding: 4px 2px;
+}
+
+/* ─────────────────────────── Step Card ─────────────────────────── */
+
+.fw-step {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  align-items: stretch;
+  gap: 16px;
+  border: 1px solid var(--border-subtle, #e2ded3);
+  border-left-width: 4px;
+  border-radius: 8px;
+  background: var(--bg-surface, #ffffff);
+  padding: 14px 16px;
+  cursor: pointer;
+  transition: transform 100ms ease, border-color 120ms ease, box-shadow 120ms ease;
+  text-decoration: none;
+  color: inherit;
+}
+
+.fw-step:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-card-hover, 0 4px 12px rgba(0,0,0,0.08));
+}
+
+.fw-step:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+.fw-step--dead {
+  cursor: default;
+  opacity: 0.78;
+}
+
+.fw-step--dead:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+/* Node type → left border color */
+.fw-step[data-node-type="auto"]   { border-left-color: #4a7aa8; }   /* blue */
+.fw-step[data-node-type="user"]   { border-left-color: #d49a3a; }   /* orange */
+.fw-step[data-node-type="hybrid"] { border-left-color: #8a6fb3; }   /* purple */
+.fw-step[data-node-type="entry"]  { border-left-color: #5c8a4a; }   /* green */
+.fw-step[data-node-type="dormant"]{ border-left-color: #b8b3a8; }   /* gray */
+
+/* Header column (icon) */
+.fw-step-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 600;
+  background: var(--bg-hover, #eceae3);
+  color: var(--fg-2);
+  flex-shrink: 0;
+}
+
+.fw-step[data-node-type="auto"]   .fw-step-icon { color: #4a7aa8; }
+.fw-step[data-node-type="user"]   .fw-step-icon { color: #d49a3a; }
+.fw-step[data-node-type="hybrid"] .fw-step-icon { color: #8a6fb3; }
+.fw-step[data-node-type="entry"]  .fw-step-icon { color: #5c8a4a; }
+
+/* Middle column (body) */
+.fw-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.fw-step-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.fw-step-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg-1);
+  line-height: 1.3;
+}
+
+.fw-step-sub {
+  font-size: 11px;
+  color: var(--fg-3);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.fw-step-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px 18px;
+}
+
+@media (max-width: 720px) {
+  .fw-step-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.fw-step-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.fw-step-metric-label {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-4, #8a8780);
+  font-weight: 500;
+}
+
+.fw-step-metric-value {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13px;
+  color: var(--fg-1);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fw-step-metric-value--muted {
+  color: var(--fg-3);
+}
+
+/* Right column (health + chip) */
+.fw-step-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.fw-health-dot {
+  /* code-WARN-2 a11y — dot grew from 10×10 to 16×16 to fit the H/W/S/D/E
+     single-letter marker. Letter is the colour-blind-safe channel; the
+     dot color stays for sighted scanability. */
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--bg-surface, #fff);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+}
+
+.fw-health-letter {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.fw-health-dot[data-health="healthy"] { background: var(--color-success, #5c8a4a); }
+.fw-health-dot[data-health="warn"]    { background: var(--color-warning, #d49a3a); }
+.fw-health-dot[data-health="stale"]   { background: var(--color-error, #b8412f); }
+.fw-health-dot[data-health="dormant"] { background: var(--fg-4, #b8b3a8); }
+.fw-health-dot[data-health="empty"]   { background: transparent; border: 1px dashed var(--border-medium, #cfcbc0); }
+
+/* Hollow `empty` dot — letter color flips to fg so it stays readable. */
+.fw-health-dot[data-health="empty"] .fw-health-letter {
+  color: var(--fg-3, #7a7770);
+}
+
+.fw-step-chip-pend {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  color: #fff;
+  background: var(--color-error, #b8412f);
+  letter-spacing: 0.02em;
+}
+
+.fw-step-chip-disabled {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 8px;
+  border-radius: 10px;
+  color: var(--fg-3);
+  background: var(--bg-hover, #eceae3);
+  border: 1px dashed var(--border-medium, #cfcbc0);
+  letter-spacing: 0.02em;
+}
+
+/* ─────────────────────────── Activity Feed ─────────────────────────── */
+
+.fw-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle, #e2ded3);
+}
+
+.fw-feed-h {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 0 0 6px;
+}
+
+.fw-feed-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg-1);
+  margin: 0;
+}
+
+.fw-feed-sub {
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.fw-feed-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fw-feed-item {
+  display: grid;
+  grid-template-columns: 96px 16px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--fg-2);
+  transition: background 120ms ease;
+}
+
+.fw-feed-item:hover {
+  background: var(--bg-hover, #eceae3);
+}
+
+.fw-feed-time {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+
+.fw-feed-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.fw-feed-dot[data-kind="auto"]   { background: #4a7aa8; }
+.fw-feed-dot[data-kind="user"]   { background: #d49a3a; }
+.fw-feed-dot[data-kind="hybrid"] { background: #8a6fb3; }
+.fw-feed-dot[data-kind="entry"]  { background: #5c8a4a; }
+.fw-feed-dot[data-kind="error"]  { background: var(--color-error, #b8412f); }
+
+.fw-feed-label {
+  color: var(--fg-1);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fw-feed-meta {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+
+.fw-feed-empty {
+  font-size: 12px;
+  color: var(--fg-3);
+  padding: 14px;
+  text-align: center;
+  background: var(--bg-hover, #eceae3);
+  border-radius: 6px;
+  border: 1px dashed var(--border-subtle);
+}
+
+/* ─────────────────────────── Empty / Loading ─────────────────────────── */
+
+.fw-empty-state {
+  text-align: center;
+  padding: 32px;
+  font-size: 13px;
+  color: var(--fg-3);
+}
+
+.fw-loading {
+  padding: 12px 16px;
+  font-size: 12px;
+  color: var(--fg-3);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fw-loading::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-primary);
+  animation: fw-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes fw-pulse {
+  0%, 100% { opacity: 0.3; }
+  50%      { opacity: 1; }
+}
+
+.fw-error {
+  padding: 12px 16px;
+  font-size: 12px;
+  color: var(--color-error);
+  background: var(--color-error-bg, rgba(184, 65, 47, 0.08));
+  border: 1px solid var(--color-error-border, rgba(184, 65, 47, 0.25));
+  border-radius: 6px;
+}

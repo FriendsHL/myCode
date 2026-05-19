@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import {
   listPatterns,
@@ -12,15 +13,23 @@ import PatternDetailDrawer from '../components/insights/PatternDetailDrawer';
 import OptimizationEventsPage from './OptimizationEvents';
 import BehaviorRuleEvolutionPage from './BehaviorRuleEvolution';
 import DynamicSimPage from './DynamicSim';
+import FlywheelObservability from './FlywheelObservability';
 import TabBar from '../components/TabBar';
 import Dropdown from '../components/ui/Dropdown';
 import '../components/insights/insights.css';
 
-interface FilterFormValues {
-  outcome?: SessionOutcome;
-  surface?: SuspectSurface;
-  agent?: number;
-  limit?: number;
+/**
+ * FLYWHEEL-VISUAL-STATUS Phase 2 (1B URL routing) — known tab keys. Anything
+ * outside this allowlist in the `?tab=` URL param falls back to the default
+ * `patterns` tab (no silent typo confusion).
+ */
+const TAB_KEYS = ['patterns', 'optimization', 'behavior-rules', 'dynamic-sim', 'flywheel'] as const;
+type TabKey = (typeof TAB_KEYS)[number];
+
+function normalizeTab(raw: string | null): TabKey {
+  return (TAB_KEYS as readonly string[]).includes(raw ?? '')
+    ? (raw as TabKey)
+    : 'patterns';
 }
 
 const OUTCOME_OPTIONS: { value: SessionOutcome; label: string }[] = [
@@ -46,10 +55,29 @@ const INSIGHTS_TABS = [
   { key: 'optimization', label: 'Optimization' },
   { key: 'behavior-rules', label: 'Behavior Rules' },
   { key: 'dynamic-sim', label: 'Dynamic Sim' },
+  { key: 'flywheel', label: 'Flywheel' },
 ];
 
 const Insights: React.FC = () => {
-  const [activeTab, setActiveTab] = useState('patterns');
+  // FLYWHEEL-VISUAL-STATUS Phase 2 (1B URL routing) — URL ?tab= drives the
+  // active tab; flipping tabs in-page writes back via setSearchParams so
+  // the URL stays canonical for deep linking / browser back-forward.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab: TabKey = normalizeTab(searchParams.get('tab'));
+  const setActiveTab = (next: TabKey) => {
+    setSearchParams(
+      (prev) => {
+        const out = new URLSearchParams(prev);
+        if (next === 'patterns') {
+          out.delete('tab');
+        } else {
+          out.set('tab', next);
+        }
+        return out;
+      },
+      { replace: true },
+    );
+  };
   const [filters, setFilters] = useState<ListPatternsParams>({ limit: DEFAULT_LIMIT });
   const [selectedPattern, setSelectedPattern] = useState<PatternListItem | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -59,6 +87,47 @@ const Insights: React.FC = () => {
   const [fSurface, setFSurface] = useState<SuspectSurface | undefined>(undefined);
   const [fAgent, setFAgent] = useState<string>('');
   const [fLimit, setFLimit] = useState(DEFAULT_LIMIT);
+
+  // FLYWHEEL-VISUAL-STATUS Phase 2 (1B URL routing) — hydrate the pattern
+  // filter form from `?outcome=&surface=&agent=&limit=` so deep links land
+  // with the filter pre-applied. One-way URL → state; in-page Apply still
+  // owns the data fetch.
+  useEffect(() => {
+    if (activeTab !== 'patterns') return;
+    const o = searchParams.get('outcome');
+    const su = searchParams.get('surface');
+    const ag = searchParams.get('agent');
+    const lim = searchParams.get('limit');
+    const valid = (
+      v: string | null,
+      whitelist: readonly string[],
+    ): string | undefined =>
+      v != null && whitelist.includes(v) ? v : undefined;
+    const nextOutcome = valid(o, ['success', 'partial_success', 'failure', 'cancelled']) as
+      | SessionOutcome
+      | undefined;
+    const nextSurface = valid(su, ['skill', 'prompt', 'behavior_rule', 'other', 'unclear']) as
+      | SuspectSurface
+      | undefined;
+    const nextLimit = lim ? Math.max(1, Math.min(MAX_LIMIT, Number(lim) || DEFAULT_LIMIT)) : DEFAULT_LIMIT;
+    if (nextOutcome) setFOutcome(nextOutcome);
+    if (nextSurface) setFSurface(nextSurface);
+    if (ag) setFAgent(ag);
+    setFLimit(nextLimit);
+    setFilters({
+      ...(nextOutcome ? { outcome: nextOutcome } : {}),
+      ...(nextSurface ? { surface: nextSurface } : {}),
+      ...(ag ? { agent: Number(ag) } : {}),
+      limit: nextLimit,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    activeTab,
+    searchParams.get('outcome'),
+    searchParams.get('surface'),
+    searchParams.get('agent'),
+    searchParams.get('limit'),
+  ]);
 
   const { data: patterns = [], isLoading, isError, error } = useQuery({
     queryKey: ['insights-patterns', filters],
@@ -96,12 +165,38 @@ const Insights: React.FC = () => {
 
   const onDrawerClose = () => setDrawerOpen(false);
 
+  const onTabSwitch = (key: string) => setActiveTab(normalizeTab(key));
+
   if (activeTab === 'optimization') {
+    // ts-B3 fix — feed `?stage=` / `?agentId=` from the URL into the
+    // OptimizationEvents tab so flywheel G1/G3 drill-downs land pre-
+    // filtered (PRD R3 真消费 contract). Stage allowlist matches the BE
+    // `OptimizationEventEntity.STAGE_*` constants.
+    const stageParam = searchParams.get('stage');
+    const agentIdParam = searchParams.get('agentId');
+    const validStages = new Set([
+      'dispatch_initiated', 'proposal_pending', 'proposal_approved',
+      'proposal_rejected', 'candidate_generating', 'candidate_ready',
+      'candidate_failed', 'candidate_created', 'ab_running', 'ab_passed',
+      'ab_failed', 'canary_started', 'promoted', 'rolled_back', 'verified',
+    ]);
+    const initialStageFilter =
+      stageParam && validStages.has(stageParam)
+        ? (stageParam as Parameters<typeof OptimizationEventsPage>[0] extends { initialStageFilter?: infer S } ? S : never)
+        : undefined;
+    const initialAgentIdFilter = agentIdParam ? Number(agentIdParam) : undefined;
     return (
       <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - var(--header-height, 44px))' }}>
-        <TabBar tabs={INSIGHTS_TABS} activeTab={activeTab} onSwitch={setActiveTab} />
+        <TabBar tabs={INSIGHTS_TABS} activeTab={activeTab} onSwitch={onTabSwitch} />
         <div style={{ flex: 1, minHeight: 0, overflow: 'auto', scrollbarGutter: 'stable' }}>
-          <OptimizationEventsPage />
+          <OptimizationEventsPage
+            initialStageFilter={initialStageFilter}
+            initialAgentIdFilter={
+              initialAgentIdFilter !== undefined && Number.isFinite(initialAgentIdFilter)
+                ? initialAgentIdFilter
+                : undefined
+            }
+          />
         </div>
       </div>
     );
@@ -110,7 +205,7 @@ const Insights: React.FC = () => {
   if (activeTab === 'behavior-rules') {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - var(--header-height, 44px))' }}>
-        <TabBar tabs={INSIGHTS_TABS} activeTab={activeTab} onSwitch={setActiveTab} />
+        <TabBar tabs={INSIGHTS_TABS} activeTab={activeTab} onSwitch={onTabSwitch} />
         <div style={{ flex: 1, minHeight: 0, overflow: 'auto', scrollbarGutter: 'stable' }}>
           <BehaviorRuleEvolutionPage />
         </div>
@@ -121,7 +216,7 @@ const Insights: React.FC = () => {
   if (activeTab === 'dynamic-sim') {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - var(--header-height, 44px))' }}>
-        <TabBar tabs={INSIGHTS_TABS} activeTab={activeTab} onSwitch={setActiveTab} />
+        <TabBar tabs={INSIGHTS_TABS} activeTab={activeTab} onSwitch={onTabSwitch} />
         <div style={{ flex: 1, minHeight: 0, overflow: 'auto', scrollbarGutter: 'stable' }}>
           <DynamicSimPage />
         </div>
@@ -129,9 +224,20 @@ const Insights: React.FC = () => {
     );
   }
 
+  if (activeTab === 'flywheel') {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - var(--header-height, 44px))' }}>
+        <TabBar tabs={INSIGHTS_TABS} activeTab={activeTab} onSwitch={onTabSwitch} />
+        <div style={{ flex: 1, minHeight: 0, overflow: 'auto', scrollbarGutter: 'stable' }}>
+          <FlywheelObservability />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - var(--header-height, 44px))' }}>
-      <TabBar tabs={INSIGHTS_TABS} activeTab={activeTab} onSwitch={setActiveTab} />
+      <TabBar tabs={INSIGHTS_TABS} activeTab={activeTab} onSwitch={onTabSwitch} />
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto', scrollbarGutter: 'stable', padding: 'var(--sp-6, 24px) var(--sp-8, 32px)', maxWidth: 1600, margin: '0 auto' }}>
         {/* Header */}
         <div style={{ marginBottom: 24 }}>

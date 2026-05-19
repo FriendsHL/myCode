@@ -112,4 +112,17 @@ public interface CanaryRolloutRepository extends JpaRepository<CanaryRolloutEnti
     List<CanaryRolloutEntity> findByAgentIdAndSurfaceType(
             @Param("agentId") Long agentId,
             @Param("surfaceType") String surfaceType);
+
+    /**
+     * FLYWHEEL-VISUAL-STATUS Phase 2: cross-agent listing for the global
+     * observability panel. Same as {@link #findByAgentIdAndSurfaceType} but
+     * without the agent filter, used when {@code GET /api/canary/rollouts}
+     * is called without an {@code agentId} query param.
+     */
+    @Query("""
+            SELECT c FROM CanaryRolloutEntity c
+            WHERE c.surfaceType = :surfaceType
+            ORDER BY c.startedAt DESC, c.id DESC
+            """)
+    List<CanaryRolloutEntity> findBySurfaceType(@Param("surfaceType") String surfaceType);
 }

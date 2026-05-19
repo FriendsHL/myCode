@@ -225,4 +225,110 @@ class SkillControllerTest {
         verify(skillAbEvalService).getEvalHistoryForSkill(11L, 9999);
         verify(skillAbEvalService).getEvalHistoryForSkill(11L, -5);
     }
+
+    // ----------------------------------------------------------------------
+    // FLYWHEEL-VISUAL-STATUS Phase 2 (2026-05-20) — GET /api/skills/abtest
+    // global paginated A/B run listing.
+    // ----------------------------------------------------------------------
+
+    @Test
+    @DisplayName("FLYWHEEL-VISUAL-STATUS Phase 2: GET /api/skills/abtest forwards filters + "
+            + "page/size to service; returns items/page/pageSize/total/totalPages envelope")
+    @SuppressWarnings("unchecked")
+    void listAbTestsGlobal_happy_returnsPagedEnvelope() {
+        com.skillforge.server.entity.SkillAbRunEntity r1 =
+                new com.skillforge.server.entity.SkillAbRunEntity();
+        r1.setId("ab-1");
+        r1.setParentSkillId(11L);
+        r1.setCandidateSkillId(12L);
+        r1.setAgentId("ag-1");
+        r1.setStatus("RUNNING");
+        com.skillforge.server.entity.SkillAbRunEntity r2 =
+                new com.skillforge.server.entity.SkillAbRunEntity();
+        r2.setId("ab-2");
+        r2.setParentSkillId(11L);
+        r2.setCandidateSkillId(13L);
+        r2.setAgentId("ag-1");
+        r2.setStatus("RUNNING");
+        org.springframework.data.domain.Page<com.skillforge.server.entity.SkillAbRunEntity> page =
+                new org.springframework.data.domain.PageImpl<>(
+                        java.util.List.of(r1, r2),
+                        org.springframework.data.domain.PageRequest.of(0, 20),
+                        2L);
+        when(skillAbEvalService.getAbRunsByFilters(
+                org.mockito.ArgumentMatchers.eq("ag-1"),
+                org.mockito.ArgumentMatchers.eq("RUNNING"),
+                org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class)))
+                .thenReturn(page);
+
+        ResponseEntity<?> resp = controller.listAbTestsGlobal("ag-1", "RUNNING", null, 1, 20);
+
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
+        Map<String, Object> body = (Map<String, Object>) resp.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body).containsKeys("items", "page", "pageSize", "total", "totalPages");
+        assertThat(body.get("page")).isEqualTo(1);
+        assertThat(body.get("pageSize")).isEqualTo(20);
+        assertThat(body.get("total")).isEqualTo(2L);
+        java.util.List<Map<String, Object>> items =
+                (java.util.List<Map<String, Object>>) body.get("items");
+        assertThat(items).hasSize(2);
+        assertThat(items.get(0).get("id")).isEqualTo("ab-1");
+        assertThat(items.get(0).get("status")).isEqualTo("RUNNING");
+        // toAbRunMap exposes manuallyPromoted (derived field) — verify wiring.
+        assertThat(items.get(0)).containsKey("manuallyPromoted");
+    }
+
+    @Test
+    @DisplayName("FLYWHEEL-VISUAL-STATUS Phase 2: GET /api/skills/abtest accepts surfaceType=skill "
+            + "+ rejects other surfaces with 400 (t_skill_ab_run has no surface_type column)")
+    void listAbTestsGlobal_surfaceTypeGuard() {
+        when(skillAbEvalService.getAbRunsByFilters(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class)))
+                .thenReturn(org.springframework.data.domain.Page.empty());
+
+        // null surfaceType → accepted
+        ResponseEntity<?> respNull = controller.listAbTestsGlobal(null, null, null, 1, 20);
+        assertThat(respNull.getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        // "skill" surface → accepted
+        ResponseEntity<?> respSkill = controller.listAbTestsGlobal(null, null, "skill", 1, 20);
+        assertThat(respSkill.getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        // "prompt" surface → 400 (no surface_type column → only skill is honestly representable)
+        ResponseEntity<?> respPrompt = controller.listAbTestsGlobal(null, null, "prompt", 1, 20);
+        assertThat(respPrompt.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        // Service must NOT be called when the surface guard rejects.
+        verify(skillAbEvalService, org.mockito.Mockito.times(2)).getAbRunsByFilters(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class));
+    }
+
+    @Test
+    @DisplayName("FLYWHEEL-VISUAL-STATUS Phase 2: pageSize clamped 1-100, page floor=1")
+    @SuppressWarnings("unchecked")
+    void listAbTestsGlobal_pageSizeClamped() {
+        org.springframework.data.domain.Page<com.skillforge.server.entity.SkillAbRunEntity> emptyPage =
+                org.springframework.data.domain.Page.empty();
+        when(skillAbEvalService.getAbRunsByFilters(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class)))
+                .thenReturn(emptyPage);
+
+        // pageSize 9999 → clamped to 100; page 0 / negative → floor 1
+        ResponseEntity<?> resp = controller.listAbTestsGlobal(null, null, null, 0, 9999);
+        Map<String, Object> body = (Map<String, Object>) resp.getBody();
+        assertThat(body.get("page")).isEqualTo(1);
+        assertThat(body.get("pageSize")).isEqualTo(100);
+
+        // pageSize -5 → clamped to 1 (floor; same as min)
+        ResponseEntity<?> respMin = controller.listAbTestsGlobal(null, null, null, -3, -5);
+        Map<String, Object> bodyMin = (Map<String, Object>) respMin.getBody();
+        assertThat(bodyMin.get("page")).isEqualTo(1);
+        assertThat(bodyMin.get("pageSize")).isEqualTo(1);
+    }
 }

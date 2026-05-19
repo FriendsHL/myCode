@@ -16,6 +16,13 @@ public interface SkillDraftRepository extends JpaRepository<SkillDraftEntity, St
 
     List<SkillDraftEntity> findByOwnerIdOrderByCreatedAtDesc(Long ownerId);
 
+    /**
+     * FLYWHEEL-VISUAL-STATUS Phase 2: filter by {@code source} column for the
+     * global observability panel's draft-source drill-down. {@code source} is
+     * the V91 free-form provenance string (see {@link SkillDraftEntity#source}).
+     */
+    List<SkillDraftEntity> findByOwnerIdAndSourceOrderByCreatedAtDesc(Long ownerId, String source);
+
     List<SkillDraftEntity> findByOwnerIdAndStatus(Long ownerId, String status);
 
     long countByOwnerIdAndStatus(Long ownerId, String status);

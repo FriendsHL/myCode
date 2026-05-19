@@ -296,4 +296,48 @@ class SkillDraftControllerTest {
         Map<String, Object> respBody = (Map<String, Object>) resp.getBody();
         assertThat(respBody.get("error")).isEqualTo("BAD_REQUEST");
     }
+
+    // -------------------------------------------------------------------------
+    // FLYWHEEL-VISUAL-STATUS Phase 2 (2026-05-20) — GET /api/skill-drafts
+    // source filter contract test.
+    // -------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("FLYWHEEL-VISUAL-STATUS Phase 2: listDrafts forwards source param to service "
+            + "(source=upload → service.getDrafts(userId, 'upload'))")
+    void listDrafts_sourceFilter_forwardedToService() {
+        SkillDraftEntity d1 = newApprovedResult("d1");
+        d1.setSource("upload");
+        SkillDraftEntity d2 = newApprovedResult("d2");
+        d2.setSource("upload");
+        when(skillDraftService.getDrafts(eq(7L), eq("upload")))
+                .thenReturn(java.util.List.of(d1, d2));
+
+        ResponseEntity<java.util.List<Map<String, Object>>> resp =
+                controller.listDrafts(7L, "upload");
+
+        assertThat(resp.getStatusCode().value()).isEqualTo(200);
+        assertThat(resp.getBody()).hasSize(2);
+        assertThat(resp.getBody().get(0).get("id")).isEqualTo("d1");
+        // The path through the source overload must be exercised — verifies
+        // the service contract, not just the controller. Plain getDrafts(Long)
+        // must NOT be called when source param is set.
+        verify(skillDraftService).getDrafts(7L, "upload");
+        verify(skillDraftService, never()).getDrafts(any(Long.class));
+    }
+
+    @Test
+    @DisplayName("FLYWHEEL-VISUAL-STATUS Phase 2: listDrafts without source param → service "
+            + "called with null source (legacy behavior preserved)")
+    void listDrafts_noSourceParam_passesNullDown() {
+        when(skillDraftService.getDrafts(eq(7L), eq(null)))
+                .thenReturn(java.util.List.of(newApprovedResult("d1")));
+
+        ResponseEntity<java.util.List<Map<String, Object>>> resp =
+                controller.listDrafts(7L, null);
+
+        assertThat(resp.getStatusCode().value()).isEqualTo(200);
+        assertThat(resp.getBody()).hasSize(1);
+        verify(skillDraftService).getDrafts(7L, null);
+    }
 }

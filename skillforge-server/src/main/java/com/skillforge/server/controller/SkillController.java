@@ -435,6 +435,59 @@ public class SkillController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
+    /**
+     * FLYWHEEL-VISUAL-STATUS Phase 2 — paginated global A/B run listing for
+     * the observability panel. All filters optional:
+     * <ul>
+     *   <li>{@code agentId} — exact-match filter on the run's owning agent;
+     *       null = cross-agent listing</li>
+     *   <li>{@code status} — exact match against {@code t_skill_ab_run.status}
+     *       (e.g. {@code PENDING} / {@code RUNNING} / {@code COMPLETED} /
+     *       {@code FAILED} / {@code SKIPPED})</li>
+     *   <li>{@code surfaceType} — guard parameter. {@code t_skill_ab_run} has
+     *       no surface_type column today (all rows are skill-surface), so the
+     *       controller accepts only {@code skill} / null / blank and returns
+     *       400 for any other value. Future migrations may add the column;
+     *       wiring the param now keeps the FE contract forward-compatible.</li>
+     *   <li>{@code page} / {@code size} — 1-based page (matches
+     *       {@link SkillDraftController#listDraftsPaged}); size clamped 1-100</li>
+     * </ul>
+     *
+     * <p>Response envelope mirrors {@code listDraftsPaged} so the FE can reuse
+     * the same paging shape (items / page / pageSize / total / totalPages).
+     */
+    @GetMapping("/abtest")
+    public ResponseEntity<?> listAbTestsGlobal(
+            @RequestParam(name = "agentId", required = false) String agentId,
+            @RequestParam(name = "status", required = false) String status,
+            @RequestParam(name = "surfaceType", required = false) String surfaceType,
+            @RequestParam(name = "page", defaultValue = "1") int page,
+            @RequestParam(name = "pageSize", defaultValue = "20") int pageSize) {
+        // Surface guard — only `skill` surface has rows in t_skill_ab_run today.
+        // Reject explicit non-skill values loudly so FE bug isn't hidden by an
+        // empty list. null / blank / "skill" all map to the same query.
+        if (surfaceType != null && !surfaceType.isBlank() && !"skill".equals(surfaceType)) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "surfaceType must be 'skill' or omitted "
+                            + "(got '" + surfaceType + "'); t_skill_ab_run has no surface_type column"));
+        }
+        int safePage = Math.max(1, page);
+        int safeSize = Math.min(100, Math.max(1, pageSize));
+        org.springframework.data.domain.Pageable pageable =
+                org.springframework.data.domain.PageRequest.of(safePage - 1, safeSize);
+        org.springframework.data.domain.Page<SkillAbRunEntity> result =
+                skillAbEvalService.getAbRunsByFilters(agentId, status, pageable);
+        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("items", result.getContent().stream()
+                .map(this::toAbRunMap)
+                .collect(Collectors.toList()));
+        body.put("page", safePage);
+        body.put("pageSize", safeSize);
+        body.put("total", result.getTotalElements());
+        body.put("totalPages", result.getTotalPages());
+        return ResponseEntity.ok(body);
+    }
+
     private Map<String, Object> toAbRunMap(SkillAbRunEntity r) {
         Map<String, Object> m = new java.util.LinkedHashMap<>();
         m.put("id", r.getId());

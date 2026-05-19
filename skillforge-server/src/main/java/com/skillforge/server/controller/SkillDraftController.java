@@ -187,11 +187,20 @@ public class SkillDraftController {
         ));
     }
 
-    /** Plan r2 §8 — userId required. */
+    /**
+     * Plan r2 §8 — userId required. FLYWHEEL-VISUAL-STATUS Phase 2 — added
+     * optional {@code source} filter (exact match on
+     * {@link SkillDraftEntity#getSource()}; e.g. {@code upload} /
+     * {@code marketplace} / {@code natural-language} /
+     * {@code extract-from-sessions}). Free-form passthrough: unknown values
+     * just match nothing rather than erroring, so the FE doesn't need an
+     * allow-list compiled in.
+     */
     @GetMapping("/skill-drafts")
     public ResponseEntity<List<Map<String, Object>>> listDrafts(
-            @RequestParam(name = "userId", required = true) Long userId) {
-        List<Map<String, Object>> result = skillDraftService.getDrafts(userId)
+            @RequestParam(name = "userId", required = true) Long userId,
+            @RequestParam(name = "source", required = false) String source) {
+        List<Map<String, Object>> result = skillDraftService.getDrafts(userId, source)
                 .stream().map(this::toMap).collect(Collectors.toList());
         return ResponseEntity.ok(result);
     }
