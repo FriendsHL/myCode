@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { Modal, message } from 'antd';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   getSkillDrafts, reviewSkillDraft, mergeDraftIntoSkill,
@@ -31,6 +31,22 @@ type DraftStatusFilter =
   | 'evaluated_passed'
   | 'rejected';
 
+const DRAFT_STATUS_FILTERS: readonly DraftStatusFilter[] = [
+  'all',
+  'draft',
+  'evaluating',
+  'approved',
+  'discarded',
+  'evaluated_passed',
+  'rejected',
+];
+
+function normalizeStatusFilter(raw: string | null): DraftStatusFilter {
+  return (DRAFT_STATUS_FILTERS as readonly string[]).includes(raw ?? '')
+    ? (raw as DraftStatusFilter)
+    : 'draft';
+}
+
 /**
  * SKILL-DRAFTS-REDESIGN — dual-pane layout with list + detail preview.
  */
@@ -38,9 +54,29 @@ const SkillDraftsPage: React.FC = () => {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { userId: currentUserId } = useAuth();
+  // FLYWHEEL-VISUAL-STATUS Phase 2 (1B URL routing) — URL `?status=draft`
+  // hydrates the filter on mount and stays canonical when the operator
+  // flips the pill chips below.
+  const [searchParams, setSearchParams] = useSearchParams();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<DraftStatusFilter>('draft');
+  const [statusFilter, setStatusFilter] = useState<DraftStatusFilter>(
+    normalizeStatusFilter(searchParams.get('status')),
+  );
+
+  // Mirror state → URL on change.
+  useEffect(() => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (statusFilter === 'draft') next.delete('status');
+        else next.set('status', statusFilter);
+        return next;
+      },
+      { replace: true },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusFilter]);
 
   const { data: draftsData, isLoading } = useQuery({
     queryKey: ['skill-drafts', currentUserId],
@@ -306,16 +342,15 @@ const SkillDraftsPage: React.FC = () => {
               {discardedDrafts.length} discarded
             </button>
             <button
-              className={`draft-stat ${statusFilter === 'evaluating' ? 'active' : ''}`}
+              className={`draft-stat evaluating ${statusFilter === 'evaluating' ? 'active' : ''}`}
               onClick={() => setStatusFilter('evaluating')}
               data-testid="filter-evaluating"
-              style={{ background: 'var(--bg-2, #1a1a1e)' }}
             >
-              <span className="dot" style={{ background: '#f59e0b' }} />
+              <span className="dot" />
               {evaluatingDrafts.length} evaluating
             </button>
             <button
-              className={`draft-stat approved ${statusFilter === 'evaluated_passed' ? 'active' : ''}`}
+              className={`draft-stat evaluated ${statusFilter === 'evaluated_passed' ? 'active' : ''}`}
               onClick={() => setStatusFilter('evaluated_passed')}
               data-testid="filter-evaluated-passed"
             >
@@ -323,7 +358,7 @@ const SkillDraftsPage: React.FC = () => {
               {evaluatedDrafts.length} evaluated
             </button>
             <button
-              className={`draft-stat discarded ${statusFilter === 'rejected' ? 'active' : ''}`}
+              className={`draft-stat rejected ${statusFilter === 'rejected' ? 'active' : ''}`}
               onClick={() => setStatusFilter('rejected')}
               data-testid="filter-rejected"
             >
@@ -424,12 +459,14 @@ type DraftStatusKind =
   | 'err'
   | 'approved'
   | 'discarded'
+  | 'evaluating'
   | 'evaluated'
   | 'rejected';
 
 function getDraftStatus(draft: SkillDraft): DraftStatusKind {
   if (draft.status === 'approved') return 'approved';
   if (draft.status === 'discarded') return 'discarded';
+  if (draft.status === 'evaluating') return 'evaluating';
   if (draft.status === 'evaluated_passed') return 'evaluated';
   if (draft.status === 'rejected') return 'rejected';
   const sim = draft.similarity ?? 0;
@@ -508,6 +545,7 @@ const StatusBadge: React.FC<{
   const label = useMemo(() => {
     if (status === 'approved') return 'Approved';
     if (status === 'discarded') return 'Discarded';
+    if (status === 'evaluating') return 'Evaluating';
     if (status === 'evaluated') return 'Evaluated';
     if (status === 'rejected') return 'Rejected';
     if (status === 'err') return `High ${Math.round((similarity ?? 0) * 100)}%`;
