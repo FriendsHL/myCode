@@ -250,14 +250,27 @@ public class SkillController {
         return ResponseEntity.ok(skillService.getSkillPromptContent(id));
     }
 
-    /** Plan r2 §8 — userId required (no defaultValue=0 fallback). */
+    /**
+     * Plan r2 §8 — userId required (no defaultValue=0 fallback).
+     *
+     * <p>SKILL-CREATOR-PHASE-1.6 F2 (2026-05-19): optional
+     * {@code targetAgentId} param lets operators (typically via the
+     * dashboard upload form) explicitly select the agent the skill-eval gate
+     * should run against. When present AND the uploaded zip carries
+     * {@code evals/evals.json}, the upload still completes synchronously
+     * (legacy: skill registered + persisted), and additionally fires the
+     * eval gate against the chosen agent. When omitted, the legacy upload
+     * path runs unchanged (no eval); operators can re-trigger evaluation
+     * later via {@code POST /api/skill-drafts/{id}/evaluate}.
+     */
     @PostMapping("/upload")
     public ResponseEntity<?> uploadSkill(
             @RequestParam("file") MultipartFile file,
-            @RequestParam(value = "userId", required = true) Long userId) {
+            @RequestParam(value = "userId", required = true) Long userId,
+            @RequestParam(value = "targetAgentId", required = false) Long targetAgentId) {
         try {
             // BE writes ownerId from the validated userId — never accepts ownerId from FE.
-            SkillEntity saved = skillService.uploadSkill(file, userId);
+            SkillEntity saved = skillService.uploadSkill(file, userId, targetAgentId);
             return ResponseEntity.ok(saved);
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));

@@ -307,7 +307,18 @@ public class SkillCreatorEvalCoordinator {
     }
 
     @Async
-    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    @TransactionalEventListener(
+            phase = TransactionPhase.AFTER_COMMIT,
+            // Phase 1.6 hotfix r5 (2026-05-19): ChatService.runLoop publishes
+            // SessionLoopFinishedEvent in a non-@Transactional context (loop
+            // teardown is fire-and-forget, no surrounding tx). Without
+            // fallbackExecution=true, Spring silently drops AFTER_COMMIT
+            // listeners when no tx is active → onSessionLoopFinished never
+            // fires → aggregate never runs → status stuck on 'evaluating'
+            // forever. fallbackExecution=true makes the listener fire
+            // immediately when there's no tx (no wait), while still honoring
+            // AFTER_COMMIT semantics when a tx IS present.
+            fallbackExecution = true)
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void onSessionLoopFinished(SessionLoopFinishedEvent event) {
         if (event == null || event.sessionId() == null) return;

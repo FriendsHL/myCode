@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.skillforge.core.model.AgentDefinition;
+import com.skillforge.core.model.SkillDefinition;
+import com.skillforge.core.skill.SkillRegistry;
 import com.skillforge.server.entity.AgentEntity;
 import com.skillforge.server.entity.EvalScenarioEntity;
 import com.skillforge.server.entity.SessionEntity;
@@ -78,6 +80,8 @@ class SkillCreatorServiceDispatchTxBoundaryTest {
     private AgentService agentService;
     private SubAgentRegistry subAgentRegistry;
     private ApplicationEventPublisher eventPublisher;
+    /** Phase 1.6 F3 fix: mock registry to verify in-memory candidate registration. */
+    private SkillRegistry skillRegistry;
     private SkillCreatorService service;
 
     @BeforeEach
@@ -91,6 +95,7 @@ class SkillCreatorServiceDispatchTxBoundaryTest {
         agentService = mock(AgentService.class);
         subAgentRegistry = mock(SubAgentRegistry.class);
         eventPublisher = mock(ApplicationEventPublisher.class);
+        skillRegistry = mock(SkillRegistry.class);
 
         ObjectMapper objectMapper = new ObjectMapper()
                 .registerModule(new JavaTimeModule())
@@ -99,7 +104,8 @@ class SkillCreatorServiceDispatchTxBoundaryTest {
         service = new SkillCreatorService(
                 draftRepository, skillRepository, scenarioRepository,
                 sessionRepository, sessionService, chatService,
-                agentService, subAgentRegistry, objectMapper, eventPublisher);
+                agentService, subAgentRegistry, objectMapper, eventPublisher,
+                skillRegistry);
     }
 
     @Test
@@ -208,6 +214,39 @@ class SkillCreatorServiceDispatchTxBoundaryTest {
      * fresh entity each call so we get distinct child ids; saveSession is a
      * pass-through.
      */
+    @Test
+    @DisplayName("Phase 1.6 F3 fix: renderTransientCandidateSkill registers SkillDefinition in registry")
+    void dispatchEvaluation_registersTransientSkillInRegistry() {
+        wireHappyDispatch();
+
+        service.dispatchEvaluation("parent-1", "draft-1", List.of("scenario-1"));
+
+        // Capture the SkillDefinition that got registered.
+        ArgumentCaptor<SkillDefinition> captor = ArgumentCaptor.forClass(SkillDefinition.class);
+        verify(skillRegistry).registerSkillDefinition(captor.capture());
+        SkillDefinition def = captor.getValue();
+
+        // ┄┄┄ F3 invariants ┄┄┄
+        // 1. Registered name matches the transient SkillEntity name suffix pattern.
+        assertThat(def.getName())
+                .as("transient SkillDefinition name follows {draftName}_eval_{8-char-uuid}")
+                .startsWith("test-skill_eval_")
+                .hasSize("test-skill_eval_".length() + 8);
+
+        // 2. PromptContent carries the draft's promptHint body (so the with_skill
+        //    child agent actually sees the candidate skill's prompt). Without this,
+        //    the registered SkillDefinition would be empty and the A/B comparison
+        //    would degrade to "agent w/ existing-skills" vs "agent w/o" anyway.
+        assertThat(def.getPromptContent())
+                .as("promptContent must include the draft's promptHint body")
+                .contains("do the thing");
+
+        // 3. Description echoes through (used by the agent loop's skill-selection
+        //    heuristic — without it the LLM won't know when to invoke).
+        // No explicit description on this draft → fine; just verify name match
+        // and prompt body. The description path is exercised by V5 line 829.
+    }
+
     private SessionEntity wireHappyDispatch() {
         SessionEntity parent = new SessionEntity();
         parent.setId("parent-1");

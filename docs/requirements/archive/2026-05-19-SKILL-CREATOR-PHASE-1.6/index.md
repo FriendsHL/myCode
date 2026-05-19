@@ -90,7 +90,63 @@ Mid 档, ~3-4 天 (本期 Phase 1.1-1.3 helper 全 ready 减大半工程量):
 - footgun #4 / #5 不适用 (不动 Message / 不动 t_session_message)
 - footgun #6 跨栈契约: `EvaluationResult` shape Phase 1.1 已定型, Phase 1.6 只换 source-of-data (proxy → EvalJudgeTool), FE 不需 retro 改
 
+## 实施记录 (2026-05-19 完成)
+
+### Phase 1.0-Final 真活落地
+
+| Phase | 内容 | tests |
+|---|---|---|
+| Phase 1.0 取证 | be-dev grep 7 verify 点 + 抓 3 处 spec-vs-code Gotcha (judge score 0..100 normalize / t_subagent_run 无 token-cost / F3 升 mandatory) + 红测试 SkillCreatorEvalCoordinatorJudgeIT | +2 (1840) |
+| Phase 1.1 F1 | MultiTurnTranscriptBuilder + ScenarioRunResult adapter + Coordinator.aggregate 真调 EvalJudgeTool + F3 in-memory register (V5 SkillAbEvalService.838 pattern, **不写磁盘**) | +2 (1842) |
+| Phase 1.2 F2 | 3 entry controller + ?targetAgentId param + 新 POST /api/skill-drafts/{id}/evaluate endpoint | +5 (1847) |
+| Phase 1.3 FE | TriggerEvaluationModal + footer button (跟 2026-05-18 archive 的 Phase 1.3 一致, 复用现有 commit a616b14) | +0 (FE in a616b14) |
+| Phase 2.0 Mid review | 2 reviewer opus 1M 双 600s stalled → 主会话 pivot 亲 review verify (跟 V7 同款 stalled pattern). PASS + 1 mandatory javadoc fix (W1 importSkill javadoc claim 跟 code 不一致) | — |
+| Phase Final | 真活 dogfood verify + 6 hotfix r1-r6 + 2 backlog + archive + commit | 1847 |
+
+### 6 真 hotfix (dogfood blocker, 全在本期 commit 内)
+
+| # | 改动 | 真因 |
+|---|---|---|
+| **r1** | FE TriggerEvaluationModal `initialScenarios=[]` 不预填 sessionId | 跨栈契约 bug — FE 预填 session UUID 当 scenario UUID, BE `EvalScenarioDraftRepository.findById` 不到 → 400 NO_SCENARIOS |
+| **r2** | FE Modal 删 scenarios picker + 加 read-only "Source session" info row | UX 不误导 (user 不能真选 scenario, BE auto-build, picker 有害) |
+| **r3** | BE `SkillCreatorService.createSyntheticOrchestratorSession` 加 `setActiveRootTraceId(UUID.randomUUID())` | child SubAgent 继承 parent (synthetic orchestrator) active_root=null → `chatAsync.getActiveRootTraceId` `Optional.map(null).orElseThrow` collapse → `SessionNotFoundException` (session 真在 DB) → child loop 不跑 |
+| **r4** | FE SkillDrafts 加 'evaluating' chip + DraftStatusFilter union | Phase 1.3 实施时漏 `'evaluating'` chip, status=evaluating draft 不在任何 tab 显 |
+| **r5** | BE Coordinator `onSessionLoopFinished` 加 `fallbackExecution=true` | `ChatService.runLoop.publishEvent(SessionLoopFinishedEvent)` 真活在 non-tx 跑, `@TransactionalEventListener(AFTER_COMMIT)` 默认 silently 丢弃 non-tx publish → listener 永不 fire → aggregate 永不跑 → status 永 evaluating |
+| **r6** | BE `SkillDraftController.toMap` 加 V91 columns (evaluationResult / targetAgentId / candidateSkillId / source / evaluatedAt) | Phase 1.1 commit 91f5ed6 加 V91 schema + entity getters 但忘 update toMap → API 不 surface evaluationResult → FE Evaluation Report tab 永空 |
+
+### 手动 DB state (非 git 改动, 需 production 真活复制)
+
+| 改动 | 目的 | 反向操作 |
+|---|---|---|
+| `UPDATE t_agent SET execution_mode='auto' WHERE id IN (1,2,3,4,5)` | 5 个 user agent eval 时 child SubAgent 不 ASK hang | `WHERE id=X SET 'ask'` per agent |
+| `UPDATE t_skill_draft SET source_session_id='...' WHERE status='draft' AND source_session_id IS NULL` | backfill 16 个 historic draft (4a24b27 之前 V1 path 真活没填 sourceSessionId), 让 Trigger Evaluation 不报 400 | reset NULL |
+
+### 真活 dogfood 验证 (2026-05-19 19:50:45 → 19:53:34)
+
+- 选 AINewsMultiSearch draft + target Main Assistant + source AI 早报编辑 session
+- spawn 2 child SubAgent (5fc45874 + e4d734d9), 全程 188 sec
+- Coordinator aggregate 真活 fire: `passRateDelta=0.000` → status=**rejected**
+- LLM judge 真活返: `withSkill.compositeScore=0.335 / withoutSkill.compositeScore=0.0 / delta.compositeScore=+0.335`
+- LLM summary 真活含: "Recommended: reject (delta below threshold 5pp)"
+- FE Evaluation Report tab 真活渲 5 维 benchmark + LLM summary + drill-down source sessions
+
+### 真活 dogfood 暴露的 2 个 systemic bug (转 backlog)
+
+- **SKILL-EVAL-CHILD-SANDBOX** (P1): eval child SubAgent 继承 target agent 完整 tools (Edit / Write / Bash) → source session 含"修改代码"指令时 child 真活 modify production workspace. 5/19 dogfood 真活 modified `SkillList.tsx` (回到 dec25a2 改动状态) — user 真 revert 后 child agent 真活 reapply.
+- **SKILL-EVAL-DESTRUCTIVE-SOURCE-FILTER** (P1): 从源头排掉 "修改代码 / 文件" 类 source session 当 eval scenario.
+
+两个 backlog 加 `docs/requirements/backlog/` 待 Phase 1.7 实施.
+
+## Iron Law
+
+- 核心 7+1 BE 0 diff (ChatService 本期 Phase 1.1-1.3 已 +22 行红 audit PASS, Phase 1.6 不动)
+- 核心 3 FE 0 diff
+- V91/V92 schema 不动 (Phase 1.1-1.3 已 land)
+- footgun #4 / #5 不适用 (不动 Message / 不动 t_session_message)
+- footgun #6 跨栈契约: hotfix r1 + r6 真活就是 footgun #6 表现 (FE TS interface ↔ BE @ResponseBody 字段名/语义不一致), 已 fix
+
 ## 链接
 
 - 本期前置: [SKILL-CREATOR-WITH-EVAL archive](../../archive/2026-05-18-SKILL-CREATOR-WITH-EVAL-phase-1.1-1.3/index.md) (Phase 1.1-1.3 真实施 + 4 deviation 决策 D9-D13)
 - 借鉴方法论: [cc agentskills.io evaluating-skills](https://agentskills.io/skill-creation/evaluating-skills)
+- 后续 backlog: [SKILL-EVAL-CHILD-SANDBOX](../../backlog/SKILL-EVAL-CHILD-SANDBOX/index.md) + [SKILL-EVAL-DESTRUCTIVE-SOURCE-FILTER](../../backlog/SKILL-EVAL-DESTRUCTIVE-SOURCE-FILTER/index.md)

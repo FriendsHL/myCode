@@ -139,9 +139,11 @@ describe('TriggerEvaluationModal', () => {
     expect(screen.getByText(/Target agent/i)).toBeInTheDocument();
     expect(document.querySelector('.trigger-eval-agent-select')).toBeTruthy();
 
-    // Scenarios select (Form.Item label "Source sessions (scenarios)")
-    expect(screen.getByText(/Source sessions/i)).toBeInTheDocument();
-    expect(document.querySelector('.trigger-eval-scenarios-select')).toBeTruthy();
+    // Source session info row (Phase 1.6 hotfix r2: removed scenarios picker
+    // because BE auto-builds from draft.sourceSessionId — picker UX was
+    // misleading, BE ignores user-typed session ids).
+    expect(screen.getByText(/Source session:/i)).toBeInTheDocument();
+    expect(document.querySelector('[data-testid="trigger-eval-source-session-info"]')).toBeTruthy();
 
     // Threshold slider disabled + hint visible
     expect(screen.getByText(/hardcoded 5pp/i)).toBeInTheDocument();
@@ -192,8 +194,12 @@ describe('TriggerEvaluationModal', () => {
     ];
     expect(draftId).toBe('draft-abc');
     expect(payload.targetAgentId).toBe(42);
-    // Default scenarios come from draft.sourceSessionId
-    expect(payload.scenarios).toEqual(['sess-source-1']);
+    // Phase 1.6 hotfix (2026-05-19): scenarios is intentionally undefined so
+    // BE auto-builds ephemeral EvalScenario rows from draft.sourceSessionId.
+    // Pre-filling with [draft.sourceSessionId] (session UUID) caused BE 400
+    // "Eval scenario not found" because scenarios[] expects EvalScenarioEntity
+    // IDs, not session UUIDs (different entities).
+    expect(payload.scenarios).toBeUndefined();
     // Phase 1.6 hardcodes threshold at BE default — payload omits the field
     expect(payload.threshold).toBeUndefined();
 

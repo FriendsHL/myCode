@@ -60,7 +60,12 @@ class SkillCreatorServiceScenarioExtractionTest {
                 mock(AgentService.class),
                 mock(SubAgentRegistry.class),
                 objectMapper,
-                mock(ApplicationEventPublisher.class));
+                mock(ApplicationEventPublisher.class),
+                // Phase 1.6 F3 fix (2026-05-19): null SkillRegistry — this test
+                // only exercises buildEphemeralScenariosFromZip /
+                // buildEphemeralScenariosFromSessions, neither of which touches
+                // the registry surface.
+                null);
     }
 
     @Test

@@ -52,7 +52,12 @@ class SkillDraftControllerTest {
     @BeforeEach
     void setUp() {
         coordinatorExecutor = Executors.newSingleThreadExecutor();
-        controller = new SkillDraftController(skillDraftService, skillDraftRepository, coordinatorExecutor);
+        // SKILL-CREATOR-PHASE-1.6 F2 (2026-05-19): ctor grew 3 args for the
+        // new POST /skill-drafts/{id}/evaluate endpoint. Pre-existing tests
+        // don't exercise that path, so we pass nulls for the eval-gate deps —
+        // the new endpoint guards against null deps with an explicit error.
+        controller = new SkillDraftController(skillDraftService, skillDraftRepository,
+                coordinatorExecutor, null, null, null);
     }
 
     private SkillDraftEntity newApprovedResult(String id) {

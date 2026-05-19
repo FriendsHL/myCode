@@ -25,6 +25,7 @@ const SUGGEST_MERGE_THRESHOLD = 0.60;
 type DraftStatusFilter =
   | 'all'
   | 'draft'
+  | 'evaluating'
   | 'approved'
   | 'discarded'
   | 'evaluated_passed'
@@ -49,6 +50,10 @@ const SkillDraftsPage: React.FC = () => {
 
   const drafts: SkillDraft[] = useMemo(() => draftsData ?? [], [draftsData]);
   const pendingDrafts = useMemo(() => drafts.filter(d => d.status === 'draft'), [drafts]);
+  const evaluatingDrafts = useMemo(
+    () => drafts.filter(d => d.status === 'evaluating'),
+    [drafts],
+  );
   const approvedDrafts = useMemo(() => drafts.filter(d => d.status === 'approved'), [drafts]);
   const discardedDrafts = useMemo(() => drafts.filter(d => d.status === 'discarded'), [drafts]);
   const evaluatedDrafts = useMemo(
@@ -299,6 +304,15 @@ const SkillDraftsPage: React.FC = () => {
             >
               <span className="dot" />
               {discardedDrafts.length} discarded
+            </button>
+            <button
+              className={`draft-stat ${statusFilter === 'evaluating' ? 'active' : ''}`}
+              onClick={() => setStatusFilter('evaluating')}
+              data-testid="filter-evaluating"
+              style={{ background: 'var(--bg-2, #1a1a1e)' }}
+            >
+              <span className="dot" style={{ background: '#f59e0b' }} />
+              {evaluatingDrafts.length} evaluating
             </button>
             <button
               className={`draft-stat approved ${statusFilter === 'evaluated_passed' ? 'active' : ''}`}

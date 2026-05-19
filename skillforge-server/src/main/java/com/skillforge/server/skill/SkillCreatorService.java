@@ -464,10 +464,16 @@ public class SkillCreatorService {
      * {@code source="attribution_ab_transient"}; we tag with {@code _eval_<uuid>}
      * + {@code source="skill-creator-eval-transient"}).
      *
-     * <p>Skill body is rendered from {@code draft.promptHint} via the same
-     * {@link #render(SkillDraftEntity, Path)} pipeline; the disk path is
-     * allocated under the standard {@code SkillStorageService.allocate}
-     * runtime root (see Phase 1.0 verify item #5).
+     * <p>Phase 1.6 F3 fix (2026-05-19): the SkillEntity stays {@code skillPath=null}
+     * (no disk write), and an in-memory {@link SkillDefinition} is registered
+     * directly into {@link SkillRegistry} via {@link #buildInMemoryDefinition}.
+     * Mirrors the V5 {@code SkillAbEvalService.buildSkillDefinition} (line 838-860)
+     * pattern — both V5 promoted-skill register + V5 dynamic-user-sim
+     * ({@code SimulatorTrialOrchestrator}) use the same in-memory route.
+     * Cleanup is paired with {@link SkillCreatorEvalCoordinator}'s
+     * {@code unregisterTransientCandidate} at aggregate finish — pure
+     * {@link java.util.concurrent.ConcurrentHashMap} ops, no disk artifacts to
+     * sweep.
      */
     private SkillEntity renderTransientCandidateSkill(SkillDraftEntity draft) {
         String transientUuid = java.util.UUID.randomUUID().toString();
@@ -814,11 +820,20 @@ public class SkillCreatorService {
         orchestrator.setMessagesJson("[]");
         orchestrator.setRuntimeStatus("idle");
         orchestrator.setOrigin(SessionEntity.ORIGIN_EVAL);
-        // No active_root_trace_id — orchestrator session itself doesn't run
-        // any LLM trace. Children copy parent.activeRootTraceId (which is
-        // null here, so each child becomes its own trace root via the
-        // existing INV-4 fallback). That's the right semantics: eval scenarios
-        // are independent traces.
+        // Phase 1.6 hotfix r3 (2026-05-19): allocate active_root_trace_id so
+        // children inherit non-null root in dispatchOne line 628. Without
+        // this, AFTER_COMMIT listener's chatAsync(preserveActiveRoot=true) →
+        // getActiveRootTraceId(child) hits Java Optional.map collapse bug:
+        // `findById(id).map(SessionEntity::getActiveRootTraceId).orElseThrow()`
+        // — when getActiveRootTraceId() returns null, Optional.map collapses
+        // to empty → orElseThrow fires SessionNotFoundException even though
+        // session row exists in DB. Defensive fallback in ChatService.chatAsync
+        // line ~378 (existingActiveRoot==null branch) never runs.
+        //
+        // Giving orchestrator its own root traceId makes all children of one
+        // dispatchEvaluation batch share the same trace root → cleaner trace
+        // view per draft eval.
+        orchestrator.setActiveRootTraceId(java.util.UUID.randomUUID().toString());
         return sessionService.saveSession(orchestrator);
     }
 

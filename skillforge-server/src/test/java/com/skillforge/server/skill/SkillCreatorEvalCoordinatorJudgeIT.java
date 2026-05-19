@@ -3,9 +3,11 @@ package com.skillforge.server.skill;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.skillforge.core.skill.SkillRegistry;
 import com.skillforge.server.entity.EvalScenarioEntity;
 import com.skillforge.server.entity.SessionEntity;
 import com.skillforge.server.entity.SkillDraftEntity;
+import com.skillforge.server.entity.SkillEntity;
 import com.skillforge.server.eval.EvalJudgeMultiTurnOutput;
 import com.skillforge.server.eval.EvalJudgeTool;
 import com.skillforge.server.eval.MultiTurnTranscript;
@@ -15,6 +17,7 @@ import com.skillforge.server.improve.EphemeralScenarioCleanupService;
 import com.skillforge.server.repository.EvalScenarioDraftRepository;
 import com.skillforge.server.repository.SessionRepository;
 import com.skillforge.server.repository.SkillDraftRepository;
+import com.skillforge.server.repository.SkillRepository;
 import com.skillforge.server.service.event.SessionLoopFinishedEvent;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -70,6 +73,9 @@ class SkillCreatorEvalCoordinatorJudgeIT {
     private EvalJudgeTool evalJudgeTool;
     private EvalScenarioDraftRepository scenarioRepository;
     private MultiTurnTranscriptBuilder transcriptBuilder;
+    /** Phase 1.6 F3 fix: registry mock for unregister-on-finish path. */
+    private SkillRegistry skillRegistry;
+    private SkillRepository skillRepository;
 
     private SkillCreatorEvalCoordinator coordinator;
 
@@ -81,14 +87,17 @@ class SkillCreatorEvalCoordinatorJudgeIT {
         evalJudgeTool = mock(EvalJudgeTool.class);
         scenarioRepository = mock(EvalScenarioDraftRepository.class);
         transcriptBuilder = mock(MultiTurnTranscriptBuilder.class);
+        skillRegistry = mock(SkillRegistry.class);
+        skillRepository = mock(SkillRepository.class);
         objectMapper = new ObjectMapper()
                 .registerModule(new JavaTimeModule())
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-        // Phase 1.6 test ctor — wires the judge surface so aggregate() goes via
-        // computeMetricsViaJudge() instead of the proxy fallback path.
+        // Phase 1.6 F3-aware test ctor — wires the judge surface + registry so
+        // aggregate() runs computeMetricsViaJudge AND the F3 unregister hook.
         coordinator = new SkillCreatorEvalCoordinator(
                 sessionRepository, draftRepository, cleanupService, objectMapper,
-                evalJudgeTool, scenarioRepository, transcriptBuilder);
+                evalJudgeTool, scenarioRepository, transcriptBuilder,
+                skillRegistry, skillRepository);
 
         // Default transcript stub — non-empty so judge sees something
         // (judge contract degrades to 0 on "(no transcript)" string).
@@ -193,6 +202,61 @@ class SkillCreatorEvalCoordinatorJudgeIT {
                 .contains("\"compositeScore\":0.35")    // without_skill
                 .contains("\"overallScore\":0.4")        // without_skill (Jackson trim trailing zero)
                 .contains("LLM judge");                   // summary path label
+    }
+
+    @Test
+    @DisplayName("Phase 1.6 F3 fix: aggregate finish unregisters transient SkillDefinition from registry")
+    void aggregateFinish_unregistersTransientCandidate() {
+        String draftId = "draft-f3";
+        String scenarioId = "sc-f3";
+        String parentId = "parent-f3";
+
+        SessionEntity withSess = newSession("sess-with", evalCtx(draftId, scenarioId, "with_skill"));
+        withSess.setRuntimeStatus("completed");
+        withSess.setParentSessionId(parentId);
+        SessionEntity withoutSess = newSession("sess-without",
+                evalCtx(draftId, scenarioId, "without_skill"));
+        withoutSess.setRuntimeStatus("completed");
+        withoutSess.setParentSessionId(parentId);
+
+        when(sessionRepository.findById("sess-with")).thenReturn(Optional.of(withSess));
+        when(sessionRepository.findByParentSessionId(parentId))
+                .thenReturn(Arrays.asList(withSess, withoutSess));
+
+        // Draft has candidateSkillId set (mirrors what
+        // SkillCreatorService.dispatchEvaluation does at dispatch time).
+        SkillDraftEntity draft = newDraft(draftId);
+        draft.setCandidateSkillId(42L);
+        draft.setEvaluationResultJson(pendingStub(2, List.of(scenarioId), parentId));
+        when(draftRepository.findById(draftId)).thenReturn(Optional.of(draft));
+
+        // The candidate SkillEntity in the repo (whose name is what we
+        // registered + need to unregister).
+        SkillEntity candidate = new SkillEntity();
+        candidate.setId(42L);
+        candidate.setName("csv-parser_eval_abcd1234");
+        when(skillRepository.findById(42L)).thenReturn(Optional.of(candidate));
+
+        EvalScenarioEntity scenarioEntity = new EvalScenarioEntity();
+        scenarioEntity.setId(scenarioId);
+        scenarioEntity.setName("csv-eval");
+        scenarioEntity.setTask("Parse a CSV");
+        when(scenarioRepository.findById(scenarioId)).thenReturn(Optional.of(scenarioEntity));
+
+        // Judge returns enough scores to drive the aggregate to completion.
+        EvalJudgeMultiTurnOutput out = new EvalJudgeMultiTurnOutput();
+        out.setCompositeScore(50.0);
+        out.setOverallScore(50.0);
+        when(evalJudgeTool.judgeMultiTurnConversation(any(EvalScenario.class),
+                any(ScenarioRunResult.class), any(MultiTurnTranscript.class)))
+                .thenReturn(out);
+
+        coordinator.onSessionLoopFinished(
+                new SessionLoopFinishedEvent("sess-with", "done", "completed", 7L));
+
+        // Aggregation completed → unregister fires with the SkillEntity name.
+        verify(skillRepository).findById(42L);
+        verify(skillRegistry).unregisterSkillDefinition("csv-parser_eval_abcd1234");
     }
 
     @Test

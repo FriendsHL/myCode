@@ -1,10 +1,16 @@
 package com.skillforge.server.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.skillforge.server.entity.EvalScenarioEntity;
+import com.skillforge.server.entity.SessionEntity;
 import com.skillforge.server.entity.SkillDraftEntity;
 import com.skillforge.server.improve.HighSimilarityRejectedException;
 import com.skillforge.server.improve.SkillDraftService;
 import com.skillforge.server.improve.SkillNameConflictException;
+import com.skillforge.server.repository.EvalScenarioDraftRepository;
+import com.skillforge.server.repository.SessionRepository;
 import com.skillforge.server.repository.SkillDraftRepository;
+import com.skillforge.server.skill.SkillCreatorService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -33,16 +39,35 @@ public class SkillDraftController {
 
     private static final Logger log = LoggerFactory.getLogger(SkillDraftController.class);
 
+    /** Phase 1.6 hotfix r6: thread-safe shared mapper for evaluationResult parse in toMap. */
+    private static final ObjectMapper SHARED_OBJECT_MAPPER = new ObjectMapper();
+
     private final SkillDraftService skillDraftService;
     private final SkillDraftRepository skillDraftRepository;
     private final ExecutorService coordinatorExecutor;
+    /**
+     * SKILL-CREATOR-PHASE-1.6 F2 (2026-05-19): operator-triggered eval gate
+     * dependencies. Used by {@link #triggerDraftEvaluation} to wire ephemeral
+     * scenarios from the draft's source sessions and fire
+     * {@code SkillCreatorService.dispatchEvaluation}. All three are required;
+     * the controller is only wired when Spring sees them (Phase 1.1+ runtime).
+     */
+    private final SkillCreatorService skillCreatorService;
+    private final SessionRepository sessionRepository;
+    private final EvalScenarioDraftRepository evalScenarioRepository;
 
     public SkillDraftController(SkillDraftService skillDraftService,
                                 SkillDraftRepository skillDraftRepository,
-                                @Qualifier("abEvalCoordinatorExecutor") ExecutorService coordinatorExecutor) {
+                                @Qualifier("abEvalCoordinatorExecutor") ExecutorService coordinatorExecutor,
+                                SkillCreatorService skillCreatorService,
+                                SessionRepository sessionRepository,
+                                EvalScenarioDraftRepository evalScenarioRepository) {
         this.skillDraftService = skillDraftService;
         this.skillDraftRepository = skillDraftRepository;
         this.coordinatorExecutor = coordinatorExecutor;
+        this.skillCreatorService = skillCreatorService;
+        this.sessionRepository = sessionRepository;
+        this.evalScenarioRepository = evalScenarioRepository;
     }
 
     /**
@@ -261,6 +286,147 @@ public class SkillDraftController {
         }
     }
 
+    /**
+     * SKILL-CREATOR-PHASE-1.6 F2 / Phase 1.2 (2026-05-19) — operator-driven
+     * eval-gate trigger for an existing {@link SkillDraftEntity}.
+     *
+     * <p>Body schema (all fields except targetAgentId optional):
+     * <pre>{@code
+     * {
+     *   "targetAgentId": 123,            // REQUIRED — agent the with_skill side runs on
+     *   "scenarios": ["sc-id-a", ...],   // OPTIONAL — existing ephemeral EvalScenario ids;
+     *                                    //   when omitted, the controller auto-builds
+     *                                    //   ephemerals from the draft's sourceSessionId
+     *                                    //   (single-session fallback per D13 default).
+     *   "threshold": 0.05                // OPTIONAL — pass-rate delta threshold;
+     *                                    //   ignored when omitted (server default 5pp).
+     *                                    //   Reserved for Phase 1.7 slider UI.
+     * }
+     * }</pre>
+     *
+     * <p>Returns {@code 202 Accepted} with the dispatched run-id list when the
+     * eval gate fires; {@code 400 Bad Request} for missing draft / targetAgentId
+     * / no scenarios. The actual aggregate verdict lands asynchronously on
+     * {@code draft.evaluationResultJson} via
+     * {@code SkillCreatorEvalCoordinator.onSessionLoopFinished}.
+     *
+     * <p>D13 decision (Phase 1.6 ratify): operator-manual trigger only — no
+     * auto-fire on draft creation. Dashboard {@code TriggerEvaluationModal}
+     * (Phase 1.3 FE) hits this endpoint after the operator picks the target
+     * agent + optional scenarios.
+     */
+    @PostMapping("/skill-drafts/{id}/evaluate")
+    public ResponseEntity<?> triggerDraftEvaluation(
+            @PathVariable String id,
+            @RequestBody Map<String, Object> request) {
+        if (request == null) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "BAD_REQUEST",
+                    "message", "request body is required"));
+        }
+        if (skillCreatorService == null || sessionRepository == null
+                || evalScenarioRepository == null) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(Map.of(
+                    "error", "EVAL_GATE_NOT_WIRED",
+                    "message", "Eval gate is not wired in this deployment "
+                            + "(skill-creator-eval module not present)"));
+        }
+        Object agentIdRaw = request.get("targetAgentId");
+        Long targetAgentId = parseLong(agentIdRaw);
+        if (targetAgentId == null) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "BAD_REQUEST",
+                    "message", "targetAgentId is required"));
+        }
+
+        SkillDraftEntity draft = skillDraftRepository.findById(id).orElse(null);
+        if (draft == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of(
+                    "error", "NOT_FOUND",
+                    "message", "Skill draft not found: " + id));
+        }
+
+        // Stamp the target agent into the draft so the dispatch can resolve it
+        // (mirrors what SkillService.uploadSkill does in entry 1).
+        draft.setTargetAgentId(targetAgentId);
+
+        // Resolve scenarios: caller-provided > auto-build from sourceSessionId.
+        List<String> scenarioIds = pluckStringList(request, "scenarios");
+        if (scenarioIds == null || scenarioIds.isEmpty()) {
+            scenarioIds = autoBuildScenariosFromDraftSource(draft, targetAgentId);
+            if (scenarioIds.isEmpty()) {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "error", "NO_SCENARIOS",
+                        "message", "No scenarios provided and draft has no resolvable source "
+                                + "session to auto-build from. Provide scenarios[] explicitly."));
+            }
+        }
+
+        // Save the targetAgentId update + dispatch.
+        skillDraftRepository.save(draft);
+        try {
+            List<String> runIds = skillCreatorService.dispatchEvaluation(null, id, scenarioIds);
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("draftId", id);
+            body.put("targetAgentId", targetAgentId);
+            body.put("scenarioIds", scenarioIds);
+            body.put("runIds", runIds);
+            body.put("status", "evaluating");
+            return ResponseEntity.status(HttpStatus.ACCEPTED).body(body);
+        } catch (RuntimeException e) {
+            log.warn("SkillDraftController.triggerDraftEvaluation: dispatch failed for draftId={}: {}",
+                    id, e.getMessage());
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "DISPATCH_FAILED",
+                    "message", e.getMessage()));
+        }
+    }
+
+    /**
+     * Auto-build ephemeral scenarios from the draft's {@code sourceSessionId}
+     * (single-session fallback). Returns the new scenario ids, or empty list
+     * when the draft has no source session. Persisted in their own
+     * transaction (saveAll) before the dispatch tx so the dispatcher's
+     * scenario lookup succeeds.
+     */
+    private List<String> autoBuildScenariosFromDraftSource(SkillDraftEntity draft, Long targetAgentId) {
+        String sourceSessionId = draft.getSourceSessionId();
+        if (sourceSessionId == null || sourceSessionId.isBlank()) {
+            return List.of();
+        }
+        SessionEntity source = sessionRepository.findById(sourceSessionId).orElse(null);
+        if (source == null) return List.of();
+        List<EvalScenarioEntity> scenarios = skillCreatorService
+                .buildEphemeralScenariosFromSessions(List.of(source), targetAgentId);
+        if (scenarios.isEmpty()) return List.of();
+        evalScenarioRepository.saveAll(scenarios);
+        return scenarios.stream().map(EvalScenarioEntity::getId).toList();
+    }
+
+    private static Long parseLong(Object raw) {
+        if (raw == null) return null;
+        if (raw instanceof Number n) return n.longValue();
+        if (raw instanceof String s && !s.isBlank()) {
+            try {
+                return Long.parseLong(s.trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private static List<String> pluckStringList(Map<String, Object> request, String key) {
+        Object raw = request.get(key);
+        if (!(raw instanceof List<?> list)) return null;
+        List<String> out = list.stream()
+                .filter(java.util.Objects::nonNull)
+                .map(Object::toString)
+                .filter(s -> !s.isBlank())
+                .toList();
+        return out.isEmpty() ? null : out;
+    }
+
     // ───────────────────────────────────────────────────────────────────────
     // SKILL-DASHBOARD-POLISH-V2.5 — alias endpoints under /api/skills/drafts/*
     // FE migrated to the new path style (POST approve/reject + paged GET).
@@ -339,6 +505,28 @@ public class SkillDraftController {
         map.put("similarity", entity.getSimilarity());
         map.put("mergeCandidateId", entity.getMergeCandidateId());
         map.put("mergeCandidateName", entity.getMergeCandidateName());
+        // Phase 1.6 hotfix r6 (2026-05-19): surface V91 columns so FE
+        // SkillDraftEvaluationReport tab can render. Phase 1.1 commit 91f5ed6
+        // added these to t_skill_draft + SkillDraftEntity getters but forgot
+        // to wire them through this toMap serializer → API response missed
+        // evaluationResult entirely → FE EvaluationReport tab stayed empty
+        // even after eval completed and wrote evaluation_result_json.
+        map.put("targetAgentId", entity.getTargetAgentId());
+        map.put("candidateSkillId", entity.getCandidateSkillId());
+        map.put("source", entity.getSource());
+        String evalJson = entity.getEvaluationResultJson();
+        if (evalJson != null && !evalJson.isBlank()) {
+            try {
+                Map<String, Object> evalObj = SHARED_OBJECT_MAPPER.readValue(
+                        evalJson, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+                map.put("evaluationResult", evalObj);
+                Object evaluatedAt = evalObj.get("evaluatedAt");
+                if (evaluatedAt != null) map.put("evaluatedAt", evaluatedAt);
+            } catch (Exception e) {
+                log.warn("SkillDraft {} evaluation_result_json malformed, skipping: {}",
+                        entity.getId(), e.getMessage());
+            }
+        }
         return map;
     }
 }

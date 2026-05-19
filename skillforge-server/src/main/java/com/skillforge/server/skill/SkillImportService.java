@@ -57,6 +57,18 @@ public class SkillImportService {
     private final ObjectMapper objectMapper;
     private final SkillSecurityScanner securityScanner;
 
+    /**
+     * SKILL-CREATOR-PHASE-1.6 F2 (2026-05-19) — eval-gate deps. All three are
+     * {@code @Autowired(required = false)} via the 11-arg ctor; legacy
+     * deployments that don't have skill-creator-eval wired (pre-Phase 1.1
+     * test fixtures) still work because the eval-gate branch is guarded by
+     * null checks.
+     */
+    private final com.skillforge.server.skill.SkillCreatorService skillCreatorService;
+    private final com.skillforge.server.repository.SkillDraftRepository skillDraftRepository;
+    private final com.skillforge.server.repository.EvalScenarioDraftRepository evalScenarioRepository;
+
+    /** Legacy 8-arg ctor — preserves pre-F2 wiring (still used by some test fixtures). */
     public SkillImportService(SkillImportProperties properties,
                               SkillStorageService storageService,
                               SkillRepository skillRepository,
@@ -65,6 +77,30 @@ public class SkillImportService {
                               SkillCatalogReconciler reconciler,
                               ObjectMapper objectMapper,
                               SkillSecurityScanner securityScanner) {
+        this(properties, storageService, skillRepository, skillRegistry, packageLoader,
+                reconciler, objectMapper, securityScanner, null, null, null);
+    }
+
+    /**
+     * Phase 1.6 F2 11-arg ctor — Spring picks this at runtime when the
+     * skill-creator-eval beans are present. Null-tolerant: when the eval deps
+     * are missing, {@code importSkill} 5-arg's eval-gate branch silently skips.
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    public SkillImportService(SkillImportProperties properties,
+                              SkillStorageService storageService,
+                              SkillRepository skillRepository,
+                              SkillRegistry skillRegistry,
+                              SkillPackageLoader packageLoader,
+                              SkillCatalogReconciler reconciler,
+                              ObjectMapper objectMapper,
+                              SkillSecurityScanner securityScanner,
+                              @org.springframework.beans.factory.annotation.Autowired(required = false)
+                              com.skillforge.server.skill.SkillCreatorService skillCreatorService,
+                              @org.springframework.beans.factory.annotation.Autowired(required = false)
+                              com.skillforge.server.repository.SkillDraftRepository skillDraftRepository,
+                              @org.springframework.beans.factory.annotation.Autowired(required = false)
+                              com.skillforge.server.repository.EvalScenarioDraftRepository evalScenarioRepository) {
         this.properties = properties;
         this.storageService = storageService;
         this.skillRepository = skillRepository;
@@ -73,6 +109,9 @@ public class SkillImportService {
         this.reconciler = reconciler;
         this.objectMapper = objectMapper;
         this.securityScanner = securityScanner;
+        this.skillCreatorService = skillCreatorService;
+        this.skillDraftRepository = skillDraftRepository;
+        this.evalScenarioRepository = evalScenarioRepository;
     }
 
     /**
@@ -100,11 +139,49 @@ public class SkillImportService {
      */
     @Transactional
     public ImportResult importSkill(Path sourcePath, SkillSource source, Long ownerId) {
-        return importSkill(sourcePath, source, ownerId, false);
+        return importSkill(sourcePath, source, ownerId, false, null);
     }
 
     @Transactional
     public ImportResult importSkill(Path sourcePath, SkillSource source, Long ownerId, boolean allowMediumRisk) {
+        return importSkill(sourcePath, source, ownerId, allowMediumRisk, null);
+    }
+
+    /**
+     * SKILL-CREATOR-PHASE-1.6 F2 (2026-05-19) — operator-driven eval gate
+     * variant. When {@code targetAgentId} is non-null AND the marketplace
+     * package carries an {@code evals/evals.json}, the import path skips the
+     * legacy direct-register flow's return type and returns
+     * {@link ImportResult#evaluating(String)} — FE polls the draft id for the
+     * verdict. When {@code targetAgentId} is null, behaves identically to the
+     * 4-arg legacy overload (direct register + success result).
+     *
+     * <p><b>Eval gate semantics (D14 ratify, 2026-05-19 Phase 2.0 review)</b>:
+     * eval-on-import is a <b>report path, not a production gate</b>. The
+     * imported skill is registered into the prod {@link SkillRegistry}
+     * immediately (see step 9 / {@code skillRegistry.registerSkillDefinition(reloaded)}),
+     * and the eval batch runs <b>in parallel</b> against a separate transient
+     * SkillEntity (the {@code _eval_<uuid>} sidecar created by
+     * {@code SkillCreatorService.dispatchEvaluation}). The verdict lands on
+     * {@code t_skill_draft.evaluation_result_json}; operator reviews via the
+     * dashboard and decides whether to keep / delete the production skill
+     * (delete goes through {@code SkillService.deleteSkill}, separate from
+     * this controller).
+     *
+     * <p>The {@code ImportResult.evaluating(draftId)} return value signals
+     * "the eval batch is running, see the draft for the report" — NOT
+     * "the skill is not yet active in production". FE should treat the
+     * imported skill as live regardless of the {@code evaluating} flag;
+     * the flag is purely an FE hint that a report is in flight.
+     *
+     * <p>Defer-register-until-verdict (true production gating) is a separate
+     * P1 candidate tracked as a future backlog item; out of Phase 1.6 scope
+     * because the original spec ratify did not require it and the parallel
+     * report semantics don't break any other spec.
+     */
+    @Transactional
+    public ImportResult importSkill(Path sourcePath, SkillSource source, Long ownerId,
+                                     boolean allowMediumRisk, Long targetAgentId) {
         Objects.requireNonNull(sourcePath, "sourcePath");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(ownerId, "ownerId");
@@ -173,6 +250,21 @@ public class SkillImportService {
                 outcome.row.getId(), outcome.row.getName(),
                 source.wireName(), target, outcome.conflictResolved);
 
+        // SKILL-CREATOR-PHASE-1.6 F2 (2026-05-19): operator-driven eval gate.
+        // When the caller supplied a targetAgentId AND the imported package
+        // carries an evals/evals.json, fire the skill-eval gate against the
+        // chosen agent and override the success return with
+        // ImportResult.evaluating(draftId). Otherwise the legacy result
+        // returns unchanged.
+        if (targetAgentId != null && skillCreatorService != null
+                && skillDraftRepository != null && evalScenarioRepository != null) {
+            ImportResult evalResult = maybeTriggerEvaluationForImport(target, outcome.row,
+                    ownerId, targetAgentId, source);
+            if (evalResult != null) {
+                return evalResult;
+            }
+        }
+
         return new ImportResult(
                 outcome.row.getId(),
                 outcome.row.getName(),
@@ -180,6 +272,55 @@ public class SkillImportService {
                 source.wireName(),
                 outcome.conflictResolved,
                 scanWarnings);
+    }
+
+    /**
+     * SKILL-CREATOR-PHASE-1.6 F2 (2026-05-19) — sibling helper for the
+     * 5-arg {@link #importSkill} eval-gate branch. Returns null when the
+     * package didn't carry an evals/evals.json (legacy success path stays),
+     * or an {@link ImportResult#evaluating(String)} when the dispatch fired.
+     * Failures (scenario build / dispatch) degrade silently to the legacy
+     * success path with a log warn.
+     */
+    private ImportResult maybeTriggerEvaluationForImport(java.nio.file.Path extractedRoot,
+                                                          com.skillforge.server.entity.SkillEntity savedSkill,
+                                                          Long ownerId,
+                                                          Long targetAgentId,
+                                                          SkillSource source) {
+        try {
+            List<com.skillforge.server.entity.EvalScenarioEntity> scenarios = skillCreatorService
+                    .buildEphemeralScenariosFromZip(extractedRoot, targetAgentId);
+            if (scenarios.isEmpty()) return null;
+
+            com.skillforge.server.entity.SkillDraftEntity draft =
+                    new com.skillforge.server.entity.SkillDraftEntity();
+            draft.setId(java.util.UUID.randomUUID().toString());
+            draft.setOwnerId(ownerId);
+            draft.setName(savedSkill.getName());
+            draft.setDescription(savedSkill.getDescription());
+            draft.setStatus("draft");
+            draft.setSource(source.wireName());
+            draft.setTargetAgentId(targetAgentId);
+            draft.setCandidateSkillId(savedSkill.getId());
+            skillDraftRepository.save(draft);
+            evalScenarioRepository.saveAll(scenarios);
+
+            List<String> scenarioIds = scenarios.stream()
+                    .map(com.skillforge.server.entity.EvalScenarioEntity::getId).toList();
+            skillCreatorService.dispatchEvaluation(null, draft.getId(), scenarioIds);
+            log.info("SkillImportService.importSkill: triggered eval gate for skill {} via draft {} "
+                            + "({} scenarios, targetAgentId={})",
+                    savedSkill.getId(), draft.getId(), scenarioIds.size(), targetAgentId);
+            return ImportResult.evaluating(draft.getId());
+        } catch (RuntimeException e) {
+            // Never let eval-gate failure clobber the successful import; the
+            // skill is already saved + registered. Operators can re-trigger via
+            // POST /api/skill-drafts/{id}/evaluate later.
+            log.warn("SkillImportService.importSkill: eval-gate trigger failed for skill {} "
+                    + "— legacy import succeeded, skipping eval: {}",
+                    savedSkill.getId(), e.getMessage());
+            return null;
+        }
     }
 
     private List<SkillScanFinding> enforceSecurityScan(SkillScanResult result, boolean allowMediumRisk) {

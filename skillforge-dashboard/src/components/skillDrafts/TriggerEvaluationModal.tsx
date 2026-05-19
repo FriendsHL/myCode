@@ -56,7 +56,6 @@ interface TriggerEvaluationModalProps {
 
 interface TriggerFormValues {
   targetAgentId: number | undefined;
-  scenarios: string[];
   /** Held for forward-compat — disabled in Phase 1.6 UX. */
   threshold: number;
 }
@@ -104,24 +103,21 @@ export function TriggerEvaluationModal({
     }));
   }, [agentsQuery.data]);
 
-  // Scenarios picker — default to the draft's source session when present so
-  // the operator can submit immediately. `firstByCreatedAt` parity sits on the
-  // BE so the empty list also yields a valid run.
-  const initialScenarios = useMemo(
-    () => (draft.sourceSessionId ? [draft.sourceSessionId] : []),
-    [draft.sourceSessionId],
-  );
+  // Scenarios field removed (Phase 1.6 hotfix r2, 2026-05-19): operator can't
+  // pick session ids in this modal — BE auto-builds ephemeral EvalScenario
+  // rows from `draft.sourceSessionId`. Showing a tags picker that BE ignores
+  // is misleading. The source session is surfaced as a read-only info row
+  // below + linked from the "Source" tab in the parent drawer.
 
   // Reset form whenever the modal opens with a (possibly new) draft.
   useEffect(() => {
     if (open) {
       form.setFieldsValue({
         targetAgentId: draft.targetAgentId ?? undefined,
-        scenarios: initialScenarios,
         threshold: DEFAULT_THRESHOLD_PP,
       });
     }
-  }, [open, draft.id, draft.targetAgentId, initialScenarios, form]);
+  }, [open, draft.id, draft.targetAgentId, form]);
 
   const handleOk = async () => {
     try {
@@ -130,7 +126,7 @@ export function TriggerEvaluationModal({
       setSubmitting(true);
       await triggerEvaluation(draft.id, {
         targetAgentId: values.targetAgentId,
-        scenarios: values.scenarios?.length ? values.scenarios : undefined,
+        // scenarios intentionally omitted — BE auto-builds from draft.sourceSessionId.
         // threshold intentionally omitted in Phase 1.6 — BE default 5pp wins.
       });
       message.success('Evaluation started — typically completes in 5–10 minutes.');
@@ -170,10 +166,41 @@ export function TriggerEvaluationModal({
         form={form}
         layout="vertical"
         initialValues={{
-          scenarios: initialScenarios,
           threshold: DEFAULT_THRESHOLD_PP,
         }}
       >
+        {/* Read-only info row — surfaces the source session that BE will
+            auto-build EvalScenario rows from. Operator can't override here
+            (Phase 1.6 scope: target-agent picker only). To inspect the
+            session contents, click "Source" tab in the parent drawer. */}
+        {draft.sourceSessionId && (
+          <div
+            style={{
+              marginBottom: 16,
+              padding: '8px 12px',
+              borderRadius: 4,
+              background: 'var(--bg-2, #1a1a1e)',
+              border: '1px solid var(--border-1, #2a2a30)',
+              fontSize: 13,
+            }}
+            data-testid="trigger-eval-source-session-info"
+          >
+            <span style={{ color: 'var(--fg-3, #8a8a93)', marginRight: 6 }}>
+              Source session:
+            </span>
+            <a
+              href={`/sessions/${draft.sourceSessionId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ fontFamily: 'monospace', fontSize: 12 }}
+            >
+              #{draft.sourceSessionId.slice(0, 8)}…
+            </a>
+            <span style={{ color: 'var(--fg-3, #8a8a93)', marginLeft: 8, fontSize: 11 }}>
+              (BE auto-builds eval scenarios from this session)
+            </span>
+          </div>
+        )}
         <Form.Item
           name="targetAgentId"
           label="Target agent"
@@ -220,24 +247,6 @@ export function TriggerEvaluationModal({
             }}
             // Use AntD's className passthrough as a stable testid target.
             className="trigger-eval-agent-select"
-          />
-        </Form.Item>
-
-        <Form.Item
-          name="scenarios"
-          label="Source sessions (scenarios)"
-          tooltip="Leave empty to let the backend pick the draft's source session or earliest matching session (firstByCreatedAt)."
-        >
-          <Select
-            mode="tags"
-            placeholder={
-              draft.sourceSessionId
-                ? `Defaults to source session #${draft.sourceSessionId}`
-                : 'Optional — BE picks earliest by createdAt'
-            }
-            tokenSeparators={[',', ' ']}
-            maxTagCount="responsive"
-            className="trigger-eval-scenarios-select"
           />
         </Form.Item>
 
