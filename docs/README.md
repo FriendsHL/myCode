@@ -19,7 +19,7 @@
 
 | ID | 标题 | 状态 | 需求包 | MRD | PRD | 技术方案 | 交付 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| _(暂无 active 主线需求；SYSTEM-AGENT-TYPING Phase 1+2 整包已交付归档 2026-05-17)_ | — | — | — | — | — | — | — |
+| _(暂无 active 主线需求；FLYWHEEL-VISUAL-STATUS 整包已交付归档 2026-05-20)_ | — | — | — | — | — | — | — |
 
 > 整体方案：[plans/PROD-OPTIMIZATION-FLYWHEEL/plan.md](plans/PROD-OPTIMIZATION-FLYWHEEL/plan.md) —— 数据飞轮 / 优化闭环 6 版本拆分（**V1-V6 全部已交付**，⑤ A/B 自动 trigger 真闭环 prompt+skill 双 surface 通）
 
@@ -89,6 +89,7 @@ Phase 1 (`e659b0a`) DB SQL 反查发现 layer 1 starvation 修飞轮; Phase 2 (p
 
 | ID | 标题 | 需求包 | 技术方案 |
 | --- | --- | --- | --- |
+| FLYWHEEL-VISUAL-STATUS | 飞轮可观测面板（observability framing；Insights 第 5 tab `flywheel`；AUTO/USER/HYBRID/ENTRY 4 类节点 + in-flight/lastActivity/lag/recentError/todayAggregate 5 维 metric + healthy/warn/stale/dormant/empty 5 健康颜色（含 H/W/S/D/E 字母 a11y fallback）+ 双 tab agentType × surface + ARIA tablist 语义 + panel 只读 drill-down 跳现有 page；1B URL routing 改 Insights/SkillList/SessionList/SkillDrafts 4 page 真消费 query param；2B BE 3 endpoint：`/skills/abtest` global + `/canary/rollouts` agentId optional + `/skill-drafts?source=` filter；Full pipeline 1.0 取证 + 2 dev parallel + 3 reviewer 对抗 r1+r2 mandatory bundle 8 fix；mvn 1865/0/109 + tsc + vitest 9/9 + Iron Law 0 触碰）| [需求包](requirements/archive/2026-05-20-FLYWHEEL-VISUAL-STATUS/index.md) | [MRD](requirements/archive/2026-05-20-FLYWHEEL-VISUAL-STATUS/mrd.md) / [PRD](requirements/archive/2026-05-20-FLYWHEEL-VISUAL-STATUS/prd.md) / [tech-design](requirements/archive/2026-05-20-FLYWHEEL-VISUAL-STATUS/tech-design.md) |
 | CHAT-MSG-TIMESTAMP | chat 气泡 hover 显 HH:MM:SS server-side createdAt（Full pipeline 1 轮 r1 + 1 mandatory fix; BE DTO+SessionService+WS handler / FE normalize+formatTime+hover CSS / Iron Law 全 PASS / mvn 1853/0/104 + tsc + vitest 三绿 + BE 真活 curl 验 createdAt ISO-8601 出现 / Judge 1 round fix BE 注释诚实 + FE :focus-within A11y） | [需求包](requirements/archive/2026-05-19-CHAT-MSG-TIMESTAMP/index.md) | — (Lite, decisions in index.md) |
 | SYSTEM-AGENT-TYPING | agent_type 字段 + 飞轮 layer 1 root cause 真闭环 (Phase 1) + system agent UX 分辨 + 监控 inline + 编辑保护 + Chat gate + deep-link consume (Phase 2) — Full pipeline × 2 / 真活验证 50s 内 user agent outcome 0→9 / mvn 1797 + 21 FE tests + 0 regression + Iron Law 0 diff | [需求包](requirements/archive/2026-05-17-SYSTEM-AGENT-TYPING/index.md) | [方案](requirements/archive/2026-05-17-SYSTEM-AGENT-TYPING/tech-design.md) |
 | FLYWHEEL-LOOP-CLOSURE | 飞轮 ⑤ A/B 自动 trigger 真闭环 prompt+skill 双 surface + canary logic disable + V3.2 link 接通（飞轮 V6）— Mid → upgraded Full / 8 sub-phase + Phase 2 r1+r2 / 5 mandatory fix / 8 ratify + 11 reviewer findings 全处置 + dogfood event 42 真跑通 | [需求包](requirements/archive/2026-05-17-FLYWHEEL-LOOP-CLOSURE/index.md) | [方案](requirements/archive/2026-05-17-FLYWHEEL-LOOP-CLOSURE/tech-design.md) |
