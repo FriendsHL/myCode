@@ -108,7 +108,7 @@
 
 - `skillforge-core/src/main/java/com/skillforge/core/engine/AgentLoopEngine.java` — Agent Loop 核心
 - `skillforge-core/src/main/java/com/skillforge/core/engine/hook/*` — Hook dispatcher / HookHandler / LifecycleHooksConfig
-- `skillforge-core/src/main/java/com/skillforge/core/llm/**` — LlmProvider 抽象和各 provider 实现（ClaudeProvider / OpenAi-compatible，SSE streaming）
+- `skillforge-core/src/main/java/com/skillforge/core/llm/**` — LlmProvider 抽象和各 provider 实现（ClaudeProvider / OpenAi-compatible，SSE streaming）；**触碰必优先调 `llm-provider-compat-reviewer`**（系统提示内嵌 SSE 协议差异速查表 + 9 条 REG checklist，避免 java-reviewer 漏检"只在一侧 provider 表现"的回归）
 - `skillforge-core/src/main/java/com/skillforge/core/compact/*` — 上下文压缩算法层（`ContextCompactorCallback` 接口、Light/Full/SessionMemory 三种策略、`TokenEstimator`、`CompactableToolRegistry`、boundary 检测；触碰必小心 tool_use↔tool_result 配对）
 - `skillforge-server/src/main/java/com/skillforge/server/service/CompactionService.java` — 上下文压缩编排层（实现 `ContextCompactorCallback`，stripe lock 64 槽、3-phase split 持锁/不持锁交替、`fullCompactInFlight` 去重、idempotency guard、DB 持久化、`session_updated` 广播）
 - `skillforge-server/src/main/java/com/skillforge/server/service/ChatService.java` — session 状态机 + tool_use/tool_result 不变量
@@ -236,6 +236,15 @@ TeamCreate("feature-name")
     - **DONE_WITH_CONCERNS**：完成但有疑虑（写在 message 里）。读 concerns，若涉及正确性 / scope 则**先解决再 review**；仅 observation（"这个文件越来越大"）则记下，进 reviewer
     - **NEEDS_CONTEXT**：缺关键信息没法继续。Claude 主会话补 context 后用 `SendMessage` 给**原 dev**（不开新 dev，保留上下文）
     - **BLOCKED**：完成不了。Claude 主会话评估：(a) context 问题 → 补 context 重发；(b) reasoning 不够 → 单次升 Opus 重发；(c) 任务太大 → 拆小后重发；(d) plan 错 → 回主会话升级用户决策。**永远不要忽略 BLOCKED 让原 dev 不变 retry**
+
+13. **Specialty Reviewer 触发**（除默认 Backend Reviewer = java-reviewer / Frontend Reviewer = typescript-reviewer 外，按触发条件**并行**额外起 specialty reviewer，不替代默认 reviewer）：
+    - 触碰 compact 子系统 → 额外起 `compact-reviewer`（CompactionService / Light/Full/SessionMemoryCompactStrategy / FileStateCache / RecoveryPayloadBuilder / AgentLoopEngine compact 集成 / SessionService.rewriteMessages）
+    - 触碰 LLM provider 子系统 → 额外起 `llm-provider-compat-reviewer`（`skillforge-core/llm/**` / ClaudeProvider / OpenAiProvider / ProviderProtocolFamily* / LlmStreamHandler / cache 子目录）
+    - **重构 / 新加 Service-Repository-Controller 类 / 跨模块抽象改动 / 引入新 interface / 单类 >500 行** → 额外起 `java-design-reviewer`（开放性设计视角：SOLID / 设计模式适用性 / 抽象泄漏 / 命名意图 / Java 17 现代化 / 可测试性 / 跨层调用，**不抓 java-reviewer 已抓的清单式问题**）
+    - 触碰认证 / 权限 / SQL 查询 / 外部输入 → 额外起 `security-reviewer`
+    - 新增 / 修改 Entity / Flyway migration / JPQL / 原生 SQL → 额外起 `database-reviewer`
+    - **小改动 / bug fix / 单字段不要叫 specialty reviewer，会噪音**
+    - Judge 必须看所有 reviewer report 合并判 PASS/FAIL；任一 specialty reviewer 报 blocker → 整体 FAIL
 
 ### 对抗约束 A / B / C（Mid 和 Full 共用）
 

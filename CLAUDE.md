@@ -79,7 +79,9 @@ mvn test
 | Agent | 何时使用 |
 |-------|---------|
 | `java-reviewer` | 所有 Java 改动落地后调用；触碰 SessionService rewrite 路径 / 加 t_session_message column / ChatService 持久化 + Engine 内存拼装时显式审 persistence-shape + identity-column 不变量 |
+| `java-design-reviewer` | **跟 java-reviewer 并行（不替代）**：重构 / 新加 Service-Repository-Controller 类 / 跨模块抽象改动 / 引入新 interface 或 abstract class / 单类 >500 行时调用。9 维度（SRP / DIP / OCP-设计模式 / 抽象泄漏 / Java 17 现代化 / 可测试性 / 命名意图 / DDD / 跨层调用）开放性视角审查，**不抓 java-reviewer 已抓的清单式问题**。小改动 / bug fix / 单字段**不要**叫，会噪音。用 opus 模型（设计需要深推理） |
 | `compact-reviewer` | **触碰 compact 子系统优先调用**（CompactionService / Light/Full/SessionMemoryCompactStrategy / FileStateCache / RecoveryPayloadBuilder / AgentLoopEngine compact 集成 / SessionService.rewriteMessages）；系统提示内嵌 8 条 compact 不变量（INV-1 tool_use↔tool_result pairing / INV-2 SUMMARY USER role / INV-3 boundary 不消失 / INV-4 持久化-engine 字节一致 / INV-5 rewrite preserve identity 列 / INV-6 不可 mutate 共享 Message / INV-7 4 路径覆盖 / INV-8 UTF-16 surrogate-safe） |
+| `llm-provider-compat-reviewer` | **触碰 LLM provider 子系统优先调用**（`skillforge-core/llm/**` / ClaudeProvider / OpenAiProvider / ProviderProtocolFamily* / LlmStreamHandler / cache 子目录 / Message + ContentBlock 的 SSE 字段相关改动）；系统提示内嵌 SSE 协议差异速查表 + 9 条历史 provider regression checklist（REG-1 qwen tool call SSE identity / REG-2 enable_thinking 默认 false / REG-3 reasoning_content 双侧声明 / REG-4 reasoning_content SSE 解析 / REG-5 tool_use normalize / REG-6 cache_control 隔离 / REG-7 finish_reason 映射 / REG-8 UsageNormalizer / REG-9 ProviderProtocolFamilyResolver） |
 | `typescript-reviewer` | 所有 TypeScript/React 改动落地后调用 |
 | `code-reviewer` | 任何代码改动后的通用质量检查 |
 | `security-reviewer` | 触碰认证、权限、SQL 查询、外部输入处理时必须调用 |
