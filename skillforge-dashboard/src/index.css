@@ -2356,7 +2356,6 @@ html[data-density="spacious"] { --density: 1; }
 .chat-redesign .msg-avatar.evaluator { background: var(--role-evaluator); }
 .chat-redesign .msg-name { font-weight: 500; color: var(--fg-1); }
 .chat-redesign .msg-time {
-  margin-left: auto;
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--fg-4);
@@ -2389,8 +2388,8 @@ html[data-density="spacious"] { --density: 1; }
   word-break: break-word;
 }
 .chat-redesign .msg.user .msg-head { justify-content: flex-end; }
-.chat-redesign .msg.user .msg-head .msg-avatar { order: -1; }
-.chat-redesign .msg.user .msg-time { margin-left: auto; }
+.chat-redesign .msg.user .msg-head .msg-avatar { order: 2; }
+.chat-redesign .msg.user .msg-time { order: -1; margin-right: 8px; }
 
 /* MULTIMODAL-MVP Phase 2: inline attachment thumbnails row above the bubble
  * text. Right-aligned (matches user-bubble flex direction), 8px gap, wraps
