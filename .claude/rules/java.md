@@ -136,9 +136,35 @@ AgentLoopEngine.run(AgentDef, String, Message userMessageBlock, List, ..., LoopC
    }
    ```
 
-**反例**：P10 斜杠命令 `ExecuteRequest.commandLine` 字段，FE 发的是 `{command, args}` → BE 反序列化 `commandLine` null → silent 失败，r2 才暴露。
+**反例 1（inner DTO 字段名）**：P10 斜杠命令 `ExecuteRequest.commandLine` 字段，FE 发的是 `{command, args}` → BE 反序列化 `commandLine` null → silent 失败，r2 才暴露。
 
-**触碰路径**：`skillforge-server/src/main/java/com/skillforge/server/dto/**/*.java` / WebSocket payload 类型 / Controller `@RequestBody` / `@ResponseBody`。
+### 6b. ⚠️ Outer envelope shape 也得验（reviewer 必查）
+
+**反例 2（outer envelope shape）**：FLYWHEEL-PER-RUN (commit `538b828`) BE Controller 返 `{items, limit, hideTerminal}` envelope，FE wrapper 类型写成裸 `FlywheelRunDto[]`，hook `r.data ?? []` 拿到 envelope object 当 array → `[...runs]` spread 不可 iter 抛 TypeError。r1 双 reviewer 都没 catch：java-reviewer 检了 12 个 DTO 内部字段 ✓，但**没看 outer 是 `List<X>` 直接 ResponseEntity.ok(list) 还是 `Map.of("items", list, ...)` 包裹**；ts-reviewer 跟着 test mock 走，而 test mock 用了跟 FE-Dev **同款的错 shape** (`Promise.resolve({data: [...]})`) → mock 跟实际 BE 不符，测试自洽但跑到 prod 就崩。Hotfix commit `5e25067` 修。
+
+**Reviewer 检查 footgun #6 时必查 4 件事（不只是字段名）**：
+
+1. **outer envelope shape**：BE Controller `return ResponseEntity.ok(...)` 内的对象是：
+   - 裸 `List<X>` / `X[]`？ → FE `api.get<X[]>(...)` + `r.data ?? []`
+   - `Map<String, Object>` envelope（`items` + 分页 meta 等）？ → FE 必须类型化 envelope interface + `r.data?.items ?? []`
+   - paged envelope（`{content / pageable / totalElements / ...}`）？ → 同上
+   - 单对象 `X`？ → FE `api.get<X>(...)`
+   - **grep `return ResponseEntity.ok(` 看到的 value 是什么 → FE wrapper 对应得上吗？**
+2. **inner DTO 字段名 / 类型**（原 footgun #6 内容）
+3. **测试 mock shape 必须 mirror 真 BE shape**：reviewer 看 test mock 的 `Promise.resolve({data: ...})` 时**不能信 FE-Dev 假设**，要交叉对 BE 真 Controller 返的 shape。若 mock shape 跟 BE 不符 → BLOCKER（mock 是 echo chamber 假绿）
+4. **真活 curl smoke 必跑**：dev 自验 + Phase Final 都要 `curl <endpoint>` 至少一次，把 raw JSON shape 跟 FE TS interface 行对行 verify
+
+**Reviewer checklist 写法（直接 copy 进 review prompt）**:
+
+```
+[ ] grep BE Controller return: `ResponseEntity.ok(\(.*\))` 看返的真正 outer shape (List? Map? 单对象?)
+[ ] FE wrapper api.get<T>(...) 的 T 是否 match outer shape (裸 array vs envelope object)?
+[ ] hook 取数据是 `r.data` (单对象/裸 list) 还是 `r.data.items` (envelope)?
+[ ] 测试 mock `Promise.resolve({data: ...})` 的 `data:` 后值 shape 跟 BE 真 return 比对一致?
+[ ] 真活 curl smoke 至少跑过一个 happy path 拿 raw JSON 跟 FE TS interface 对齐 verify?
+```
+
+**触碰路径**：`skillforge-server/src/main/java/com/skillforge/server/dto/**/*.java` / WebSocket payload 类型 / Controller `@RequestBody` / `@ResponseBody` / **Controller 返 `ResponseEntity.ok(...)` 内的 shape**。
 
 ---
 

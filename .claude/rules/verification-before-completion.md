@@ -36,9 +36,9 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 | 数据真落库 | `curl /api/...` 或 SQL 查实际值 | "UI 按钮变绿了" |
 | 整批需求做完 | 对照 `prd.md` / `tech-design.md` 验收点逐条 ✓ | "测试过了 = 完成" |
 | 前端功能能用 | `npx agent-browser goto <url>` + `eval "document.body.innerText"` 断言 DOM | "build 过了 / 看截图对" |
-| 新加 / 改 FE-BE 契约（API DTO / WS event payload） | grep BE DTO 字段名 == FE TS interface 字段名；roundtrip IT 跑过（ObjectMapper write → FE 期望 JSON 比对） | "我对照了名字 / BE/FE 单测分别过了" — 跨栈不匹配单测抓不到 |
+| 新加 / 改 FE-BE 契约（API DTO / WS event payload） | (1) grep BE DTO 字段名 == FE TS interface 字段名；(2) **grep Controller `return ResponseEntity.ok(...)` 内 outer shape (裸 List / Map envelope / 单对象) == FE `api.get<T>` T 类型 match**；(3) roundtrip IT 跑过（ObjectMapper write → FE 期望 JSON 比对）；(4) **真活 curl 至少跑过一次拿 raw JSON shape 对照 FE TS interface 行对行** | "我对照了名字 / BE/FE 单测分别过了 / test mock 都 pass" — 跨栈不匹配单测+test mock 都抓不到（mock 跟 FE-Dev 同款错 shape 自洽 echo chamber） |
 
-> **FE-BE 契约 footgun**：DTO 字段重命名 / 类型变更（如 `ExecuteRequest.commandLine` vs FE `command/args`）本地 BE 单测 + FE tsc 都过得了，但跨栈调用时反序列化 silent 失败 / 字段 null。**新加 / 改 DTO 字段必须按上表 grep + roundtrip 双重验证**。详见 [`java.md` known footgun #6](java.md)。
+> **FE-BE 契约 footgun**：DTO 字段重命名 / 类型变更（如 `ExecuteRequest.commandLine` vs FE `command/args`）本地 BE 单测 + FE tsc 都过得了，但跨栈调用时反序列化 silent 失败 / 字段 null。**Outer envelope shape 也得验**（FLYWHEEL-PER-RUN commit `538b828` 反例：BE 返 `{items, limit, hideTerminal}` envelope, FE 当裸 array 用 → `[...runs]` 抛 "runs is not iterable"; java-reviewer 检 inner 12 字段 PASS 但漏 outer shape, ts-reviewer 跟 test mock 走 — mock 用同款错 shape 自洽 echo chamber, hotfix `5e25067` 修）。**新加 / 改 DTO 字段必须按上表 4 步 grep + envelope + roundtrip + 真活 curl 四重验证**。详见 [`java.md` known footgun #6 + #6b](java.md)。
 
 ## Completion Gate（声明任务完成前必跑）
 
