@@ -21,7 +21,7 @@
  * inputs let us assert on running flags + edge animation classes.
  */
 import React from 'react';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
@@ -215,14 +215,58 @@ describe('FlywheelFlowchart', () => {
     expect(screen.getByTestId('fw-node-step9-decide')).toBeInTheDocument();
   });
 
-  it('drills G1 node to the OptimizationEvents proposal_pending page', async () => {
+  it('click G1 card → detail Drawer opens with Chinese label + drill-down link footer', async () => {
     renderChart();
     const node = await screen.findByTestId('fw-node-G1-approve-event');
-    const link = within(node).getByTestId('step-G1-approve-event');
-    expect(link.tagName).toBe('A');
-    expect(link.getAttribute('href')).toBe(
+    const card = within(node).getByTestId('step-G1-approve-event');
+    // Card is now a <button> (was <a> before drawer landed) — verify the
+    // click target is keyboard-friendly + emits onSelect to open drawer.
+    expect(card.tagName).toBe('BUTTON');
+    fireEvent.click(card);
+    // Drawer mounts with Chinese label visible.
+    const drawer = await screen.findByTestId('fw-drawer');
+    expect(drawer.getAttribute('data-step-id')).toBe('G1-approve-event');
+    expect(within(drawer).getByText('G1 · 审 OptEvent')).toBeInTheDocument();
+    // Drill-down link is on the Drawer footer, pointing at the operate page.
+    const drill = within(drawer).getByTestId('fw-drawer-drill-link');
+    expect(drill.tagName).toBe('A');
+    expect(drill.getAttribute('href')).toBe(
       '/insights/patterns?tab=optimization&stage=proposal_pending',
     );
+  });
+
+  it('Chinese labels render on the cards (E1 / ① 标注 / G1)', async () => {
+    renderChart();
+    await waitFor(() => {
+      expect(screen.getByTestId('fw-node-E1-user-chat')).toBeInTheDocument();
+    });
+    // Sample one of each node type — confirm labelCn replaced English title.
+    expect(screen.getByText('E1 · 用户聊天')).toBeInTheDocument();
+    expect(screen.getByText('① 标注')).toBeInTheDocument();
+    expect(screen.getByText('G1 · 审 OptEvent')).toBeInTheDocument();
+    // Old English titles should NOT appear in the rendered cards.
+    expect(screen.queryByText('E1 · user chat session')).not.toBeInTheDocument();
+    expect(screen.queryByText('① annotate · session-annotator')).not.toBeInTheDocument();
+  });
+
+  it('Drawer Esc-close + backdrop-close', async () => {
+    renderChart();
+    const node = await screen.findByTestId('fw-node-step1-annotate');
+    fireEvent.click(within(node).getByTestId('step-step1-annotate'));
+    expect(await screen.findByTestId('fw-drawer')).toBeInTheDocument();
+    // Esc closes.
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => {
+      expect(screen.queryByTestId('fw-drawer')).not.toBeInTheDocument();
+    });
+    // Re-open + backdrop click closes.
+    fireEvent.click(within(node).getByTestId('step-step1-annotate'));
+    const drawer2 = await screen.findByTestId('fw-drawer');
+    expect(drawer2).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('fw-drawer-backdrop'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('fw-drawer')).not.toBeInTheDocument();
+    });
   });
 
   it('applies fw-node--running on AUTO nodes with in-flight or running cron, but NOT on USER gates', async () => {

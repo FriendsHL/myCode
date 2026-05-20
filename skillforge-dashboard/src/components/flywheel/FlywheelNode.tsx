@@ -14,6 +14,12 @@ export interface FlywheelNodeData {
   metrics: StepMetrics;
   /** Whether the green pulse ring animates on this node (PRD spec). */
   isRunning: boolean;
+  /**
+   * Click handler — propagated to the inner StepCard so the parent
+   * Flowchart can open its detail Drawer. Omitted for dormant nodes
+   * (StepCard renders them as inert `<div>` regardless).
+   */
+  onSelect?: (step: StepDescriptor) => void;
 }
 
 /**
@@ -32,7 +38,7 @@ export interface FlywheelNodeData {
  * useMemo; this component is purely presentational.
  */
 const FlywheelNode: React.FC<NodeProps<FlywheelNodeData>> = ({ data }) => {
-  const { step, metrics, isRunning } = data;
+  const { step, metrics, isRunning, onSelect } = data;
   // ENTRY nodes never have an incoming edge → hide the target handle visually
   // by class. Dormant terminal node (step9-decide) won't have an outgoing
   // edge but we still mount source handle (cheap; React Flow ignores it).
@@ -52,7 +58,7 @@ const FlywheelNode: React.FC<NodeProps<FlywheelNodeData>> = ({ data }) => {
           isConnectable={false}
         />
       )}
-      <StepCard step={step} metrics={metrics} />
+      <StepCard step={step} metrics={metrics} onSelect={onSelect} />
       <Handle
         type="source"
         position={Position.Right}

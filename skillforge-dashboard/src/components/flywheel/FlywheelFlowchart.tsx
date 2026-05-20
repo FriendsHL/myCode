@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import ReactFlow, {
   Background,
   Controls,
@@ -9,6 +9,7 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 import dagre from 'dagre';
 import FlywheelNode, { type FlywheelNodeData } from './FlywheelNode';
+import FlywheelStepDrawer from './FlywheelStepDrawer';
 import ActivityFeed from './ActivityFeed';
 import { useFlywheelObservability } from '../../hooks/useFlywheelObservability';
 import { useLocalStorageString } from '../../hooks/useLocalStorageString';
@@ -159,6 +160,36 @@ const FlywheelFlowchart: React.FC = () => {
     errorMsg,
   } = useFlywheelObservability({ agentType, surface, userId });
 
+  // Detail Drawer — null = closed, descriptor object = open + content target.
+  // Stable callback to avoid invalidating node data identity unnecessarily
+  // (otherwise every render would force React Flow to re-mount nodes).
+  const [activeStep, setActiveStep] = useState<StepDescriptor | null>(null);
+  const handleSelectStep = useCallback((step: StepDescriptor) => {
+    if (step.nodeType === 'dormant') return;
+    setActiveStep(step);
+  }, []);
+  const handleCloseDrawer = useCallback(() => {
+    setActiveStep(null);
+  }, []);
+
+  /**
+   * React Flow node-click handler — wired in addition to the inner
+   * `<button onClick>` on StepCard because React Flow's NodeWrapper can
+   * swallow real-browser pointer events (jsdom path in tests doesn't hit
+   * the same code path, which is why the inner-button click test passes
+   * even though the live UI was unresponsive). Wiring both paths to the
+   * same callback makes click work reliably for mouse + keyboard:
+   *   - mouse: RF NodeWrapper.onNodeClick fires → handleSelectStep(step)
+   *   - keyboard Tab + Enter/Space: inner button onClick → handleSelectStep(step)
+   * setActiveStep on the same step is idempotent so double-fire is safe.
+   */
+  const handleNodeClickRF = useCallback(
+    (_: React.MouseEvent, node: Node<FlywheelNodeData>) => {
+      handleSelectStep(node.data.step);
+    },
+    [handleSelectStep],
+  );
+
   const { nodes, edges } = useMemo(() => {
     const visible = STEP_CATALOGUE.filter((s) => {
       if (!s.surfaces.includes(surface)) return false;
@@ -182,6 +213,9 @@ const FlywheelFlowchart: React.FC = () => {
           step,
           metrics: m,
           isRunning: runningByStep[step.id] ?? false,
+          // Stable per-render via useCallback above — node data identity only
+          // flips when step/metrics/isRunning genuinely change.
+          onSelect: handleSelectStep,
         },
         // Read-only DAG — disable interactions React Flow defaults on.
         draggable: false,
@@ -215,7 +249,17 @@ const FlywheelFlowchart: React.FC = () => {
     });
 
     return { nodes: builtNodes, edges: builtEdges };
-  }, [agentType, surface, metricsByStep, runningByStep]);
+  }, [agentType, surface, metricsByStep, runningByStep, handleSelectStep]);
+
+  // Drawer feeds — derive only when a step is selected to avoid running the
+  // filter on every render.
+  const drawerMetrics = activeStep
+    ? metricsByStep[activeStep.id]
+    : undefined;
+  const drawerEvents = useMemo(() => {
+    if (!activeStep) return undefined;
+    return events.filter((e) => e.stepId === activeStep.id);
+  }, [activeStep, events]);
 
   // PRD N3 — "this surface never lit up" hint on the tab label.
   const surfaceIsEmpty = useMemo<Record<FlywheelSurface, boolean>>(() => {
@@ -310,6 +354,7 @@ const FlywheelFlowchart: React.FC = () => {
           nodes={nodes}
           edges={edges}
           nodeTypes={NODE_TYPES}
+          onNodeClick={handleNodeClickRF}
           fitView
           fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
           minZoom={0.4}
@@ -340,6 +385,15 @@ const FlywheelFlowchart: React.FC = () => {
       </div>
 
       <ActivityFeed events={events} loading={isLoading} />
+
+      {/* Detail Drawer — rendered as last child so it stacks above the
+          flowchart shell + activity feed when a step is selected. */}
+      <FlywheelStepDrawer
+        step={activeStep}
+        metrics={drawerMetrics}
+        recentEvents={drawerEvents}
+        onClose={handleCloseDrawer}
+      />
     </div>
   );
 };

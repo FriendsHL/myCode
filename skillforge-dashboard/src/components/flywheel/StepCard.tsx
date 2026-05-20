@@ -1,28 +1,30 @@
 import React from 'react';
-import { Link } from 'react-router-dom';
 import type { StepDescriptor, StepMetrics } from './types';
 import { computeHealth, formatLag } from './types';
 
 interface StepCardProps {
   step: StepDescriptor;
   metrics: StepMetrics;
+  /**
+   * Click handler — opens the detail Drawer in the parent Flowchart. Optional
+   * because the card also renders inside the legacy timeline path
+   * (none today, but kept for forward-compat). When omitted on a non-dormant
+   * step, the card becomes purely presentational (no click cursor).
+   */
+  onSelect?: (step: StepDescriptor) => void;
 }
 
 /**
  * FLYWHEEL-FLOWCHART — compact node body used inside React Flow nodes.
  *
- * Replaces the original FLYWHEEL-VISUAL-STATUS Phase 2 wide card (4-metric
- * grid, side rail) which was retired with the rest of the timeline panel.
- * The DAG node footprint is constrained (~230×110px chosen for dagre
- * layout); a 4-metric row would crush per-metric labels, so we render
- * only the two metrics operators read for "is this stage healthy
- * *right now*?": **in-flight** + **lag**, plus an inline errors chip
- * when there is real activity to flag.
+ * Renders a `<button>` when `onSelect` is provided and step is not dormant
+ * (keyboard Tab + Enter/Space triggers Drawer open via the parent). Renders
+ * a plain `<div>` for dormant nodes (V87 disabled) so they stay inert.
  *
- * Read-only — PRD N5 forbids action buttons. Card is a `<Link>` when
- * drillDown is set; renders as `<div>` for dormant nodes.
+ * Read-only — PRD N5 forbids action buttons. The drill-down "open in page"
+ * link lives in the detail Drawer footer, not on the card itself.
  */
-const StepCard: React.FC<StepCardProps> = React.memo(({ step, metrics }) => {
+const StepCard: React.FC<StepCardProps> = React.memo(({ step, metrics, onSelect }) => {
   const health = computeHealth(step, metrics);
   const lag = formatLag(metrics.lastActivityAt);
   const isDormant = step.nodeType === 'dormant';
@@ -34,7 +36,7 @@ const StepCard: React.FC<StepCardProps> = React.memo(({ step, metrics }) => {
         <span className="fw-step-icon" aria-hidden="true">
           {nodeIcon(step.nodeType)}
         </span>
-        <span className="fw-step-title">{step.title}</span>
+        <span className="fw-step-title">{step.labelCn}</span>
         {/* a11y — dual channel: colored dot + single-letter marker for
             deuteranopia / protanopia. H/W/S/D/E correspond to PRD N3
             health buckets. aria-label reads the full word. */}
@@ -88,7 +90,8 @@ const StepCard: React.FC<StepCardProps> = React.memo(({ step, metrics }) => {
     </>
   );
 
-  if (!step.drillDown || isDormant) {
+  // Dormant nodes are inert — no click target.
+  if (isDormant || !onSelect) {
     return (
       <div
         className="fw-step fw-step--dead"
@@ -101,14 +104,16 @@ const StepCard: React.FC<StepCardProps> = React.memo(({ step, metrics }) => {
   }
 
   return (
-    <Link
-      to={step.drillDown}
-      className="fw-step"
+    <button
+      type="button"
+      className="fw-step fw-step--clickable"
       data-node-type={step.nodeType}
       data-testid={`step-${step.id}`}
+      aria-label={`${step.labelCn} — click for details`}
+      onClick={() => onSelect(step)}
     >
       {inner}
-    </Link>
+    </button>
   );
 });
 
