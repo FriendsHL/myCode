@@ -120,6 +120,41 @@ vi.mock('../../../api/flywheel', () => ({
   listAbTestRunsGlobal: vi.fn(() => Promise.resolve({ data: { items: [] } })),
   listCanariesGlobal: vi.fn(() => Promise.resolve({ data: [] })),
   listSkillDraftsBySource: vi.fn(() => Promise.resolve({ data: [] })),
+  // FLYWHEEL-PER-RUN — runs endpoint. One pending + one errored run.
+  listFlywheelRuns: vi.fn(() =>
+    Promise.resolve({
+      data: [
+        {
+          optEventId: 101,
+          agentId: 3,
+          agentName: 'insights-agent',
+          surface: 'skill',
+          patternId: 7,
+          patternSignature: 'sig:abc:001',
+          currentStage: 'candidate_failed',
+          errorLabel: 'json parse error',
+          startedAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+          lastUpdatedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+          candidateSkillDraftUuid: null,
+          abRunId: null,
+        },
+        {
+          optEventId: 202,
+          agentId: 4,
+          agentName: 'pricing-agent',
+          surface: 'skill',
+          patternId: 8,
+          patternSignature: 'sig:def:002',
+          currentStage: 'proposal_pending',
+          errorLabel: null,
+          startedAt: new Date(Date.now() - 90 * 60_000).toISOString(),
+          lastUpdatedAt: new Date(Date.now() - 60 * 60_000).toISOString(),
+          candidateSkillDraftUuid: null,
+          abRunId: null,
+        },
+      ],
+    }),
+  ),
 }));
 
 vi.mock('../../../api/systemAgents', () => ({
@@ -305,4 +340,95 @@ describe('FlywheelFlowchart', () => {
   it.todo(
     'TODO: reduced-motion CSS rule applied — needs Playwright/browser harness to verify, jsdom matchMedia limitation',
   );
+
+  // ──────────── FLYWHEEL-PER-RUN ────────────
+
+  it('mode toggle switches to per-run mode → runs sidebar appears + idle hint shown', async () => {
+    renderChart();
+    // Default mode is aggregate; no sidebar yet.
+    expect(await screen.findByTestId('flywheel-flowchart-panel')).toBeInTheDocument();
+    expect(screen.queryByTestId('flywheel-runs-sidebar')).not.toBeInTheDocument();
+    // Click the Per-Run mode toggle.
+    fireEvent.click(screen.getByTestId('fw-mode-perRun'));
+    // Sidebar mounts; idle hint appears (no run selected yet).
+    expect(await screen.findByTestId('flywheel-runs-sidebar')).toBeInTheDocument();
+    expect(screen.getByTestId('fw-perrun-hint')).toBeInTheDocument();
+    // Wait for runs to populate the list (mocked listFlywheelRuns returned 2).
+    await waitFor(() => {
+      expect(screen.getByTestId('fw-runs-row-101')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('fw-runs-row-202')).toBeInTheDocument();
+  });
+
+  it('unmapped BE stage (e.g. proposal_approved) → no current-step highlight, no crash', async () => {
+    // Override the listFlywheelRuns mock to inject a run with an unmapped
+    // stage (transient transition value per types.ts doc). FlywheelFlowchart
+    // should render the DAG without throwing + skip the current-step
+    // decoration (no node gets fw-node--current-for-run / --error-for-run).
+    const flywheelApiMod = await import('../../../api/flywheel');
+    const listFlywheelRunsMock = vi.mocked(flywheelApiMod.listFlywheelRuns);
+    listFlywheelRunsMock.mockResolvedValueOnce({
+      data: [
+        {
+          optEventId: 999,
+          agentId: 7,
+          agentName: 'unmapped-stage-agent',
+          surface: 'skill',
+          patternId: 9,
+          patternSignature: 'sig:xyz:003',
+          currentStage: 'proposal_approved', // ← unmapped (transient)
+          errorLabel: null,
+          startedAt: new Date(Date.now() - 20 * 60_000).toISOString(),
+          lastUpdatedAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+          candidateSkillDraftUuid: null,
+          abRunId: null,
+        },
+      ],
+    } as Awaited<ReturnType<typeof flywheelApiMod.listFlywheelRuns>>);
+    renderChart();
+    fireEvent.click(screen.getByTestId('fw-mode-perRun'));
+    const row = await screen.findByTestId('fw-runs-row-999');
+    fireEvent.click(row);
+    // Sidebar shows the run; idle hint should disappear since a run IS
+    // selected (the run is "real", just at an unmapped stage).
+    await waitFor(() => {
+      expect(screen.queryByTestId('fw-perrun-hint')).not.toBeInTheDocument();
+    });
+    // No node should carry the current/error highlight for an unmapped stage.
+    const allG1 = screen.queryByTestId('fw-node-G1-approve-event');
+    expect(allG1).toBeInTheDocument(); // panel didn't crash
+    expect(allG1?.className ?? '').not.toContain('fw-node--current-for-run');
+    expect(allG1?.className ?? '').not.toContain('fw-node--error-for-run');
+    // Pre-OptEvent nodes are still context-classed (selection is valid).
+    const step1 = screen.getByTestId('fw-node-step1-annotate');
+    expect(step1.className).toContain('fw-node--context');
+  });
+
+  it('selecting a run → DAG highlights current step + pre-OptEvent nodes get fw-node--context', async () => {
+    renderChart();
+    fireEvent.click(screen.getByTestId('fw-mode-perRun'));
+    // Wait for sidebar runs to populate.
+    const row = await screen.findByTestId('fw-runs-row-101');
+    fireEvent.click(row);
+    // Idle hint disappears once a run is selected.
+    await waitFor(() => {
+      expect(screen.queryByTestId('fw-perrun-hint')).not.toBeInTheDocument();
+    });
+    // candidate_failed maps to step4-candidate (per STAGE_TO_STEP) AND is in
+    // ERROR_STAGES → fw-node--error-for-run wins over current-for-run class.
+    const step4 = await screen.findByTestId('fw-node-step4-candidate');
+    await waitFor(() => {
+      expect(step4.className).toContain('fw-node--error-for-run');
+    });
+    expect(step4.getAttribute('data-current-for-run')).toBe('true');
+    // Pre-OptEvent nodes (entry + step1/2/3) have fw-node--context class.
+    const step1 = screen.getByTestId('fw-node-step1-annotate');
+    expect(step1.className).toContain('fw-node--context');
+    expect(step1.getAttribute('data-context-for-run')).toBe('true');
+    const step3 = screen.getByTestId('fw-node-step3-attribute');
+    expect(step3.className).toContain('fw-node--context');
+    // Aggregate-mode "running" class should NOT be on per-run nodes
+    // (we suppress running animation in per-run mode).
+    expect(step1.className).not.toContain('fw-node--running');
+  });
 });

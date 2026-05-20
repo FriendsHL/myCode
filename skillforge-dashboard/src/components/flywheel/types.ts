@@ -323,6 +323,157 @@ export function computeHealth(step: StepDescriptor, m: StepMetrics): Health {
   return 'healthy';
 }
 
+// ─────────────────────── FLYWHEEL-PER-RUN ───────────────────────
+//
+// Per-run mode overlays a specific OptimizationEvent's journey onto the
+// existing DAG. The toggle UI lives in FlywheelFlowchart; the maps below
+// drive node highlight + context-step graying.
+
+/** Top-level toggle between aggregate metric view and per-run journey view. */
+export type FlywheelMode = 'aggregate' | 'perRun';
+
+/**
+ * Maps BE `OptimizationEvent.stage` value → DAG `step.id` for per-run
+ * highlighting.
+ *
+ * MVP coverage: 11 of 16 known BE stages (canonical list lives in
+ * `OptimizationEventEntity.java:80-98`). The following 5 stages are
+ * **intentionally unmapped**:
+ *
+ *   - `proposal_approved` — transient transition value; the BE flips it
+ *     to `candidate_generating` within the same write so the FE almost
+ *     never observes it in the runs response.
+ *   - `candidate_created` — transient; flips to `candidate_ready` or
+ *     `candidate_failed` immediately after generation completes.
+ *   - `canary_started` — post-MVP rollout stage; V87 canary cron is
+ *     disabled (see step7/step8/step9 dormant nodes), so no run currently
+ *     transitions into this stage.
+ *   - `rolled_back` — post-MVP rollout terminal; same V87 disabled gating.
+ *   - `verified` — post-MVP rollout terminal; same V87 disabled gating.
+ *
+ * For unmapped stages, lookup returns `undefined` and `FlywheelNode.tsx`
+ * falls through to the `pending-for-run` decoration (no node marked
+ * "current"). This is intentional vs misleading: operator sees no node
+ * marked current, which is accurate for a transient/disabled stage,
+ * instead of an arbitrary highlight that wouldn't actually reflect the
+ * run's location.
+ *
+ * To add coverage: add entry here + extend `RUN_STAGE_ORDER` if the new
+ * stage falls in the main pipeline + verify `FlywheelNode.tsx` renders OK
+ * via `STAGE_TO_STEP['<new-stage>']` test case in `types.test.ts`.
+ *
+ * Notes on existing entries:
+ * - `proposal_pending` / `proposal_rejected` both localize on G1 (operator
+ *   gate); errors locate on the auto step that failed so the operator can
+ *   see WHERE it broke.
+ * - Terminal stages (`promoted` / `discarded`) sit on G3 so the run's
+ *   final state remains visible.
+ * - `dispatch_initiated` is a transient mapping — per-run view treats the
+ *   OptEvent as already created beyond step3 (step3-attribute is in the
+ *   context set below), so the `dispatch_initiated → step3` entry is a
+ *   fallback only.
+ */
+export const STAGE_TO_STEP: Record<string, string> = {
+  dispatch_initiated: 'step3-attribute',
+  proposal_pending: 'G1-approve-event',
+  proposal_rejected: 'G1-approve-event',
+  candidate_generating: 'step4-candidate',
+  candidate_ready: 'step4-candidate',
+  candidate_failed: 'step4-candidate',
+  ab_running: 'step5-abtest',
+  ab_passed: 'G3-promote-decision',
+  ab_failed: 'step5-abtest',
+  promoted: 'G3-promote-decision',
+  discarded: 'G3-promote-decision',
+};
+
+/**
+ * Steps that happen BEFORE a specific OptimizationEvent exists. In per-run
+ * mode they're rendered with the `fw-node--context` class (gray, less
+ * prominent) so the operator visually understands "these steps fed the
+ * aggregate pipeline that generated this run; they aren't part of this run's
+ * journey".
+ *
+ * step3-attribute is included because by the time the OptEvent exists the
+ * curator has already finished its work for this run; the dispatch_initiated
+ * stage that maps to step3 is a transient pre-pending state operators rarely
+ * see.
+ */
+export const PRE_OPTEVENT_CONTEXT_STEPS: ReadonlySet<string> = new Set([
+  'E1-user-chat',
+  'E2-upload-skill',
+  'E3-extract-skill',
+  'E4-write-prompt',
+  'step1-annotate',
+  'step2-cluster',
+  'step3-attribute',
+]);
+
+/**
+ * Order of run-journey steps used to derive "completed" decoration in per-run
+ * mode. A step is considered "completed for this run" iff its index in this
+ * array is strictly less than the index of the active run's currentStep.
+ *
+ * G2-review-draft / step6-gate aren't directly addressed by STAGE_TO_STEP
+ * today (no stage value lands on them) but they're real intermediates in the
+ * pipeline so they participate in the completion order so that, e.g., when
+ * currentStage='ab_running' (→ step5-abtest) we know G2 is already done.
+ */
+export const RUN_STAGE_ORDER: readonly string[] = [
+  'step3-attribute',
+  'G1-approve-event',
+  'step4-candidate',
+  'G2-review-draft',
+  'step5-abtest',
+  'step6-gate',
+  'G3-promote-decision',
+];
+
+/**
+ * Stages whose semantic is "this run errored at this point". Used to swap
+ * the per-run highlight from green (running) to red (errored) on the
+ * matching step. Terminal-success stages (`promoted`) and operator-discard
+ * (`discarded`) are NOT errors.
+ */
+export const ERROR_STAGES: ReadonlySet<string> = new Set([
+  'proposal_rejected',
+  'candidate_failed',
+  'ab_failed',
+]);
+
+/**
+ * Wire-compatible DTO matching the BE `/api/flywheel/runs` endpoint
+ * (FlywheelController.list). Field names use camelCase (Jackson default).
+ * Per `.claude/rules/java.md` footgun #6 — keep this in lock-step with the
+ * BE record (FlywheelRunDto); roundtrip IT on the BE side asserts the JSON
+ * shape matches.
+ */
+export interface FlywheelRunDto {
+  /** OptimizationEvent.id — uniquely identifies a run. */
+  optEventId: number;
+  agentId: number | null;
+  agentName: string | null;
+  surface: FlywheelSurface | string;
+  patternId: number | null;
+  /** Truncated pattern signature suitable for one-line display. */
+  patternSignature: string | null;
+  /** Current stage value from OptimizationEvent.stage. */
+  currentStage: string;
+  /**
+   * Short error label when currentStage indicates failure
+   * (`proposal_rejected` / `candidate_failed` / `ab_failed`), else null.
+   */
+  errorLabel: string | null;
+  /** ISO-8601 of OptimizationEvent.createdAt. */
+  startedAt: string;
+  /** ISO-8601 of OptimizationEvent.updatedAt (last stage transition). */
+  lastUpdatedAt: string;
+  /** Linked SkillDraft.uuid when candidate was generated, else null. */
+  candidateSkillDraftUuid: string | null;
+  /** Linked SkillAbRun.id when an A/B run was created, else null. */
+  abRunId: number | null;
+}
+
 /** PRD §6 — format lag as "47m ago" / "2h ago". */
 export function formatLag(lastActivityAt: string | null): string {
   if (!lastActivityAt) return '—';

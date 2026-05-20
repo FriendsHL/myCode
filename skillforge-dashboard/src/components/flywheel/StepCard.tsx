@@ -1,5 +1,10 @@
 import React from 'react';
-import type { StepDescriptor, StepMetrics } from './types';
+import type {
+  FlywheelMode,
+  FlywheelRunDto,
+  StepDescriptor,
+  StepMetrics,
+} from './types';
 import { computeHealth, formatLag } from './types';
 
 interface StepCardProps {
@@ -12,6 +17,18 @@ interface StepCardProps {
    * step, the card becomes purely presentational (no click cursor).
    */
   onSelect?: (step: StepDescriptor) => void;
+  /** FLYWHEEL-PER-RUN — current view mode; controls metric-row content. */
+  mode?: FlywheelMode;
+  /** Per-run mode: this step is the active run's current location. */
+  isCurrentForRun?: boolean;
+  /** Per-run mode: this step is in the pre-OptEvent context set. */
+  isContextForRun?: boolean;
+  /** Per-run mode: the run already passed through this step. */
+  isCompletedForRun?: boolean;
+  /** Per-run mode: the run errored at this step. */
+  isErrorForRun?: boolean;
+  /** Per-run mode: the active run; null when no run selected. */
+  activeRun?: FlywheelRunDto | null;
 }
 
 /**
@@ -24,98 +41,151 @@ interface StepCardProps {
  * Read-only — PRD N5 forbids action buttons. The drill-down "open in page"
  * link lives in the detail Drawer footer, not on the card itself.
  */
-const StepCard: React.FC<StepCardProps> = React.memo(({ step, metrics, onSelect }) => {
-  const health = computeHealth(step, metrics);
-  const lag = formatLag(metrics.lastActivityAt);
-  const isDormant = step.nodeType === 'dormant';
-  const pend = metrics.pendingActionCount ?? 0;
+const StepCard: React.FC<StepCardProps> = React.memo(
+  ({
+    step,
+    metrics,
+    onSelect,
+    mode = 'aggregate',
+    isCurrentForRun = false,
+    isContextForRun = false,
+    isCompletedForRun = false,
+    isErrorForRun = false,
+    activeRun = null,
+  }) => {
+    const health = computeHealth(step, metrics);
+    const lag = formatLag(metrics.lastActivityAt);
+    const isDormant = step.nodeType === 'dormant';
+    const pend = metrics.pendingActionCount ?? 0;
+    const isPerRun = mode === 'perRun';
 
-  const inner = (
-    <>
-      <div className="fw-step-head">
-        <span className="fw-step-icon" aria-hidden="true">
-          {nodeIcon(step.nodeType)}
-        </span>
-        <span className="fw-step-title">{step.labelCn}</span>
-        {/* a11y — dual channel: colored dot + single-letter marker for
-            deuteranopia / protanopia. H/W/S/D/E correspond to PRD N3
-            health buckets. aria-label reads the full word. */}
-        <span
-          className="fw-health-dot"
-          data-health={health}
-          aria-label={`health: ${health}`}
-          title={`health: ${health}`}
+    const inner = (
+      <>
+        <div className="fw-step-head">
+          <span className="fw-step-icon" aria-hidden="true">
+            {nodeIcon(step.nodeType)}
+          </span>
+          <span className="fw-step-title">{step.labelCn}</span>
+          {/* Per-run mode swaps the health dot for a journey-position marker.
+              Aggregate mode keeps the original health dot. */}
+          {isPerRun ? (
+            <RunPositionMark
+              isCurrent={isCurrentForRun}
+              isContext={isContextForRun}
+              isCompleted={isCompletedForRun}
+              isError={isErrorForRun}
+              hasActiveRun={!!activeRun}
+            />
+          ) : (
+            <span
+              className="fw-health-dot"
+              data-health={health}
+              aria-label={`health: ${health}`}
+              title={`health: ${health}`}
+            >
+              <span className="fw-health-letter" aria-hidden="true">
+                {healthLetter(health)}
+              </span>
+            </span>
+          )}
+        </div>
+        <div className="fw-step-metrics" data-testid={`metrics-${step.id}`}>
+          {isPerRun ? (
+            <PerRunMetricCells
+              activeRun={activeRun}
+              isCurrentForRun={isCurrentForRun}
+              isContextForRun={isContextForRun}
+              isCompletedForRun={isCompletedForRun}
+            />
+          ) : (
+            <>
+              <Metric label="in-flight" value={fmtCount(metrics, metrics.inFlight)} />
+              <Metric
+                label="lag"
+                value={isDormant ? '—' : lag}
+                muted={isDormant}
+              />
+            </>
+          )}
+        </div>
+        <div className="fw-step-foot">
+          {isPerRun && isContextForRun && (
+            <span
+              className="fw-step-chip-context"
+              title="This step happens before the selected run was created."
+              data-testid={`context-chip-${step.id}`}
+            >
+              context
+            </span>
+          )}
+          {isPerRun && isCurrentForRun && activeRun && (
+            <span
+              className={`fw-step-chip-current${
+                isErrorForRun ? ' fw-step-chip-current--error' : ''
+              }`}
+              data-testid={`current-chip-${step.id}`}
+              title={`Run #${activeRun.optEventId} is at ${activeRun.currentStage}`}
+            >
+              {isErrorForRun ? 'errored here' : 'current'}
+            </span>
+          )}
+          {!isPerRun && step.nodeType === 'user' && pend > 0 && (
+            <span
+              className="fw-step-chip-pend"
+              data-testid={`pend-chip-${step.id}`}
+              title={`${pend} pending action${pend === 1 ? '' : 's'}`}
+            >
+              PEND {pend}
+            </span>
+          )}
+          {!isPerRun && !isDormant && metrics.recentErrorCount > 0 && (
+            <span
+              className="fw-step-chip-err"
+              data-testid={`err-chip-${step.id}`}
+              title={`${metrics.recentErrorCount} error${metrics.recentErrorCount === 1 ? '' : 's'} in last 24h`}
+            >
+              ERR {fmtCount(metrics, metrics.recentErrorCount)}
+            </span>
+          )}
+          {isDormant && (
+            <span
+              className="fw-step-chip-disabled"
+              title="V87 disabled this stage; pipeline stays inactive until ops re-enables the cron."
+            >
+              disabled
+            </span>
+          )}
+        </div>
+      </>
+    );
+
+    // Dormant nodes are inert — no click target.
+    if (isDormant || !onSelect) {
+      return (
+        <div
+          className="fw-step fw-step--dead"
+          data-node-type={step.nodeType}
+          data-testid={`step-${step.id}`}
         >
-          <span className="fw-health-letter" aria-hidden="true">
-            {healthLetter(health)}
-          </span>
-        </span>
-      </div>
-      <div className="fw-step-metrics" data-testid={`metrics-${step.id}`}>
-        <Metric label="in-flight" value={fmtCount(metrics, metrics.inFlight)} />
-        <Metric
-          label="lag"
-          value={isDormant ? '—' : lag}
-          muted={isDormant}
-        />
-      </div>
-      <div className="fw-step-foot">
-        {step.nodeType === 'user' && pend > 0 && (
-          <span
-            className="fw-step-chip-pend"
-            data-testid={`pend-chip-${step.id}`}
-            title={`${pend} pending action${pend === 1 ? '' : 's'}`}
-          >
-            PEND {pend}
-          </span>
-        )}
-        {!isDormant && metrics.recentErrorCount > 0 && (
-          <span
-            className="fw-step-chip-err"
-            data-testid={`err-chip-${step.id}`}
-            title={`${metrics.recentErrorCount} error${metrics.recentErrorCount === 1 ? '' : 's'} in last 24h`}
-          >
-            ERR {fmtCount(metrics, metrics.recentErrorCount)}
-          </span>
-        )}
-        {isDormant && (
-          <span
-            className="fw-step-chip-disabled"
-            title="V87 disabled this stage; pipeline stays inactive until ops re-enables the cron."
-          >
-            disabled
-          </span>
-        )}
-      </div>
-    </>
-  );
+          {inner}
+        </div>
+      );
+    }
 
-  // Dormant nodes are inert — no click target.
-  if (isDormant || !onSelect) {
     return (
-      <div
-        className="fw-step fw-step--dead"
+      <button
+        type="button"
+        className="fw-step fw-step--clickable"
         data-node-type={step.nodeType}
         data-testid={`step-${step.id}`}
+        aria-label={`${step.labelCn} — click for details`}
+        onClick={() => onSelect(step)}
       >
         {inner}
-      </div>
+      </button>
     );
-  }
-
-  return (
-    <button
-      type="button"
-      className="fw-step fw-step--clickable"
-      data-node-type={step.nodeType}
-      data-testid={`step-${step.id}`}
-      aria-label={`${step.labelCn} — click for details`}
-      onClick={() => onSelect(step)}
-    >
-      {inner}
-    </button>
-  );
-});
+  },
+);
 
 StepCard.displayName = 'StepCard';
 
@@ -134,6 +204,124 @@ const Metric: React.FC<{
     </span>
   </div>
 );
+
+/**
+ * Per-run mode metric pair. For the current step, show:
+ *   - "run start" (run.startedAt as a lag, e.g. "2h ago")
+ *   - "stage age" (run.lastUpdatedAt as a lag — time since current stage entered)
+ * For other steps (completed/pending/context), show muted "—" placeholders
+ * so the metric row still occupies the same vertical space (DAG layout
+ * stays consistent across mode switches; no node-height jitter).
+ */
+const PerRunMetricCells: React.FC<{
+  activeRun: FlywheelRunDto | null;
+  isCurrentForRun: boolean;
+  isContextForRun: boolean;
+  isCompletedForRun: boolean;
+}> = ({ activeRun, isCurrentForRun, isContextForRun, isCompletedForRun }) => {
+  if (!activeRun) {
+    return (
+      <>
+        <Metric label="run start" value="—" muted />
+        <Metric label="stage age" value="—" muted />
+      </>
+    );
+  }
+  if (isCurrentForRun) {
+    return (
+      <>
+        <Metric label="run start" value={formatLag(activeRun.startedAt)} />
+        <Metric label="stage age" value={formatLag(activeRun.lastUpdatedAt)} />
+      </>
+    );
+  }
+  // Completed / pending / context steps: show muted dashes (info would be
+  // misleading — we don't track per-stage-per-run timestamps in MVP).
+  return (
+    <>
+      <Metric
+        label="run start"
+        value={isCompletedForRun ? '✓' : isContextForRun ? 'pre' : '—'}
+        muted
+      />
+      <Metric label="stage age" value="—" muted />
+    </>
+  );
+};
+
+/** Visual marker shown in the card head when in per-run mode. */
+const RunPositionMark: React.FC<{
+  isCurrent: boolean;
+  isContext: boolean;
+  isCompleted: boolean;
+  isError: boolean;
+  hasActiveRun: boolean;
+}> = ({ isCurrent, isContext, isCompleted, isError, hasActiveRun }) => {
+  if (!hasActiveRun) {
+    return (
+      <span
+        className="fw-run-mark fw-run-mark--idle"
+        aria-label="No run selected"
+        title="No run selected"
+      >
+        ·
+      </span>
+    );
+  }
+  if (isContext) {
+    return (
+      <span
+        className="fw-run-mark fw-run-mark--context"
+        aria-label="Context step (pre-run)"
+        title="This step happens before the run was created"
+      >
+        ·
+      </span>
+    );
+  }
+  if (isError && isCurrent) {
+    return (
+      <span
+        className="fw-run-mark fw-run-mark--error"
+        aria-label="Run errored at this step"
+        title="Run errored at this step"
+      >
+        ✕
+      </span>
+    );
+  }
+  if (isCurrent) {
+    return (
+      <span
+        className="fw-run-mark fw-run-mark--current"
+        aria-label="Current step for selected run"
+        title="Current step"
+      >
+        ●
+      </span>
+    );
+  }
+  if (isCompleted) {
+    return (
+      <span
+        className="fw-run-mark fw-run-mark--completed"
+        aria-label="Completed step"
+        title="Run already passed through this step"
+      >
+        ✓
+      </span>
+    );
+  }
+  return (
+    <span
+      className="fw-run-mark fw-run-mark--pending"
+      aria-label="Pending step"
+      title="Not yet reached"
+    >
+      ·
+    </span>
+  );
+};
 
 function fmtCount(m: StepMetrics, n: number): string {
   if (!m.loaded) return '…';

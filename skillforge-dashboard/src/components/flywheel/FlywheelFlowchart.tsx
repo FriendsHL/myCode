@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import ReactFlow, {
   Background,
   Controls,
@@ -10,21 +10,32 @@ import 'reactflow/dist/style.css';
 import dagre from 'dagre';
 import FlywheelNode, { type FlywheelNodeData } from './FlywheelNode';
 import FlywheelStepDrawer from './FlywheelStepDrawer';
+import FlywheelRunsSidebar from './FlywheelRunsSidebar';
 import ActivityFeed from './ActivityFeed';
 import { useFlywheelObservability } from '../../hooks/useFlywheelObservability';
+import { useFlywheelRuns } from '../../hooks/useFlywheelRuns';
 import { useLocalStorageString } from '../../hooks/useLocalStorageString';
 import { useAuth } from '../../contexts/AuthContext';
 import type {
   AgentTypeTab,
+  FlywheelMode,
+  FlywheelRunDto,
   FlywheelSurface,
   StepDescriptor,
   StepMetrics,
 } from './types';
-import { STEP_CATALOGUE } from './types';
+import {
+  ERROR_STAGES,
+  PRE_OPTEVENT_CONTEXT_STEPS,
+  RUN_STAGE_ORDER,
+  STAGE_TO_STEP,
+  STEP_CATALOGUE,
+} from './types';
 import './flywheel.css';
 
 const AGENT_TYPE_KEYS = ['user', 'system'] as const;
 const SURFACE_KEYS = ['skill', 'prompt', 'behavior_rule'] as const;
+const MODE_KEYS = ['aggregate', 'perRun'] as const;
 
 /**
  * FLYWHEEL-FLOWCHART — full topology of the flywheel pipeline, listed as
@@ -116,12 +127,18 @@ function emptyMetrics(): StepMetrics {
 
 /**
  * FLYWHEEL-FLOWCHART — top-level observability panel rendered as the 5th
- * Insights tab. Replaces FlywheelObservabilityPanel + FlywheelTimeline (both
- * deleted in this slice) with a workflow-style DAG view (n8n / Dagster /
- * Airflow visual idiom).
+ * Insights tab. Workflow-style DAG view (n8n / Dagster / Airflow visual idiom)
+ * with two modes:
+ *  - **Aggregate** (default): node metric = in-flight/lag aggregates;
+ *    AUTO+HYBRID nodes pulse green when running, USER gates static PEND chip.
+ *  - **Per-Run** (FLYWHEEL-PER-RUN): left sidebar lists recent OptimizationEvent
+ *    runs; selecting one overlays that run's current journey position on
+ *    the DAG (pre-OptEvent steps gray as context; current step highlighted;
+ *    completed steps marked with ✓; surface tab disabled, run dictates).
  *
  * Architecture:
  *   useFlywheelObservability  →  metricsByStep + runningByStep + events
+ *   useFlywheelRuns (perRun)  →  runs[] for sidebar
  *                                     │
  *                                     ▼
  *                       useMemo(computeLayout via dagre)
@@ -132,10 +149,10 @@ function emptyMetrics(): StepMetrics {
  *                                     ▼
  *                       FlywheelNode  (wraps StepCard + Handles)
  *
- * The hook handles 30s tick refresh; this component is fully reactive to
- * its memoised inputs and re-runs dagre only when agentType / surface /
- * metric shape changes (NOT on every monitor tick — `runningByStep`
- * identity stays stable when the boolean payload doesn't actually flip).
+ * Mode + activeRunId stored locally:
+ *   - mode in localStorage (`flywheel.mode`) so reload preserves user choice
+ *   - activeRunId in useState ONLY (no persistence — runs are ephemeral and
+ *     a persisted id can refer to a run that no longer exists)
  */
 const FlywheelFlowchart: React.FC = () => {
   const { userId } = useAuth();
@@ -150,6 +167,56 @@ const FlywheelFlowchart: React.FC = () => {
     'skill',
     SURFACE_KEYS,
   );
+  // FLYWHEEL-PER-RUN — mode toggle (aggregate default).
+  const [mode, setMode] = useLocalStorageString<FlywheelMode>(
+    'flywheel.mode',
+    'aggregate',
+    MODE_KEYS,
+  );
+
+  // FLYWHEEL-PER-RUN — local state (no localStorage persistence; a persisted
+  // id can refer to a run no longer in BE response and re-selecting it from
+  // stored state would silently render an empty "missing run" overlay).
+  const [activeRunId, setActiveRunId] = useState<number | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
+  const [hideTerminal, setHideTerminal] = useState<boolean>(true);
+
+  const { runs, isLoading: runsLoading } = useFlywheelRuns({
+    agentType,
+    surface: undefined, // per-run mode: surface is dictated by selected run, not pre-filtered
+    hideTerminal,
+    limit: 20,
+    enabled: mode === 'perRun',
+  });
+
+  // Resolve activeRun from the runs array. If the previously-selected id is
+  // no longer in the response (run advanced beyond hideTerminal filter,
+  // BE-side filter removed it, etc), activeRun becomes null and the DAG
+  // re-renders to the "no run selected" hint state.
+  const activeRun = useMemo<FlywheelRunDto | null>(() => {
+    if (mode !== 'perRun' || activeRunId == null) return null;
+    return runs.find((r) => r.optEventId === activeRunId) ?? null;
+  }, [mode, activeRunId, runs]);
+
+  // FLYWHEEL-PER-RUN — when a run is selected, the surface is dictated by
+  // the run (we DON'T write to setSurface so the user's aggregate-mode
+  // surface choice stays preserved). displaySurface is what we actually
+  // render with.
+  const displaySurface: FlywheelSurface = useMemo(() => {
+    if (mode === 'perRun' && activeRun) {
+      const s = activeRun.surface;
+      if (s === 'skill' || s === 'prompt' || s === 'behavior_rule') return s;
+    }
+    return surface;
+  }, [mode, activeRun, surface]);
+
+  // FLYWHEEL-PER-RUN — auto-deselect run when mode flips back to aggregate.
+  // Don't clear activeRunId entirely so switching back to per-run preserves
+  // the last selection if the run still exists.
+  useEffect(() => {
+    // (intentionally no-op for now — keep last activeRunId across mode flips
+    // so switching aggregate→perRun→aggregate→perRun retains selection)
+  }, [mode]);
 
   const {
     metricsByStep,
@@ -158,7 +225,7 @@ const FlywheelFlowchart: React.FC = () => {
     isLoading,
     isError,
     errorMsg,
-  } = useFlywheelObservability({ agentType, surface, userId });
+  } = useFlywheelObservability({ agentType, surface: displaySurface, userId });
 
   // Detail Drawer — null = closed, descriptor object = open + content target.
   // Stable callback to avoid invalidating node data identity unnecessarily
@@ -190,9 +257,23 @@ const FlywheelFlowchart: React.FC = () => {
     [handleSelectStep],
   );
 
+  // FLYWHEEL-PER-RUN — derive per-step run-position flags. currentStepId is
+  // the DAG step the active run is "at" per STAGE_TO_STEP; currentIdx is its
+  // index in RUN_STAGE_ORDER so we can determine which steps are already
+  // past (completedForRun).
+  const currentStepId = activeRun
+    ? STAGE_TO_STEP[activeRun.currentStage] ?? null
+    : null;
+  const currentStageIdx = currentStepId
+    ? RUN_STAGE_ORDER.indexOf(currentStepId)
+    : -1;
+  const isRunErrorStage = activeRun
+    ? ERROR_STAGES.has(activeRun.currentStage)
+    : false;
+
   const { nodes, edges } = useMemo(() => {
     const visible = STEP_CATALOGUE.filter((s) => {
-      if (!s.surfaces.includes(surface)) return false;
+      if (!s.surfaces.includes(displaySurface)) return false;
       if (s.agentTypes && !s.agentTypes.includes(agentType)) return false;
       return true;
     });
@@ -205,6 +286,21 @@ const FlywheelFlowchart: React.FC = () => {
 
     const builtNodes: Node<FlywheelNodeData>[] = visible.map((step) => {
       const m = metricsByStep[step.id] ?? emptyMetrics();
+      const isContextForRun =
+        mode === 'perRun' && PRE_OPTEVENT_CONTEXT_STEPS.has(step.id);
+      const isCurrentForRun =
+        mode === 'perRun' && currentStepId === step.id && !isContextForRun;
+      const stepIdxInRun = RUN_STAGE_ORDER.indexOf(step.id);
+      const isCompletedForRun =
+        mode === 'perRun' &&
+        activeRun != null &&
+        !isContextForRun &&
+        currentStageIdx >= 0 &&
+        stepIdxInRun >= 0 &&
+        stepIdxInRun < currentStageIdx;
+      const isErrorForRun =
+        mode === 'perRun' && isCurrentForRun && isRunErrorStage;
+
       return {
         id: step.id,
         type: 'flywheelStep',
@@ -213,6 +309,12 @@ const FlywheelFlowchart: React.FC = () => {
           step,
           metrics: m,
           isRunning: runningByStep[step.id] ?? false,
+          mode,
+          isCurrentForRun,
+          isContextForRun,
+          isCompletedForRun,
+          isErrorForRun,
+          activeRun,
           // Stable per-render via useCallback above — node data identity only
           // flips when step/metrics/isRunning genuinely change.
           onSelect: handleSelectStep,
@@ -225,10 +327,9 @@ const FlywheelFlowchart: React.FC = () => {
     });
 
     // Edge gets animated dashed flow when **both** endpoints have in-flight
-    // > 0 (PRD: data is actively flowing between these stages). Note we
-    // base on metricsByStep.inFlight rather than runningByStep so that
-    // entry → pipeline edges (entry nodes never "run") also animate when
-    // there's actual traffic.
+    // > 0 (PRD: data is actively flowing between these stages). In per-run
+    // mode we suppress edge animation entirely — the run isn't an aggregate
+    // flow, it's a point, and pulsing edges would be misleading.
     const inFlightIds = new Set(
       visible
         .filter((s) => (metricsByStep[s.id]?.inFlight ?? 0) > 0)
@@ -236,7 +337,8 @@ const FlywheelFlowchart: React.FC = () => {
     );
 
     const builtEdges: Edge[] = visibleEdges.map(([src, dst]) => {
-      const isLive = inFlightIds.has(src) && inFlightIds.has(dst);
+      const isLive =
+        mode === 'aggregate' && inFlightIds.has(src) && inFlightIds.has(dst);
       return {
         id: `${src}->${dst}`,
         source: src,
@@ -249,7 +351,18 @@ const FlywheelFlowchart: React.FC = () => {
     });
 
     return { nodes: builtNodes, edges: builtEdges };
-  }, [agentType, surface, metricsByStep, runningByStep, handleSelectStep]);
+  }, [
+    agentType,
+    displaySurface,
+    metricsByStep,
+    runningByStep,
+    handleSelectStep,
+    mode,
+    activeRun,
+    currentStepId,
+    currentStageIdx,
+    isRunErrorStage,
+  ]);
 
   // Drawer feeds — derive only when a step is selected to avoid running the
   // filter on every render.
@@ -260,6 +373,31 @@ const FlywheelFlowchart: React.FC = () => {
     if (!activeStep) return undefined;
     return events.filter((e) => e.stepId === activeStep.id);
   }, [activeStep, events]);
+
+  // Per-run drawer flags derived from the step the drawer is targeting.
+  const drawerStepIsContextForRun = !!(
+    activeStep &&
+    mode === 'perRun' &&
+    PRE_OPTEVENT_CONTEXT_STEPS.has(activeStep.id)
+  );
+  const drawerStepIsCurrentForRun = !!(
+    activeStep &&
+    mode === 'perRun' &&
+    currentStepId === activeStep.id &&
+    !drawerStepIsContextForRun
+  );
+  const drawerStepIdxInRun = activeStep
+    ? RUN_STAGE_ORDER.indexOf(activeStep.id)
+    : -1;
+  const drawerStepIsCompletedForRun = !!(
+    activeStep &&
+    mode === 'perRun' &&
+    activeRun &&
+    !drawerStepIsContextForRun &&
+    currentStageIdx >= 0 &&
+    drawerStepIdxInRun >= 0 &&
+    drawerStepIdxInRun < currentStageIdx
+  );
 
   // PRD N3 — "this surface never lit up" hint on the tab label.
   const surfaceIsEmpty = useMemo<Record<FlywheelSurface, boolean>>(() => {
@@ -272,20 +410,28 @@ const FlywheelFlowchart: React.FC = () => {
     const any = Object.values(metricsByStep).some(
       (m) => m.inFlight > 0 || m.todayCount > 0 || m.lastActivityAt != null,
     );
-    empty[surface] = !any;
+    empty[displaySurface] = !any;
     return empty;
-  }, [metricsByStep, isLoading, surface]);
+  }, [metricsByStep, isLoading, displaySurface]);
+
+  const surfaceTabsDisabled = mode === 'perRun' && activeRun != null;
 
   return (
     <div className="fw-page" data-testid="flywheel-flowchart-panel">
       <header className="fw-head">
-        <h1 className="fw-head-title">Flywheel observability</h1>
-        <p className="fw-head-sub">
-          Workflow DAG of every flywheel stage across the
-          annotate → cluster → attribute → A/B → gate → rollout cycle. Nodes
-          pulse green when actively running; edges animate when data is
-          flowing. Click any step to drill into the operate page.
-        </p>
+        <div className="fw-head-row">
+          <div className="fw-head-text">
+            <h1 className="fw-head-title">Flywheel observability</h1>
+            <p className="fw-head-sub">
+              Workflow DAG of every flywheel stage across the
+              annotate → cluster → attribute → A/B → gate → rollout cycle.
+              {mode === 'aggregate'
+                ? ' Nodes pulse green when actively running; edges animate when data is flowing.'
+                : ' Select a run from the sidebar to overlay its journey on the DAG.'}
+            </p>
+          </div>
+          <ModeToggle mode={mode} setMode={setMode} />
+        </div>
       </header>
 
       {/* Tier 1 — agent type (user / system). */}
@@ -312,29 +458,53 @@ const FlywheelFlowchart: React.FC = () => {
         ))}
       </div>
 
-      {/* Tier 2 — surface (skill / prompt / behavior_rule). */}
+      {/* Tier 2 — surface (skill / prompt / behavior_rule). In per-run mode
+          with a selected run, the surface is dictated by the run and the
+          tabs become read-only display (each shows whether it matches the
+          run's surface). */}
       <div
         className="fw-surface-tabs"
         data-testid="surface-tabs"
         role="tablist"
         aria-label="Surface"
+        data-surface-locked={surfaceTabsDisabled ? 'true' : undefined}
       >
-        {SURFACE_KEYS.map((k) => (
-          <button
-            key={k}
-            type="button"
-            role="tab"
-            id={`fw-tab-surface-${k}`}
-            aria-selected={surface === k}
-            aria-controls="fw-flowchart-panel"
-            tabIndex={surface === k ? 0 : -1}
-            className={`fw-surface-tab${surface === k ? ' on' : ''}`}
-            data-empty={surface === k ? surfaceIsEmpty[k] : undefined}
-            onClick={() => setSurface(k)}
-          >
-            {surfaceLabel(k)}
-          </button>
-        ))}
+        {SURFACE_KEYS.map((k) => {
+          const isSelected = displaySurface === k;
+          return (
+            <button
+              key={k}
+              type="button"
+              role="tab"
+              id={`fw-tab-surface-${k}`}
+              aria-selected={isSelected}
+              aria-controls="fw-flowchart-panel"
+              tabIndex={isSelected ? 0 : -1}
+              disabled={surfaceTabsDisabled}
+              className={`fw-surface-tab${isSelected ? ' on' : ''}${
+                surfaceTabsDisabled ? ' fw-surface-tab--locked' : ''
+              }`}
+              data-empty={
+                isSelected && !surfaceTabsDisabled
+                  ? surfaceIsEmpty[k]
+                  : undefined
+              }
+              onClick={() => {
+                if (!surfaceTabsDisabled) setSurface(k);
+              }}
+              title={
+                surfaceTabsDisabled
+                  ? 'Surface is dictated by the selected run'
+                  : undefined
+              }
+            >
+              {surfaceLabel(k)}
+              {surfaceTabsDisabled && isSelected && (
+                <span className="fw-surface-tab-locklabel"> · by run</span>
+              )}
+            </button>
+          );
+        })}
       </div>
 
       {isError && errorMsg && (
@@ -344,44 +514,74 @@ const FlywheelFlowchart: React.FC = () => {
       )}
 
       <div
-        id="fw-flowchart-panel"
-        role="tabpanel"
-        aria-labelledby={`fw-tab-surface-${surface}`}
-        className="fw-flowchart-shell"
-        data-testid="flywheel-flowchart"
+        className={`fw-flowchart-row${mode === 'perRun' ? ' fw-flowchart-row--perrun' : ''}`}
+        data-testid="flywheel-flowchart-row"
       >
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          nodeTypes={NODE_TYPES}
-          onNodeClick={handleNodeClickRF}
-          fitView
-          fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
-          minZoom={0.4}
-          maxZoom={1.5}
-          nodesDraggable={false}
-          nodesConnectable={false}
-          // F4 (code A11Y-1) — must be false: when true, React Flow
-          // intercepts Enter/Space on its node wrapper for its own
-          // selection logic, which prevents the inner StepCard <a>
-          // (react-router-dom <Link>) from receiving the keypress. With
-          // false, keyboard users Tab straight to the <a> element and
-          // Enter/Space follows the drill-down link as expected.
-          nodesFocusable={false}
-          edgesFocusable={false}
-          elementsSelectable={false}
-          panOnDrag
-          panOnScroll={false}
-          zoomOnScroll
-          zoomOnPinch
-          proOptions={{ hideAttribution: false }}
-        >
-          <Background gap={20} size={1} />
-          <Controls
-            showInteractive={false}
-            position="bottom-right"
+        {mode === 'perRun' && (
+          <FlywheelRunsSidebar
+            runs={runs}
+            isLoading={runsLoading}
+            activeRunId={activeRunId}
+            onSelectRun={setActiveRunId}
+            isCollapsed={sidebarCollapsed}
+            onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
+            hideTerminal={hideTerminal}
+            onToggleHideTerminal={() => setHideTerminal((v) => !v)}
+            mode={mode}
           />
-        </ReactFlow>
+        )}
+
+        <div
+          id="fw-flowchart-panel"
+          role="tabpanel"
+          aria-labelledby={`fw-tab-surface-${displaySurface}`}
+          className={`fw-flowchart-shell${
+            mode === 'perRun' && !activeRun ? ' fw-flowchart-shell--idle' : ''
+          }`}
+          data-testid="flywheel-flowchart"
+          data-mode={mode}
+        >
+          {mode === 'perRun' && !activeRun && (
+            <div className="fw-perrun-hint" data-testid="fw-perrun-hint">
+              <span className="fw-perrun-hint-icon" aria-hidden="true">⟶</span>
+              <span className="fw-perrun-hint-text">
+                Select a run from the sidebar to inspect its journey on the DAG.
+              </span>
+            </div>
+          )}
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={NODE_TYPES}
+            onNodeClick={handleNodeClickRF}
+            fitView
+            fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
+            minZoom={0.4}
+            maxZoom={1.5}
+            nodesDraggable={false}
+            nodesConnectable={false}
+            // F4 (code A11Y-1) — must be false: when true, React Flow
+            // intercepts Enter/Space on its node wrapper for its own
+            // selection logic, which prevents the inner StepCard <a>
+            // (react-router-dom <Link>) from receiving the keypress. With
+            // false, keyboard users Tab straight to the <a> element and
+            // Enter/Space follows the drill-down link as expected.
+            nodesFocusable={false}
+            edgesFocusable={false}
+            elementsSelectable={false}
+            panOnDrag
+            panOnScroll={false}
+            zoomOnScroll
+            zoomOnPinch
+            proOptions={{ hideAttribution: false }}
+          >
+            <Background gap={20} size={1} />
+            <Controls
+              showInteractive={false}
+              position="bottom-right"
+            />
+          </ReactFlow>
+        </div>
       </div>
 
       <ActivityFeed events={events} loading={isLoading} />
@@ -393,10 +593,43 @@ const FlywheelFlowchart: React.FC = () => {
         metrics={drawerMetrics}
         recentEvents={drawerEvents}
         onClose={handleCloseDrawer}
+        mode={mode}
+        activeRun={activeRun}
+        isCurrentForRun={drawerStepIsCurrentForRun}
+        isContextForRun={drawerStepIsContextForRun}
+        isCompletedForRun={drawerStepIsCompletedForRun}
       />
     </div>
   );
 };
+
+interface ModeToggleProps {
+  mode: FlywheelMode;
+  setMode: (m: FlywheelMode) => void;
+}
+
+const ModeToggle: React.FC<ModeToggleProps> = ({ mode, setMode }) => (
+  <div
+    className="fw-mode-toggle"
+    role="tablist"
+    aria-label="View mode"
+    data-testid="flywheel-mode-toggle"
+  >
+    {MODE_KEYS.map((k) => (
+      <button
+        key={k}
+        type="button"
+        role="tab"
+        aria-selected={mode === k}
+        className={`fw-mode-toggle-btn${mode === k ? ' on' : ''}`}
+        data-testid={`fw-mode-${k}`}
+        onClick={() => setMode(k)}
+      >
+        {k === 'aggregate' ? 'Aggregate' : 'Per-Run'}
+      </button>
+    ))}
+  </div>
+);
 
 function surfaceLabel(s: FlywheelSurface): string {
   switch (s) {

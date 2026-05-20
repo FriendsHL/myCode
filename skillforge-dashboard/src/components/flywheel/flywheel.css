@@ -835,3 +835,530 @@ button.fw-step,
   border: 1px solid var(--color-error-border, rgba(184, 65, 47, 0.25));
   border-radius: 6px;
 }
+
+/* ─────────────────────── FLYWHEEL-PER-RUN ─────────────────────── */
+
+/* Header row: title text on left, mode toggle on right. */
+.fw-head-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.fw-head-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Linear-style segmented control (Aggregate / Per-Run). */
+.fw-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  background: var(--bg-recessed, #f7f4ec);
+  border: 1px solid var(--border-subtle, #e2ded3);
+  border-radius: 8px;
+  gap: 2px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.fw-mode-toggle-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg-3, #7a7770);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  letter-spacing: 0.01em;
+}
+
+.fw-mode-toggle-btn:hover:not(.on) {
+  color: var(--fg-1, #1a1815);
+}
+
+.fw-mode-toggle-btn.on {
+  background: var(--bg-surface, #fff);
+  color: var(--fg-1, #1a1815);
+  border-color: var(--border-medium, #cfcbc0);
+  font-weight: 600;
+  box-shadow: var(--shadow-1, 0 1px 2px rgba(0, 0, 0, 0.05));
+}
+
+/* Surface tab locked state (per-run mode + run selected). */
+.fw-surface-tab--locked {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.fw-surface-tab--locked:hover {
+  color: var(--fg-3);
+}
+
+.fw-surface-tab-locklabel {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--fg-4, #b8b3a8);
+  font-style: italic;
+  margin-left: 4px;
+  letter-spacing: 0;
+}
+
+/* Flowchart row container — sidebar + shell side-by-side in per-run mode. */
+.fw-flowchart-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.fw-flowchart-row--perrun {
+  flex-direction: row;
+  align-items: stretch;
+  gap: 12px;
+}
+
+.fw-flowchart-row--perrun .fw-flowchart-shell {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* ─────────────────────── Runs Sidebar ─────────────────────── */
+
+.fw-runs-sidebar {
+  width: 320px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-subtle, #e2ded3);
+  border-radius: 12px;
+  background: var(--bg-surface, #fff);
+  box-shadow: var(--shadow-card, 0 1px 3px rgba(0, 0, 0, 0.06));
+  overflow: hidden;
+  max-height: clamp(420px, 60vh, 720px);
+  transition: width 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.fw-runs-sidebar--collapsed {
+  width: 40px;
+}
+
+.fw-runs-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-subtle, #e2ded3);
+  background: var(--bg-recessed, #f7f4ec);
+}
+
+.fw-runs-collapse-btn {
+  background: transparent;
+  border: 1px solid var(--border-subtle, #e2ded3);
+  border-radius: 4px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 14px;
+  color: var(--fg-2, #4a4842);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  line-height: 1;
+}
+
+.fw-runs-collapse-btn:hover {
+  background: var(--bg-hover, #eceae3);
+  color: var(--fg-1, #1a1815);
+}
+
+.fw-runs-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-1, #1a1815);
+  flex: 1 1 auto;
+  letter-spacing: -0.005em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-runs-sidebar { transition: none; }
+}
+
+.fw-runs-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-subtle, #e2ded3);
+  background: var(--bg-surface, #fff);
+}
+
+.fw-runs-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg-3, #7a7770);
+  padding: 3px 8px;
+  border: 1px solid var(--border-subtle, #e2ded3);
+  border-radius: 12px;
+  cursor: pointer;
+  user-select: none;
+  background: var(--bg-recessed, #f7f4ec);
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.fw-runs-chip input[type="checkbox"] {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: var(--accent-primary, #d9633a);
+  cursor: pointer;
+}
+
+.fw-runs-chip:hover {
+  color: var(--fg-1);
+}
+
+.fw-runs-chip--on {
+  color: var(--accent-primary, #d9633a);
+  border-color: var(--accent-primary, #d9633a);
+  background: rgba(217, 99, 58, 0.08);
+}
+
+.fw-runs-count {
+  margin-left: auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--fg-4, #b8b3a8);
+}
+
+.fw-runs-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: 6px 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fw-runs-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.fw-runs-list::-webkit-scrollbar-thumb {
+  background: var(--border-medium, #cfcbc0);
+  border-radius: 4px;
+}
+
+.fw-runs-empty {
+  padding: 16px 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--fg-4, #b8b3a8);
+  font-style: italic;
+}
+
+.fw-runs-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--bg-surface, #fff);
+  border: 1px solid transparent;
+  border-left: 3px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.fw-runs-row:hover {
+  background: var(--bg-hover, #eceae3);
+  border-color: var(--border-subtle, #e2ded3);
+}
+
+.fw-runs-row--active {
+  background: rgba(217, 99, 58, 0.06);
+  border-color: var(--accent-primary, #d9633a);
+  border-left-color: var(--accent-primary, #d9633a);
+}
+
+.fw-runs-row--error {
+  border-left-color: var(--color-error, #b8412f);
+}
+
+.fw-runs-row--active.fw-runs-row--error {
+  background: rgba(184, 65, 47, 0.06);
+  border-color: var(--color-error, #b8412f);
+}
+
+.fw-runs-row:focus-visible {
+  outline: 2px solid var(--accent-primary, #d9633a);
+  outline-offset: 1px;
+}
+
+.fw-runs-row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fw-runs-row-status {
+  font-size: 13px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.fw-runs-row-agent {
+  flex: 1 1 auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-1, #1a1815);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fw-runs-row-age {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  color: var(--fg-3, #7a7770);
+  flex-shrink: 0;
+}
+
+.fw-runs-row-sig {
+  font-size: 11px;
+  color: var(--fg-2, #4a4842);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.fw-runs-row-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.fw-runs-row-stage {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-recessed, #f7f4ec);
+  color: var(--fg-2, #4a4842);
+  letter-spacing: 0.01em;
+  text-transform: lowercase;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.fw-runs-row-stage[data-error="true"] {
+  background: rgba(184, 65, 47, 0.1);
+  color: var(--color-error, #b8412f);
+}
+
+.fw-runs-row-errlabel {
+  flex: 1 1 auto;
+  font-size: 10px;
+  color: var(--color-error, #b8412f);
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ─────────────────────── Per-Run Node Decoration ─────────────────────── */
+
+/* Context steps (pre-OptEvent): gray + dashed border + reduced opacity. */
+.fw-node--context .fw-step {
+  opacity: 0.55;
+  background: var(--bg-recessed, #f7f4ec);
+  border-style: dashed;
+}
+
+.fw-node--context .fw-step:hover {
+  opacity: 0.7;
+}
+
+/* Muted state — per-run mode, no run selected. */
+.fw-node--muted .fw-step {
+  opacity: 0.45;
+}
+
+.fw-node--muted .fw-step:hover {
+  opacity: 0.6;
+}
+
+/* Pending step (in run path, not yet reached) — muted but stays interactive. */
+.fw-node--pending-for-run .fw-step {
+  opacity: 0.6;
+}
+
+/* Completed-for-run: full opacity + slightly bolder border. */
+.fw-node--completed-for-run .fw-step {
+  border-left-width: 4px;
+  box-shadow: 0 0 0 1px var(--color-success-border, rgba(92, 138, 74, 0.25));
+}
+
+/* Current-for-run: bold green ring (replaces the aggregate-mode pulse). */
+@keyframes flywheel-current-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.55); }
+  50%      { box-shadow: 0 0 0 8px rgba(34, 197, 94, 0); }
+}
+
+.fw-node--current-for-run {
+  border-radius: 10px;
+  animation: flywheel-current-pulse 1.6s ease-in-out infinite;
+}
+
+.fw-node--current-for-run .fw-step {
+  border-color: var(--color-success, #5c8a4a);
+  border-width: 2px;
+  border-left-width: 4px;
+  box-shadow: 0 0 0 2px rgba(92, 138, 74, 0.25);
+}
+
+/* Error-for-run: bold red ring (replaces green when run is at *_failed stage). */
+@keyframes flywheel-error-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(184, 65, 47, 0.55); }
+  50%      { box-shadow: 0 0 0 8px rgba(184, 65, 47, 0); }
+}
+
+.fw-node--error-for-run {
+  border-radius: 10px;
+  animation: flywheel-error-pulse 1.6s ease-in-out infinite;
+}
+
+.fw-node--error-for-run .fw-step {
+  border-color: var(--color-error, #b8412f);
+  border-width: 2px;
+  border-left-width: 4px;
+  box-shadow: 0 0 0 2px rgba(184, 65, 47, 0.3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-node--current-for-run,
+  .fw-node--error-for-run {
+    animation: none;
+  }
+  .fw-node--current-for-run .fw-step {
+    outline: 2px solid var(--color-success, #5c8a4a);
+    outline-offset: 2px;
+  }
+  .fw-node--error-for-run .fw-step {
+    outline: 2px solid var(--color-error, #b8412f);
+    outline-offset: 2px;
+  }
+}
+
+/* Run position mark — replaces health dot in per-run mode. */
+.fw-run-mark {
+  margin-left: auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.fw-run-mark--idle    { background: transparent; color: var(--fg-4, #b8b3a8); border: 1px dashed var(--border-medium, #cfcbc0); }
+.fw-run-mark--context { background: var(--bg-recessed, #f7f4ec); color: var(--fg-4, #b8b3a8); border: 1px dashed var(--border-medium, #cfcbc0); }
+.fw-run-mark--current { background: var(--color-success, #5c8a4a); color: #fff; }
+.fw-run-mark--completed { background: rgba(92, 138, 74, 0.25); color: var(--color-success, #5c8a4a); }
+.fw-run-mark--error   { background: var(--color-error, #b8412f); color: #fff; }
+.fw-run-mark--pending { background: transparent; color: var(--fg-4, #b8b3a8); border: 1px solid var(--border-subtle, #e2ded3); }
+
+/* Per-run chips on the step foot. */
+.fw-step-chip-context {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 8px;
+  color: var(--fg-3, #7a7770);
+  background: var(--bg-recessed, #f7f4ec);
+  border: 1px dashed var(--border-medium, #cfcbc0);
+  letter-spacing: 0.02em;
+  font-style: italic;
+}
+
+.fw-step-chip-current {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 8px;
+  color: #fff;
+  background: var(--color-success, #5c8a4a);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.fw-step-chip-current--error {
+  background: var(--color-error, #b8412f);
+}
+
+/* ─────────────────────── Per-Run Idle Hint ─────────────────────── */
+
+/* Floating hint shown in shell when perRun mode + no run selected. */
+.fw-flowchart-shell--idle {
+  position: relative;
+}
+
+.fw-perrun-hint {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 20px;
+  background: var(--bg-surface, #fff);
+  border: 1px solid var(--border-medium, #cfcbc0);
+  border-radius: 10px;
+  box-shadow: var(--shadow-card, 0 1px 3px rgba(0, 0, 0, 0.06));
+  font-size: 13px;
+  color: var(--fg-2, #4a4842);
+  pointer-events: none;
+}
+
+.fw-perrun-hint-icon {
+  font-size: 16px;
+  color: var(--accent-primary, #d9633a);
+  font-weight: 700;
+}
+
+/* Drawer per-run chip (replaces health dot in per-run mode w/ active run). */
+.fw-drawer-runchip {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 11px;
+  background: var(--accent-primary, #d9633a);
+  color: #fff;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}

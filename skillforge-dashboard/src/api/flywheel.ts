@@ -28,6 +28,39 @@
 import api from './index';
 import type { SkillAbRun } from './index';
 import type { CanaryRolloutResponse } from './canary';
+import type {
+  FlywheelRunDto,
+  FlywheelSurface,
+} from '../components/flywheel/types';
+
+// ───────────────────────── /api/flywheel/runs (per-run view) ─────────────
+//
+// FLYWHEEL-PER-RUN — list recent OptimizationEvent runs with stage/error
+// metadata for the per-run mode of the flywheel observability panel.
+
+export interface ListFlywheelRunsParams {
+  /** Filter by agent type (user / system); absent = both. */
+  agentType?: 'user' | 'system';
+  /** Filter by surface; absent = all surfaces. */
+  surface?: FlywheelSurface;
+  /** BE default 20, clamped [1, 100]. */
+  limit?: number;
+  /**
+   * When true (BE default), hide terminal-state runs (promoted / discarded).
+   * Pass false to include them.
+   */
+  hideTerminal?: boolean;
+}
+
+/**
+ * `GET /api/flywheel/runs` — returns up to `limit` recent OptimizationEvent
+ * runs sorted by lastUpdatedAt DESC. See BE FlywheelController for the
+ * canonical contract; FE TS interface lives in components/flywheel/types.ts
+ * so it can be shared between API wrapper + hook + sidebar component
+ * without circular imports.
+ */
+export const listFlywheelRuns = (params?: ListFlywheelRunsParams) =>
+  api.get<FlywheelRunDto[]>('/flywheel/runs', { params });
 
 // ───────────────────────── /api/skills/abtest (global) ─────────────────────
 

@@ -226,4 +226,87 @@ public interface OptimizationEventRepository extends JpaRepository<OptimizationE
      * natively scoped to V3 attribution (no other cron writes here).
      */
     long countByCreatedAtAfter(Instant since);
+
+    /**
+     * FLYWHEEL-PER-RUN — recent attribution runs for the per-run sidebar
+     * (no agent filter, hide terminal stages).
+     *
+     * <p>Sort is fixed {@code updated_at DESC} so the "most recently
+     * progressing" runs surface first. {@code surfaceType} may be {@code null}
+     * (no surface filter). {@code terminalStages} must be a non-empty
+     * collection of stage values to exclude (typically the "happy terminal"
+     * set: {@code promoted} / {@code verified} / {@code rolled_back}).
+     *
+     * <p>Use {@link #findRecentRunsForFlywheelAllStages} when the caller does
+     * NOT want a {@code NOT IN} stage filter — splitting on the boolean
+     * keeps the JPQL simple and avoids the Hibernate 6 footgun where a
+     * {@code (:terminalStages IS NULL OR ...)} guard on a collection
+     * parameter raises {@code IllegalArgumentException} (Hibernate 6 evaluates
+     * the IN parameter even when the IS NULL branch would short-circuit).
+     *
+     * <p>The {@code agentType} filter is handled at the service layer by
+     * resolving to an agent-id set first, then calling
+     * {@link #findRecentRunsByAgentIds} / {@link #findRecentRunsByAgentIdsAllStages}.
+     *
+     * <p>Indexable: when {@code surfaceType} is non-null, the
+     * {@code idx_optimization_event_surface_stage} (if present) or
+     * {@code idx_optimization_event_stage_time} can be used; with a
+     * {@code NOT IN} stage filter the planner typically picks the
+     * {@code updated_at} sort key. At V3 dogfood volume this is a few hundred
+     * rows max — a sequential scan is fine.
+     */
+    @Query("SELECT e FROM OptimizationEventEntity e WHERE " +
+           "(:surfaceType IS NULL OR e.surfaceType = :surfaceType) AND " +
+           "e.stage NOT IN :terminalStages " +
+           "ORDER BY e.updatedAt DESC")
+    List<OptimizationEventEntity> findRecentRunsForFlywheel(
+            @Param("surfaceType") String surfaceType,
+            @Param("terminalStages") Collection<String> terminalStages,
+            Pageable pageable);
+
+    /**
+     * FLYWHEEL-PER-RUN — recent runs for the per-run sidebar (no agent filter,
+     * include all stages). Used when {@code hideTerminal=false}; otherwise see
+     * {@link #findRecentRunsForFlywheel}.
+     */
+    @Query("SELECT e FROM OptimizationEventEntity e WHERE " +
+           "(:surfaceType IS NULL OR e.surfaceType = :surfaceType) " +
+           "ORDER BY e.updatedAt DESC")
+    List<OptimizationEventEntity> findRecentRunsForFlywheelAllStages(
+            @Param("surfaceType") String surfaceType,
+            Pageable pageable);
+
+    /**
+     * FLYWHEEL-PER-RUN — recent runs for a specific set of agent ids (hide
+     * terminal stages). Used when the controller's {@code agentType} filter
+     * resolves to a concrete agent-id set via
+     * {@link AgentRepository#findByAgentType(String)}. Pass an empty
+     * {@code agentIds} only after handling the empty case at the service
+     * layer (skip this call and return empty) — JPQL {@code IN} on an empty
+     * collection raises {@code IllegalArgumentException} in Hibernate.
+     */
+    @Query("SELECT e FROM OptimizationEventEntity e WHERE " +
+           "e.agentId IN :agentIds AND " +
+           "(:surfaceType IS NULL OR e.surfaceType = :surfaceType) AND " +
+           "e.stage NOT IN :terminalStages " +
+           "ORDER BY e.updatedAt DESC")
+    List<OptimizationEventEntity> findRecentRunsByAgentIds(
+            @Param("surfaceType") String surfaceType,
+            @Param("agentIds") Collection<Long> agentIds,
+            @Param("terminalStages") Collection<String> terminalStages,
+            Pageable pageable);
+
+    /**
+     * FLYWHEEL-PER-RUN — recent runs for a specific set of agent ids (include
+     * all stages). Used when {@code hideTerminal=false} and an {@code agentType}
+     * filter was supplied.
+     */
+    @Query("SELECT e FROM OptimizationEventEntity e WHERE " +
+           "e.agentId IN :agentIds AND " +
+           "(:surfaceType IS NULL OR e.surfaceType = :surfaceType) " +
+           "ORDER BY e.updatedAt DESC")
+    List<OptimizationEventEntity> findRecentRunsByAgentIdsAllStages(
+            @Param("surfaceType") String surfaceType,
+            @Param("agentIds") Collection<Long> agentIds,
+            Pageable pageable);
 }
