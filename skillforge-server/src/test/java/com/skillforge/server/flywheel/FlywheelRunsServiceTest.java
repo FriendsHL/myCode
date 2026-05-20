@@ -107,6 +107,37 @@ class FlywheelRunsServiceTest {
         FlywheelRunDto d2 = dtos.get(1);
         assertThat(d2.abRunId()).isEqualTo(999L);
         assertThat(d2.candidateSkillDraftUuid()).isNull();
+        // r2 follow-up — description column passes through DTO when populated.
+        // The two events in this happy path lack description (helper omits it),
+        // so DTOs should expose null. See description_passesThrough_whenPopulated
+        // for the populated case.
+        assertThat(d1.description()).isNull();
+        assertThat(d2.description()).isNull();
+    }
+
+    @Test
+    @DisplayName("description column passes through DTO when populated (per-run Drawer 原因详情)")
+    void description_passesThrough_whenPopulated() {
+        OptimizationEventEntity e = event(150L, 11L, 21L, "skill",
+                OptimizationEventEntity.STAGE_PROPOSAL_REJECTED,
+                null, null,
+                Instant.parse("2026-05-19T10:00:00Z"),
+                Instant.parse("2026-05-20T10:00:00Z"));
+        e.setDescription("rejected: suspect_surface=other (infrastructure credential failure). bailian API 401 over 10h.");
+
+        when(optimizationEventRepository.findRecentRunsForFlywheel(
+                isNull(), eq(FlywheelRunsService.TERMINAL_HAPPY_STAGES), any(Pageable.class)))
+                .thenReturn(List.of(e));
+        when(sessionPatternRepository.findAllById(any()))
+                .thenReturn(List.of(pattern(11L, "outcome=fail|surface=skill")));
+        when(agentRepository.findAllById(any()))
+                .thenReturn(List.of(agent(21L, "Code Assistant", "user")));
+
+        List<FlywheelRunDto> dtos = service.listRecentRuns(null, null, 20, true);
+        assertThat(dtos).hasSize(1);
+        assertThat(dtos.get(0).description())
+                .startsWith("rejected: suspect_surface=other")
+                .contains("bailian API 401");
     }
 
     @Test

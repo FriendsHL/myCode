@@ -751,6 +751,35 @@ button.fw-step,
 .fw-drawer-metric[data-tone="danger"] .fw-drawer-metric-value { color: var(--color-error, #b8412f); }
 .fw-drawer-metric[data-tone="attention"] .fw-drawer-metric-value { color: var(--color-warning, #c08416); }
 
+/* Per-run Drawer 原因详情 — surfaces t_optimization_event.description.
+ * `pre` so structured text (UUIDs, multi-clause sentences) renders verbatim
+ * with wrap. Capped height with scroll for very long descriptions. */
+.fw-drawer-reason {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  background: var(--bg-recessed, #f7f4ec);
+  border-left: 3px solid var(--color-warning, #c08416);
+  border-radius: 4px;
+}
+.fw-drawer-reason-title {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-2, #4a4640);
+  letter-spacing: 0.02em;
+}
+.fw-drawer-reason-body {
+  margin: 0;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--fg-1, #1a1815);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
 .fw-drawer-error-label {
   font-size: 12px;
   margin: 10px 0 0;
@@ -1314,6 +1343,13 @@ button.fw-step,
 
 .fw-step-chip-current--error {
   background: var(--color-error, #b8412f);
+}
+
+/* Operator-rejected — amber distinguishes "business outcome" (operator
+ * decided to reject this proposal) from real system failures (red).
+ * Same chip element, different signal. */
+.fw-step-chip-current--rejected {
+  background: var(--color-warning, #c08416);
 }
 
 /* ─────────────────────── Per-Run Idle Hint ─────────────────────── */

@@ -28,6 +28,7 @@ function makeRun(overrides: Partial<FlywheelRunDto>): FlywheelRunDto {
     lastUpdatedAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
     candidateSkillDraftUuid: null,
     abRunId: null,
+    description: null,
     ...overrides,
   };
 }

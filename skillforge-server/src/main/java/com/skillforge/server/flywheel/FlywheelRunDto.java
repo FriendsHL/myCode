@@ -36,6 +36,16 @@ import java.time.Instant;
  * endpoint into N+1 territory and the per-run sidebar only needs IDs for
  * deep-links (not status badges). FE can call the existing draft / abRun
  * endpoints separately if a status badge is wanted later.
+ *
+ * <p>{@code description} surfaces the full {@code t_optimization_event.description}
+ * text the attribution-curator (or operator on reject) writes when the
+ * proposal/A-B run reaches a terminal state. For {@code proposal_rejected}
+ * it carries the rejection rationale (e.g. "rejected: suspect_surface=other
+ * (infrastructure credential failure)..."); for {@code candidate_failed} it
+ * carries the LLM/generation error stack tail. Exposed so the Drawer can
+ * render it as "原因详情" without operators needing to psql the row.
+ * {@code null} when the column wasn't populated (mostly aggregate / pending
+ * stages that don't carry a narrative).
  */
 public record FlywheelRunDto(
         Long optEventId,
@@ -49,5 +59,6 @@ public record FlywheelRunDto(
         Instant startedAt,
         Instant lastUpdatedAt,
         String candidateSkillDraftUuid,
-        Long abRunId) {
+        Long abRunId,
+        String description) {
 }

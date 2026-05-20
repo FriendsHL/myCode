@@ -54,7 +54,8 @@ class FlywheelRunDtoJsonContractTest {
                 Instant.parse("2026-05-19T10:00:00Z"),
                 Instant.parse("2026-05-20T11:00:00Z"),
                 "draft-uuid-a",
-                null);
+                null,
+                "rejected: suspect_surface=other (infrastructure credential failure). Bailian API 401 ~10h window.");
 
         String json = mapper.writeValueAsString(dto);
 
@@ -69,6 +70,9 @@ class FlywheelRunDtoJsonContractTest {
         assertThat(json).contains("\"errorLabel\":null");
         assertThat(json).contains("\"candidateSkillDraftUuid\":\"draft-uuid-a\"");
         assertThat(json).contains("\"abRunId\":null");
+        // description surfaces the rejection rationale text for "怎么知道为啥"
+        // semantics on FE Drawer (per-run section).
+        assertThat(json).contains("\"description\":\"rejected: suspect_surface=other");
         // Instant serialised as ISO-8601 string (not numeric timestamp).
         assertThat(json).contains("\"startedAt\":\"2026-05-19T10:00:00Z\"");
         assertThat(json).contains("\"lastUpdatedAt\":\"2026-05-20T11:00:00Z\"");
@@ -87,7 +91,8 @@ class FlywheelRunDtoJsonContractTest {
                 "A/B test failed",
                 Instant.parse("2026-05-01T00:00:00Z"),
                 Instant.parse("2026-05-02T00:00:00Z"),
-                null, 555L);
+                null, 555L,
+                "candidate did not beat baseline by configured threshold (delta=0.02)");
         String json = mapper.writeValueAsString(in);
         FlywheelRunDto out = mapper.readValue(json, FlywheelRunDto.class);
         assertThat(out).isEqualTo(in);

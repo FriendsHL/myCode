@@ -472,7 +472,31 @@ export interface FlywheelRunDto {
   candidateSkillDraftUuid: string | null;
   /** Linked SkillAbRun.id when an A/B run was created, else null. */
   abRunId: number | null;
+  /**
+   * Full `t_optimization_event.description` text. Populated by attribution-curator
+   * (or operator on reject) with the narrative reason for terminal/transient
+   * states — e.g. for `proposal_rejected` it carries the full rejection
+   * rationale; for `candidate_failed` it carries the LLM/generation error tail.
+   * Surfaced in the per-run Drawer as "原因详情" so operators don't need to
+   * psql `t_optimization_event` to learn why a run stopped. Null when the
+   * column wasn't populated (mostly aggregate / pending stages).
+   */
+  description: string | null;
 }
+
+/**
+ * FLYWHEEL-PER-RUN — sub-classify ERROR_STAGES so the per-run UI can distinguish
+ * "operator rejected" (a normal business outcome — amber) from "system / A/B
+ * failed" (a true failure needing inspection — red). Used by StepCard chip
+ * text + amber color variant and by FlywheelNode pulse hue. Adding new BE
+ * stages: classify here as REJECTED (operator decision) vs FAILED (system /
+ * eval outcome), or leave out for the generic "current" path.
+ */
+export const REJECTED_STAGES: ReadonlySet<string> = new Set(['proposal_rejected']);
+export const FAILED_STAGES: ReadonlySet<string> = new Set([
+  'candidate_failed',
+  'ab_failed',
+]);
 
 /** PRD §6 — format lag as "47m ago" / "2h ago". */
 export function formatLag(lastActivityAt: string | null): string {

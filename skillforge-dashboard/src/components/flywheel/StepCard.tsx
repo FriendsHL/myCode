@@ -5,7 +5,7 @@ import type {
   StepDescriptor,
   StepMetrics,
 } from './types';
-import { computeHealth, formatLag } from './types';
+import { computeHealth, formatLag, REJECTED_STAGES } from './types';
 
 interface StepCardProps {
   step: StepDescriptor;
@@ -121,12 +121,24 @@ const StepCard: React.FC<StepCardProps> = React.memo(
           {isPerRun && isCurrentForRun && activeRun && (
             <span
               className={`fw-step-chip-current${
-                isErrorForRun ? ' fw-step-chip-current--error' : ''
+                isErrorForRun
+                  ? REJECTED_STAGES.has(activeRun.currentStage)
+                    ? ' fw-step-chip-current--rejected'
+                    : ' fw-step-chip-current--error'
+                  : ''
               }`}
               data-testid={`current-chip-${step.id}`}
               title={`Run #${activeRun.optEventId} is at ${activeRun.currentStage}`}
             >
-              {isErrorForRun ? 'errored here' : 'current'}
+              {/* Distinguish operator-rejected (business outcome, amber)
+                  from system-failed (needs investigation, red). Both fall
+                  under ERROR_STAGES for highlight purposes but read very
+                  differently for an operator triaging the panel. */}
+              {isErrorForRun
+                ? REJECTED_STAGES.has(activeRun.currentStage)
+                  ? 'rejected here'
+                  : 'failed here'
+                : 'current'}
             </span>
           )}
           {!isPerRun && step.nodeType === 'user' && pend > 0 && (

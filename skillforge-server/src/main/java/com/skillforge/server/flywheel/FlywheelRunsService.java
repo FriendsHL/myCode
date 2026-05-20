@@ -167,7 +167,8 @@ public class FlywheelRunsService {
                 e.getCreatedAt(),
                 e.getUpdatedAt(),
                 e.getCandidateSkillDraftUuid(),
-                e.getAbRunId());
+                e.getAbRunId(),
+                e.getDescription());
     }
 
     /**

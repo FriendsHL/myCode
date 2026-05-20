@@ -225,6 +225,20 @@ const FlywheelStepDrawer: React.FC<FlywheelStepDrawerProps> = ({
                 error: <code>{activeRun.errorLabel}</code>
               </p>
             )}
+            {/* 真正解答"为什么报错 / 怎么改" — surface t_optimization_event.description
+                so operators don't psql every time. Attribution-curator writes
+                the full rationale here (e.g. credential failure / surface
+                misdiagnosed / candidate exception stack). Render verbatim
+                (pre-wrap) since it often contains structured text + UUIDs. */}
+            {activeRun.description && (
+              <div
+                className="fw-drawer-reason"
+                data-testid="fw-drawer-reason"
+              >
+                <h4 className="fw-drawer-reason-title">原因详情</h4>
+                <pre className="fw-drawer-reason-body">{activeRun.description}</pre>
+              </div>
+            )}
             {isContextForRun && (
               <p className="fw-drawer-empty">
                 此节点发生在 run 创建之前（context 步骤），不属于本 run 的旅程。

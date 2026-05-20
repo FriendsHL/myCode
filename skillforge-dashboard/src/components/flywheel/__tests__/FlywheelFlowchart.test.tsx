@@ -144,6 +144,7 @@ vi.mock('../../../api/flywheel', () => ({
           lastUpdatedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
           candidateSkillDraftUuid: null,
           abRunId: null,
+          description: 'Candidate generation tripped on malformed JSON returned from LLM. Snippet: {"name": …',
         },
         {
           optEventId: 202,
@@ -158,6 +159,7 @@ vi.mock('../../../api/flywheel', () => ({
           lastUpdatedAt: new Date(Date.now() - 60 * 60_000).toISOString(),
           candidateSkillDraftUuid: null,
           abRunId: null,
+          description: null,
         },
         ],
       },
@@ -393,6 +395,7 @@ describe('FlywheelFlowchart', () => {
           lastUpdatedAt: new Date(Date.now() - 2 * 60_000).toISOString(),
           candidateSkillDraftUuid: null,
           abRunId: null,
+          description: null,
         },
       ],
       },
@@ -442,5 +445,61 @@ describe('FlywheelFlowchart', () => {
     // Aggregate-mode "running" class should NOT be on per-run nodes
     // (we suppress running animation in per-run mode).
     expect(step1.className).not.toContain('fw-node--running');
+  });
+
+  it('chip text + color: candidate_failed → "failed here" + --error class (red); description renders in Drawer', async () => {
+    // Run #101 in default mock = candidate_failed + description populated.
+    renderChart();
+    fireEvent.click(screen.getByTestId('fw-mode-perRun'));
+    const row = await screen.findByTestId('fw-runs-row-101');
+    fireEvent.click(row);
+    const chip = await screen.findByTestId('current-chip-step4-candidate');
+    expect(chip.textContent).toBe('failed here');
+    expect(chip.className).toContain('fw-step-chip-current--error');
+    expect(chip.className).not.toContain('fw-step-chip-current--rejected');
+    // Click the failed node → Drawer should render "原因详情" with description.
+    fireEvent.click(screen.getByTestId('fw-node-step4-candidate'));
+    const reason = await screen.findByTestId('fw-drawer-reason');
+    expect(reason.textContent).toContain('Candidate generation tripped on malformed JSON');
+  });
+
+  it('chip text + color: proposal_rejected → "rejected here" + --rejected class (amber)', async () => {
+    // Override the runs mock with a single proposal_rejected run so we
+    // exercise the amber rejected variant (default mocks only have
+    // candidate_failed + proposal_pending).
+    const flywheelApiMod = await import('../../../api/flywheel');
+    const mock = vi.mocked(flywheelApiMod.listFlywheelRuns);
+    mock.mockResolvedValueOnce({
+      data: {
+        limit: 20,
+        hideTerminal: true,
+        items: [
+          {
+            optEventId: 109,
+            agentId: 2,
+            agentName: 'Code Agent',
+            surface: 'skill',
+            patternId: 3,
+            patternSignature: 'failure|skill|ReadFile|2',
+            currentStage: 'proposal_rejected',
+            errorLabel: 'Proposal rejected',
+            startedAt: new Date(Date.now() - 60 * 60_000).toISOString(),
+            lastUpdatedAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+            candidateSkillDraftUuid: null,
+            abRunId: null,
+            description: 'rejected: suspect_surface=other (infrastructure credential failure).',
+          },
+        ],
+      },
+    } as Awaited<ReturnType<typeof flywheelApiMod.listFlywheelRuns>>);
+    renderChart();
+    fireEvent.click(screen.getByTestId('fw-mode-perRun'));
+    const row = await screen.findByTestId('fw-runs-row-109');
+    fireEvent.click(row);
+    // proposal_rejected → STAGE_TO_STEP maps to G1-approve-event.
+    const chip = await screen.findByTestId('current-chip-G1-approve-event');
+    expect(chip.textContent).toBe('rejected here');
+    expect(chip.className).toContain('fw-step-chip-current--rejected');
+    expect(chip.className).not.toContain('fw-step-chip-current--error');
   });
 });
