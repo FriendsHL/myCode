@@ -159,29 +159,31 @@ public class AttributionDispatcherService {
                                  int skippedCooldown,
                                  int skippedActive) {}
 
-    /**
-     * Cron entrypoint — fires hourly at :15 (half-past offset from V75 :00
-     * session-annotator and V79 :30 metrics-collector). Bypasses the V81
-     * ScheduledTask path (which would route through the LLM agent and ask
-     * "which patternId?" — wrong: the dispatch logic is *this* method,
-     * agents are spawned per-pattern from inside it).
+    /*
+     * REMOVED 2026-05-20 — CRON-DUAL-SCHEDULE-FIX hotfix.
      *
-     * <p>Phase Final dogfood wiring (2026-05-15): the V81 ScheduledTask
-     * {@code attribution-dispatcher-hourly} should be set {@code enabled=false}
-     * so it doesn't also trigger the agent with the generic scan prompt.
+     * Previously this method carried `@Scheduled(cron = "0 15 * * * *")`
+     * AND `t_scheduled_task #6 attribution-dispatcher-hourly` also had cron
+     * `0 15 * * * *` — TWO independent fire paths for the same logical
+     * dispatch, controlled by completely separate state (annotation hardcoded
+     * vs DB row `enabled` flag). Dashboard UI "disable schedule" only
+     * affected t_scheduled_task; the @Scheduled annotation kept firing every
+     * hour regardless, producing stale-pattern OptEvent #110-#115 noise +
+     * wasting token over multiple days while user thought the cron was off.
+     *
+     * Fix: delete the Spring @Scheduled wrapper, making `t_scheduled_task` row
+     * the single source of truth (UI control = real control). Future cron
+     * fires now route through UserTaskScheduler → ScheduledTaskExecutor →
+     * chatAsync(attribution-curator agent) when user re-enables task #6.
+     * Trade-off: the agent-mediated path costs more tokens per dispatch
+     * (LLM-driven) vs the direct method call, but is the existing canonical
+     * path for all other system agent crons (session-annotator / metrics-
+     * collector / memory-curator) so consistency wins. Document this in
+     * AttributionDispatcherService class javadoc as the canonical entry point
+     * for cron-driven dispatch; manual / e2e callers continue to use
+     * AttributionEventController.triggerDispatch HTTP endpoint or directly
+     * call dispatchPendingPatterns from tests.
      */
-    @Scheduled(cron = "0 15 * * * *")
-    public void scheduledDispatch() {
-        try {
-            DispatchResult result = dispatchPendingPatterns(DEFAULT_MAX_DISPATCH_PER_RUN);
-            log.info("[AttributionDispatcher.scheduledDispatch] scanned={} dispatched={} "
-                    + "skippedSurface={} skippedCooldown={} skippedActive={}",
-                    result.scanned(), result.dispatched(),
-                    result.skippedSurface(), result.skippedCooldown(), result.skippedActive());
-        } catch (Exception e) {
-            log.error("[AttributionDispatcher.scheduledDispatch] unexpected error", e);
-        }
-    }
 
     /**
      * Scan candidate patterns and dispatch the curator agent for the top-N

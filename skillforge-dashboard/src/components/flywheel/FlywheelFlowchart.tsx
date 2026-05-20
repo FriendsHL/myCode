@@ -421,13 +421,13 @@ const FlywheelFlowchart: React.FC = () => {
       <header className="fw-head">
         <div className="fw-head-row">
           <div className="fw-head-text">
-            <h1 className="fw-head-title">Flywheel observability</h1>
+            <h1 className="fw-head-title">Production-Driven Optimization Loop</h1>
             <p className="fw-head-sub">
-              Workflow DAG of every flywheel stage across the
-              annotate → cluster → attribute → A/B → gate → rollout cycle.
+              Workflow DAG of the full prod-signal → annotate → cluster → attribute →
+              candidate → A/B → gate → promote cycle.
               {mode === 'aggregate'
-                ? ' Nodes pulse green when actively running; edges animate when data is flowing.'
-                : ' Select a run from the sidebar to overlay its journey on the DAG.'}
+                ? ' Aggregate mode: nodes pulse green when actively running, edges animate when data flows.'
+                : ' Per-Run mode: select a run from the sidebar to overlay its journey on the DAG.'}
             </p>
           </div>
           <ModeToggle mode={mode} setMode={setMode} />

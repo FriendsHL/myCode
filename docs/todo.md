@@ -87,10 +87,18 @@
 
 ## 暂缓
 
+> **2026-05-20 新增 3 项**（user 提 + 我在 FLYWHEEL-PER-RUN dogfood 时发现的 dual-schedule bug）:
+> - **USER-SSO-MULTITENANT** (P1) — SSO 认证 + 多租户工作空间隔离（当前 single-tenant dogfood, owner_id=1 / system agent owner=1）。需要做：identity provider 接入 (OIDC / SAML) / `t_workspace` 或 `t_tenant` 表 / 所有 agent/skill/session 加 tenant_id / RLS or service-layer scope filter / FE login flow / RBAC 基础。Full 红灯（schema + 协议 + 跨模块）。**触发条件**：开放给真用户 / 团队协作 / 公网上线前必做。
+> - **FE-RENDER-AUDIT** (P2) — 审计 dashboard 各 page 用户点按钮是不是重复渲染多次（如 Insights tab 切换 / Drawer 开关 / sidebar selected change）。手段：React DevTools Profiler + `<Profiler onRender>` 包关键 page / 找 useMemo 缺 / useCallback 漏 / context 太大 re-render 全树。**触发条件**：dogfood 期间有顿、复杂 panel 点击有视觉 lag、或加新 feature 前先把 baseline 性能锁住。
+> - **CRON-DUAL-SCHEDULE-FIX** (P1 bug, NOT feature) — `AttributionDispatcherService.java:173,356` Spring `@Scheduled(cron="0 15 * * * *")` annotation hardcoded，跟 `t_scheduled_task #6 attribution-dispatcher-hourly` 同 cron 但**完全独立、不读 DB enabled**。Dashboard 关掉 task 后 Spring annotation 还在 fire → 每小时仍创建 OptEvent。修法 path A 推荐：删 @Scheduled annotation，完全 delegate to UserTaskScheduler / t_scheduled_task （UI 控制单一真实）。Mid 档，pure BE 改动，1-2 文件。**触发条件**：现在就该修，每小时浪费 token + sidebar 列噪音 + user UI 表达跟 BE 行为不一致。
+
 > **ROI 优先级概览（2026-05-10 audit）** —— 点 ID 跳到下方详细行查看完整方案 + 触发条件
 >
 > | 优先 | ID | Cost | Impact | 何时做 |
 > | --- | --- | --- | --- | --- |
+> | 🔴 P1 战略 | **USER-SSO-MULTITENANT** | Full 红灯 (schema + 协议 + 跨模块) | 高 — 开放给真用户 / 团队协作 / 公网上线前必做 | 单用户 dogfood 阶段过渡到多用户时 |
+> | 🟡 P2 | **FE-RENDER-AUDIT** | Light ~1-2d FE 调研 + Profiler 报告 + targeted fix | 中 — dogfood 期间有顿 / 复杂 panel 点击有 lag / 加新 feature 前 baseline | 用户报顿或上 1-2 个新 panel 之前 |
+> | 🔴 P1 **bug** | **CRON-DUAL-SCHEDULE-FIX** | Mid ~半天 BE | 高 — UI 关 schedule 不生效 / 噪音 OptEvent + 浪费 token | **现在就修** |
 > | 🟢 P0 | MEMORY-DEDUP-COSINE-ACTIVATION | 0 新代码 + 1 migration | 中-高 — memory 质量保障 | 拿到 embedding API key 立刻激活 |
 > | 🟡 P1 | DATA-LAYER-ORIGIN-SPAN-LINK | ~80 行 + 1 migration | 中 — chat "展开看截断 tool 原文" | 用户调试大 tool 输出痛点 |
 > | 🟡 P1 | SUBAGENT-APPROVAL-FORWARD | Mid ~80-130 行 | 中 — sub-agent 审批转发到主 chat | 用户多次报"sub-agent 卡住" |
