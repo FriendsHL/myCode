@@ -149,7 +149,7 @@ describe('Insights — URL-driven tab routing (1B)', () => {
     renderWithRoute('/insights/patterns');
     // Default tab is `patterns` (Pattern List visible).
     expect(screen.getByTestId('pattern-list-mock')).toBeInTheDocument();
-    const flywheelTabBtn = screen.getByRole('button', { name: /flywheel/i });
+    const flywheelTabBtn = screen.getByRole('button', { name: /optimization loop/i });
     await act(async () => {
       fireEvent.click(flywheelTabBtn);
     });

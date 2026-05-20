@@ -32,7 +32,7 @@ const primaryNav: NavItem[] = [
   { key: 'traces', path: '/traces', label: 'Traces' },
   { key: 'channels', path: '/channels', label: 'Channels' },
   { key: 'tasks', path: '/tasks', label: 'Tasks' },
-  { key: 'insights', path: '/insights/patterns', label: 'Insights' },
+  { key: 'insights', path: '/insights/patterns', label: 'Optimization' },
 ];
 
 const paletteItems: PaletteItem[] = primaryNav.map((i) => ({

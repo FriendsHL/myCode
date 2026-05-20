@@ -1,6 +1,6 @@
-# Insight Loop 操作手册
+# Optimization Loop 操作手册
 
-> Insight Loop（前称 Flywheel / Optimization Loop）= 生产 session 失败信号 → 自动归因 → 候选生成 → A/B 评测 → 人审 → promote 的完整闭环。
+> Optimization Loop（前称 Flywheel / Optimization Loop）= 生产 session 失败信号 → 自动归因 → 候选生成 → A/B 评测 → 人审 → promote 的完整闭环。
 >
 > 这个文档是给 operator / dev 用的：怎么测、怎么读、怎么排错。
 
@@ -8,7 +8,7 @@
 
 ## 1. 是什么 / 在哪看
 
-**Dashboard 入口**：`/insights/patterns?tab=flywheel` → **Insight Loop** tab
+**Dashboard 入口**：`/insights/patterns?tab=flywheel` → **Optimization Loop** tab
 
 **3 类组件**：
 - **DAG 流程图** — 15 个 step（4 entry + 6 auto + 3 user gate + 3 dormant canary）+ 箭头表数据流向
@@ -124,7 +124,7 @@ SELECT id, signature, member_count FROM t_session_pattern ORDER BY created_at DE
 SELECT id, agent_id, surface_type, stage FROM t_optimization_event ORDER BY created_at DESC LIMIT 5;
 ```
 
-### 阶段 5 — 在 Insight Loop panel 看真活
+### 阶段 5 — 在 Optimization Loop panel 看真活
 
 切到 Per-Run → sidebar 列出新 run → 点新 run → DAG 高亮在 G1（proposal_pending）等审 → 点 G1 节点 → Drawer 显该 run 信息。
 
@@ -141,7 +141,7 @@ SELECT * FROM t_skill_draft WHERE id=...;
 SELECT * FROM t_skill_ab_run WHERE id=...;
 ```
 
-在 Insight Loop sidebar 点该 run → DAG 高亮位置从 G1 → ④ → ⑤（A/B 跑完）→ G3 等审 → promote/discard 终态。
+在 Optimization Loop sidebar 点该 run → DAG 高亮位置从 G1 → ④ → ⑤（A/B 跑完）→ G3 等审 → promote/discard 终态。
 
 ---
 

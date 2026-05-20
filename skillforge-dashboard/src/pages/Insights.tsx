@@ -56,10 +56,10 @@ const MAX_LIMIT = 200;
 
 const INSIGHTS_TABS = [
   { key: 'patterns', label: 'Patterns' },
-  { key: 'optimization', label: 'Optimization' },
+  { key: 'optimization', label: 'Events' },
   { key: 'behavior-rules', label: 'Behavior Rules' },
   { key: 'dynamic-sim', label: 'Dynamic Sim' },
-  { key: 'flywheel', label: 'Insight Loop' },
+  { key: 'flywheel', label: 'Optimization Loop' },
 ];
 
 const Insights: React.FC = () => {
@@ -238,7 +238,7 @@ const Insights: React.FC = () => {
           <Suspense
             fallback={
               <div style={{ padding: 24, color: 'var(--fg-3)', fontSize: 13 }}>
-                Loading Insight Loop…
+                Loading Optimization Loop…
               </div>
             }
           >
