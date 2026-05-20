@@ -63,7 +63,7 @@ export function useFlywheelRuns(
         surface,
         limit,
         hideTerminal: hideTerminalNormalized,
-      }).then((r) => r.data ?? []),
+      }).then((r) => r.data?.items ?? []),
     enabled,
     staleTime: STALE_MS,
     refetchInterval: enabled ? POLL_MS : false,

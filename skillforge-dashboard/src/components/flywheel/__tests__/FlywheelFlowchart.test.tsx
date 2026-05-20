@@ -123,7 +123,14 @@ vi.mock('../../../api/flywheel', () => ({
   // FLYWHEEL-PER-RUN — runs endpoint. One pending + one errored run.
   listFlywheelRuns: vi.fn(() =>
     Promise.resolve({
-      data: [
+      // BE envelope shape: { items, limit, hideTerminal } — NOT bare array.
+      // The pre-hotfix mock returned `data: [...]` which matched a wrong FE
+      // assumption (now corrected) and triggered "runs is not iterable" at
+      // runtime against the real BE. Tests now mock the canonical shape.
+      data: {
+        limit: 20,
+        hideTerminal: true,
+        items: [
         {
           optEventId: 101,
           agentId: 3,
@@ -152,7 +159,8 @@ vi.mock('../../../api/flywheel', () => ({
           candidateSkillDraftUuid: null,
           abRunId: null,
         },
-      ],
+        ],
+      },
     }),
   ),
 }));
@@ -368,7 +376,10 @@ describe('FlywheelFlowchart', () => {
     const flywheelApiMod = await import('../../../api/flywheel');
     const listFlywheelRunsMock = vi.mocked(flywheelApiMod.listFlywheelRuns);
     listFlywheelRunsMock.mockResolvedValueOnce({
-      data: [
+      data: {
+        limit: 20,
+        hideTerminal: true,
+        items: [
         {
           optEventId: 999,
           agentId: 7,
@@ -384,6 +395,7 @@ describe('FlywheelFlowchart', () => {
           abRunId: null,
         },
       ],
+      },
     } as Awaited<ReturnType<typeof flywheelApiMod.listFlywheelRuns>>);
     renderChart();
     fireEvent.click(screen.getByTestId('fw-mode-perRun'));

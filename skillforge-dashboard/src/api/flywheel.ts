@@ -53,6 +53,21 @@ export interface ListFlywheelRunsParams {
 }
 
 /**
+ * BE envelope for `/api/flywheel/runs` — Controller returns
+ * `{items, limit, hideTerminal}` (LinkedHashMap, stable field order). Both
+ * outer shape AND inner items must be locked in this TS interface — FE-BE
+ * Jackson contract footgun #6 covers field NAMES inside DTO but NOT the
+ * envelope shape; previous r1 review verified the 12 DTO fields but missed
+ * that BE returned `{items:[…]}` not bare array, triggering "runs is not
+ * iterable" at runtime.
+ */
+export interface FlywheelRunsResponse {
+  items: FlywheelRunDto[];
+  limit: number;
+  hideTerminal: boolean;
+}
+
+/**
  * `GET /api/flywheel/runs` — returns up to `limit` recent OptimizationEvent
  * runs sorted by lastUpdatedAt DESC. See BE FlywheelController for the
  * canonical contract; FE TS interface lives in components/flywheel/types.ts
@@ -60,7 +75,7 @@ export interface ListFlywheelRunsParams {
  * without circular imports.
  */
 export const listFlywheelRuns = (params?: ListFlywheelRunsParams) =>
-  api.get<FlywheelRunDto[]>('/flywheel/runs', { params });
+  api.get<FlywheelRunsResponse>('/flywheel/runs', { params });
 
 // ───────────────────────── /api/skills/abtest (global) ─────────────────────
 
