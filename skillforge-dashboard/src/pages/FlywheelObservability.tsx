@@ -1,14 +1,16 @@
 import React from 'react';
-import FlywheelObservabilityPanel from '../components/flywheel/FlywheelObservabilityPanel';
+import FlywheelFlowchart from '../components/flywheel/FlywheelFlowchart';
 
 /**
- * FLYWHEEL-VISUAL-STATUS Phase 2 — page wrapper for the Insights >
- * Flywheel tab. Thin shell so the panel can be embedded both as an
- * Insights tab (current usage) and as a standalone route in the future
- * (just point `App.tsx` here).
+ * FLYWHEEL-FLOWCHART — page wrapper for the Insights > Flywheel tab.
+ *
+ * Thin shell so the chart can be embedded both as an Insights tab (current
+ * usage) and as a standalone route in the future. Replaces the original
+ * card-style FlywheelObservabilityPanel (deleted in the same slice) with a
+ * workflow DAG view per FLYWHEEL-FLOWCHART requirements.
  */
 const FlywheelObservability: React.FC = () => {
-  return <FlywheelObservabilityPanel />;
+  return <FlywheelFlowchart />;
 };
 
 export default FlywheelObservability;

@@ -1,14 +1,19 @@
 /*
- * FLYWHEEL-VISUAL-STATUS Phase 2 — visual encoding for the Insights >
- * Flywheel observability panel.
+ * FLYWHEEL-FLOWCHART — visual encoding for the Insights > Flywheel
+ * workflow DAG panel.
  *
  * Color philosophy (PRD N1 + N3, design.md "developer precision dark"):
- *   Node type → LEFT border color (4 px) — operator scans the swim-lane
- *                vertically to tell "what kind of step is this"
+ *   Node type → LEFT border color (4 px) — operator scans the DAG to tell
+ *                "what kind of step is this"
  *   Health    → DOT in the card header — independent dimension; healthy
  *                vs warn/stale reuses the existing color-success/warning/
  *                error tokens so the panel reads consistent with the rest
  *                of the dashboard.
+ *   Running   → green compositor-friendly box-shadow pulse on AUTO+HYBRID
+ *                nodes that have in-flight > 0 (PRD spec). USER gates use
+ *                a static red PEND chip instead — pulsing them would
+ *                falsely signal "system is working" when actually waiting
+ *                for an operator.
  *
  * All colors reference CSS custom properties in src/index.css (dual-theme
  * dark+light); raw hex appears only as token fallbacks.
@@ -91,47 +96,147 @@
   opacity: 0.65;
 }
 
-/* ─────────────────────────── Timeline ─────────────────────────── */
+/* ─────────────────────── Flowchart Shell ─────────────────────── */
 
-.fw-timeline {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding-top: 8px;
+.fw-flowchart-shell {
+  position: relative;
+  width: 100%;
+  /* Height tuned to host the DAG comfortably without dwarfing the ActivityFeed
+     below; React Flow `fitView` scales the diagram to fit. */
+  height: clamp(420px, 60vh, 720px);
+  border: 1px solid var(--border-subtle, #e2ded3);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--bg-surface, #ffffff);
+  box-shadow: var(--shadow-card, 0 1px 3px rgba(0, 0, 0, 0.06));
 }
 
-.fw-timeline-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 6px;
+/* React Flow overrides — scoped under .fw-flowchart-shell so they DON'T
+ * bleed into other React Flow instances anywhere else in the app (none
+ * today, but stay defensive). */
+.fw-flowchart-shell .react-flow__edge-path {
+  stroke: var(--fg-4, #b8b3a8);
+  stroke-width: 1.5;
 }
 
-.fw-timeline-group-h {
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--fg-4, #8a8780);
-  padding: 4px 2px;
+.fw-flowchart-shell .react-flow__edge.fw-edge-animated .react-flow__edge-path {
+  stroke: var(--color-success, #5c8a4a);
+  stroke-width: 2;
 }
 
-/* ─────────────────────────── Step Card ─────────────────────────── */
+.fw-flowchart-shell .react-flow__edge.selected .react-flow__edge-path,
+.fw-flowchart-shell .react-flow__edge:focus .react-flow__edge-path,
+.fw-flowchart-shell .react-flow__edge:focus-visible .react-flow__edge-path {
+  stroke: var(--accent-primary, #d9633a);
+}
+
+.fw-flowchart-shell .react-flow__arrowhead polyline,
+.fw-flowchart-shell .react-flow__arrowhead path {
+  fill: var(--fg-4, #b8b3a8);
+  stroke: var(--fg-4, #b8b3a8);
+}
+
+.fw-flowchart-shell .react-flow__edge.fw-edge-animated .react-flow__arrowhead polyline,
+.fw-flowchart-shell .react-flow__edge.fw-edge-animated .react-flow__arrowhead path {
+  fill: var(--color-success, #5c8a4a);
+  stroke: var(--color-success, #5c8a4a);
+}
+
+.fw-flowchart-shell .react-flow__controls {
+  box-shadow: var(--shadow-1, 0 1px 2px rgba(0, 0, 0, 0.1));
+  border-radius: 6px;
+}
+
+.fw-flowchart-shell .react-flow__controls-button {
+  background: var(--bg-surface, #fff);
+  border-bottom: 1px solid var(--border-subtle, #e2ded3);
+  color: var(--fg-2, #4a4842);
+}
+
+.fw-flowchart-shell .react-flow__controls-button:hover {
+  background: var(--bg-hover, #eceae3);
+}
+
+.fw-flowchart-shell .react-flow__background {
+  background: var(--bg-primary, #fbfaf7);
+}
+
+.fw-flowchart-shell .react-flow__attribution {
+  background: transparent;
+  font-size: 9px;
+  opacity: 0.55;
+}
+
+/* Handles — visually subtle (read-only DAG). isConnectable=false hides
+ * the interaction affordance; size them down so they don't draw the eye. */
+.fw-flowchart-shell .fw-handle {
+  width: 6px;
+  height: 6px;
+  background: var(--fg-4, #b8b3a8);
+  border: 1px solid var(--bg-surface, #fff);
+  opacity: 0.6;
+}
+
+/* ─────────────────────── Running Pulse (PRD) ─────────────────────── */
+
+@keyframes flywheel-running-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6); }
+  50%      { box-shadow: 0 0 0 6px rgba(34, 197, 94, 0); }
+}
+
+.fw-node {
+  /* React Flow positions the node via inline transform; this wraps the
+     StepCard so the pulse box-shadow renders OUTSIDE the card border. */
+  width: 240px;
+  border-radius: 10px;
+  background: transparent;
+}
+
+.fw-node--running {
+  /* Compositor-friendly props only (box-shadow + opacity equivalents);
+     no layout-bound (width/height) reflow on each frame. */
+  animation: flywheel-running-pulse 1.5s ease-in-out infinite;
+  border-radius: 10px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-node--running {
+    animation: none;
+    outline: 2px solid rgba(34, 197, 94, 0.8);
+    outline-offset: 1px;
+  }
+  /* F1 (code WARN-2) — ReactFlow's base.css sets a `dashdraw 0.5s linear
+     infinite` on `.react-flow__edge.animated .react-flow__edge-path` to
+     animate the flowing dashes on `animated: true` edges. That rule isn't
+     gated on prefers-reduced-motion, so we override with `!important` to
+     beat the library specificity (PRD acceptance criterion: reduced-motion
+     → fully static, both nodes AND edges). */
+  .fw-flowchart-shell .react-flow__edge-path,
+  .fw-flowchart-shell .react-flow__edge.animated .react-flow__edge-path {
+    animation: none !important;
+  }
+}
+
+/* ─────────────────────── Compact Step Card ─────────────────────── */
 
 .fw-step {
-  display: grid;
-  grid-template-columns: 28px 1fr auto;
-  align-items: stretch;
-  gap: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   border: 1px solid var(--border-subtle, #e2ded3);
   border-left-width: 4px;
   border-radius: 8px;
   background: var(--bg-surface, #ffffff);
-  padding: 14px 16px;
+  padding: 10px 12px;
   cursor: pointer;
   transition: transform 100ms ease, border-color 120ms ease, box-shadow 120ms ease;
   text-decoration: none;
   color: inherit;
+  width: 100%;
+  min-height: 110px;
+  box-sizing: border-box;
+  position: relative;
+  z-index: 1;
 }
 
 .fw-step:hover {
@@ -161,15 +266,22 @@
 .fw-step[data-node-type="entry"]  { border-left-color: #5c8a4a; }   /* green */
 .fw-step[data-node-type="dormant"]{ border-left-color: #b8b3a8; }   /* gray */
 
-/* Header column (icon) */
+/* Header row (icon + title + health dot) */
+.fw-step-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .fw-step-icon {
-  width: 28px;
-  height: 28px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 600;
   background: var(--bg-hover, #eceae3);
   color: var(--fg-2);
@@ -181,55 +293,35 @@
 .fw-step[data-node-type="hybrid"] .fw-step-icon { color: #8a6fb3; }
 .fw-step[data-node-type="entry"]  .fw-step-icon { color: #5c8a4a; }
 
-/* Middle column (body) */
-.fw-step-body {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-
-.fw-step-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
 .fw-step-title {
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--fg-1);
-  line-height: 1.3;
-}
-
-.fw-step-sub {
-  font-size: 11px;
-  color: var(--fg-3);
-  font-family: var(--font-mono, ui-monospace, monospace);
+  line-height: 1.25;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .fw-step-metrics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px 18px;
-}
-
-@media (max-width: 720px) {
-  .fw-step-metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 12px;
 }
 
 .fw-step-metric {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   min-width: 0;
 }
 
 .fw-step-metric-label {
-  font-size: 10px;
+  font-size: 9px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--fg-4, #8a8780);
@@ -238,7 +330,7 @@
 
 .fw-step-metric-value {
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 13px;
+  font-size: 12px;
   color: var(--fg-1);
   font-weight: 500;
   overflow: hidden;
@@ -250,32 +342,36 @@
   color: var(--fg-3);
 }
 
-/* Right column (health + chip) */
-.fw-step-rail {
+/* Footer row (chips) */
+.fw-step-foot {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 6px;
-  flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: auto;
+  min-height: 0;
 }
 
+.fw-step-foot:empty {
+  display: none;
+}
+
+/* Health dot — sits in the header row right-aligned */
 .fw-health-dot {
-  /* code-WARN-2 a11y — dot grew from 10×10 to 16×16 to fit the H/W/S/D/E
-     single-letter marker. Letter is the colour-blind-safe channel; the
-     dot color stays for sighted scanability. */
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   box-shadow: 0 0 0 2px var(--bg-surface, #fff);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: #fff;
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
 .fw-health-letter {
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 9px;
+  font-size: 8px;
   font-weight: 700;
   line-height: 1;
   letter-spacing: 0;
@@ -287,26 +383,36 @@
 .fw-health-dot[data-health="dormant"] { background: var(--fg-4, #b8b3a8); }
 .fw-health-dot[data-health="empty"]   { background: transparent; border: 1px dashed var(--border-medium, #cfcbc0); }
 
-/* Hollow `empty` dot — letter color flips to fg so it stays readable. */
 .fw-health-dot[data-health="empty"] .fw-health-letter {
   color: var(--fg-3, #7a7770);
 }
 
 .fw-step-chip-pend {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
   color: #fff;
   background: var(--color-error, #b8412f);
+  letter-spacing: 0.02em;
+}
+
+.fw-step-chip-err {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 8px;
+  color: var(--color-error, #b8412f);
+  background: var(--color-error-bg, rgba(184, 65, 47, 0.08));
+  border: 1px solid var(--color-error-border, rgba(184, 65, 47, 0.25));
   letter-spacing: 0.02em;
 }
 
 .fw-step-chip-disabled {
   font-size: 10px;
   font-weight: 500;
-  padding: 1px 8px;
-  border-radius: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
   color: var(--fg-3);
   background: var(--bg-hover, #eceae3);
   border: 1px dashed var(--border-medium, #cfcbc0);

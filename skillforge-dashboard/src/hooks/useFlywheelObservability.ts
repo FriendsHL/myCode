@@ -43,12 +43,33 @@ interface UseFlywheelObservabilityParams {
 
 interface UseFlywheelObservabilityResult {
   metricsByStep: Record<string, StepMetrics>;
+  /**
+   * FLYWHEEL-FLOWCHART — derived "is this step actively executing right
+   * now?" map per step.id. Used by FlywheelNode to apply the green pulse
+   * ring animation (`fw-node--running` class).
+   *
+   * Rule (PRD spec): true iff `nodeType` is AUTO or HYBRID AND any of:
+   *   - inFlight > 0 (work-in-progress count from per-step metrics), OR
+   *   - the matching system-agent monitor row reports lastRunStatus='running'
+   *     (cron for steps 1 / 3 only — step2 has no monitor entry today)
+   *
+   * USER gates, ENTRY, DORMANT nodes never pulse (USER gates rely on the
+   * static red PEND chip instead; pulsing them would suggest "system is
+   * working" when in fact it's waiting for an operator).
+   */
+  runningByStep: Record<string, boolean>;
   events: ActivityEvent[];
   isLoading: boolean;
   isError: boolean;
   /** First error message, if any (for the panel error banner). */
   errorMsg: string | null;
 }
+
+/** FLYWHEEL-FLOWCHART — map step.id → system-agent monitor row name. */
+const STEP_TO_MONITOR_AGENT: Record<string, string> = {
+  'step1-annotate': 'session-annotator',
+  'step3-attribute': 'attribution-curator',
+};
 
 const STALE_TIME = 30_000;
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
@@ -434,6 +455,39 @@ export function useFlywheelObservability(
     canaryQ,
   ]);
 
+  // ── Running-state derivation (FLYWHEEL-FLOWCHART) ──
+  // Separate useMemo so flowchart edge re-animation doesn't force recomputing
+  // the (much larger) metricsByStep object on monitor-status tick.
+  const runningByStep = useMemo<Record<string, boolean>>(() => {
+    const out: Record<string, boolean> = {};
+    const monitorByName = monitorQ.data
+      ? new Map(monitorQ.data.map((r) => [r.name, r]))
+      : null;
+    for (const step of STEP_CATALOGUE) {
+      if (step.nodeType !== 'auto' && step.nodeType !== 'hybrid') {
+        out[step.id] = false;
+        continue;
+      }
+      // Rule 1 — any work in flight counts as "running".
+      const m = metricsByStep[step.id];
+      if (m && m.inFlight > 0) {
+        out[step.id] = true;
+        continue;
+      }
+      // Rule 2 — system-agent monitor says the cron is mid-run.
+      const agentName = STEP_TO_MONITOR_AGENT[step.id];
+      if (agentName && monitorByName) {
+        const row = monitorByName.get(agentName);
+        if (row && row.lastRunStatus === 'running') {
+          out[step.id] = true;
+          continue;
+        }
+      }
+      out[step.id] = false;
+    }
+    return out;
+  }, [metricsByStep, monitorQ.data]);
+
   // ── Activity feed (top 20 most-recent events across all queried sources) ──
   const events = useMemo<ActivityEvent[]>(() => {
     const out: ActivityEvent[] = [];
@@ -518,6 +572,7 @@ export function useFlywheelObservability(
 
   return {
     metricsByStep,
+    runningByStep,
     events,
     isLoading,
     isError: !!errorMsg,

@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { Suspense, useState, useMemo, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -13,7 +13,11 @@ import PatternDetailDrawer from '../components/insights/PatternDetailDrawer';
 import OptimizationEventsPage from './OptimizationEvents';
 import BehaviorRuleEvolutionPage from './BehaviorRuleEvolution';
 import DynamicSimPage from './DynamicSim';
-import FlywheelObservability from './FlywheelObservability';
+// F5 (code BUNDLE-3) — code-split: reactflow + dagre (~220 KB minified, ~72 KB
+// gzipped) only load when the operator actually clicks the Flywheel tab.
+// Static `import` was pulling those deps into the main Insights chunk even
+// for users who never visit the tab.
+const FlywheelObservability = React.lazy(() => import('./FlywheelObservability'));
 import TabBar from '../components/TabBar';
 import Dropdown from '../components/ui/Dropdown';
 import '../components/insights/insights.css';
@@ -229,7 +233,17 @@ const Insights: React.FC = () => {
       <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - var(--header-height, 44px))' }}>
         <TabBar tabs={INSIGHTS_TABS} activeTab={activeTab} onSwitch={onTabSwitch} />
         <div style={{ flex: 1, minHeight: 0, overflow: 'auto', scrollbarGutter: 'stable' }}>
-          <FlywheelObservability />
+          {/* F5 — Suspense fallback while the lazy FlywheelObservability
+              chunk (reactflow + dagre) downloads on first visit. */}
+          <Suspense
+            fallback={
+              <div style={{ padding: 24, color: 'var(--fg-3)', fontSize: 13 }}>
+                Loading flywheel…
+              </div>
+            }
+          >
+            <FlywheelObservability />
+          </Suspense>
         </div>
       </div>
     );

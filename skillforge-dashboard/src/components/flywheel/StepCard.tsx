@@ -9,9 +9,15 @@ interface StepCardProps {
 }
 
 /**
- * FLYWHEEL-VISUAL-STATUS — single node card. PRD N2: 4-dim observability
- * metric grid (in-flight / today / lag / recent error) + health dot + USER
- * gate `[PEND N]` chip + drill-down link.
+ * FLYWHEEL-FLOWCHART — compact node body used inside React Flow nodes.
+ *
+ * Replaces the original FLYWHEEL-VISUAL-STATUS Phase 2 wide card (4-metric
+ * grid, side rail) which was retired with the rest of the timeline panel.
+ * The DAG node footprint is constrained (~230×110px chosen for dagre
+ * layout); a 4-metric row would crush per-metric labels, so we render
+ * only the two metrics operators read for "is this stage healthy
+ * *right now*?": **in-flight** + **lag**, plus an inline errors chip
+ * when there is real activity to flag.
  *
  * Read-only — PRD N5 forbids action buttons. Card is a `<Link>` when
  * drillDown is set; renders as `<div>` for dormant nodes.
@@ -24,31 +30,14 @@ const StepCard: React.FC<StepCardProps> = React.memo(({ step, metrics }) => {
 
   const inner = (
     <>
-      <div className="fw-step-icon" aria-hidden="true">
-        {nodeIcon(step.nodeType)}
-      </div>
-      <div className="fw-step-body">
-        <div className="fw-step-head">
-          <span className="fw-step-title">{step.title}</span>
-          {step.subtitle && <span className="fw-step-sub">{step.subtitle}</span>}
-        </div>
-        <div className="fw-step-metrics" data-testid={`metrics-${step.id}`}>
-          <Metric label="in-flight" value={fmtCount(metrics, metrics.inFlight)} />
-          <Metric label="today" value={fmtCount(metrics, metrics.todayCount)} />
-          <Metric label="lag" value={isDormant ? '—' : lag} muted={isDormant} />
-          <Metric
-            label="errors 24h"
-            value={isDormant ? '—' : fmtCount(metrics, metrics.recentErrorCount)}
-            muted={isDormant || metrics.recentErrorCount === 0}
-          />
-        </div>
-      </div>
-      <div className="fw-step-rail">
-        {/* code-WARN-2 a11y — colour-only health encoding fails operators
-            with deuteranopia / protanopia. Pair the colored dot with a
-            single-letter marker (H/W/S/D/E) so the channel is dual-coded.
-            The aria-label on the dot still reads the full word for screen
-            readers. */}
+      <div className="fw-step-head">
+        <span className="fw-step-icon" aria-hidden="true">
+          {nodeIcon(step.nodeType)}
+        </span>
+        <span className="fw-step-title">{step.title}</span>
+        {/* a11y — dual channel: colored dot + single-letter marker for
+            deuteranopia / protanopia. H/W/S/D/E correspond to PRD N3
+            health buckets. aria-label reads the full word. */}
         <span
           className="fw-health-dot"
           data-health={health}
@@ -59,6 +48,16 @@ const StepCard: React.FC<StepCardProps> = React.memo(({ step, metrics }) => {
             {healthLetter(health)}
           </span>
         </span>
+      </div>
+      <div className="fw-step-metrics" data-testid={`metrics-${step.id}`}>
+        <Metric label="in-flight" value={fmtCount(metrics, metrics.inFlight)} />
+        <Metric
+          label="lag"
+          value={isDormant ? '—' : lag}
+          muted={isDormant}
+        />
+      </div>
+      <div className="fw-step-foot">
         {step.nodeType === 'user' && pend > 0 && (
           <span
             className="fw-step-chip-pend"
@@ -66,6 +65,15 @@ const StepCard: React.FC<StepCardProps> = React.memo(({ step, metrics }) => {
             title={`${pend} pending action${pend === 1 ? '' : 's'}`}
           >
             PEND {pend}
+          </span>
+        )}
+        {!isDormant && metrics.recentErrorCount > 0 && (
+          <span
+            className="fw-step-chip-err"
+            data-testid={`err-chip-${step.id}`}
+            title={`${metrics.recentErrorCount} error${metrics.recentErrorCount === 1 ? '' : 's'} in last 24h`}
+          >
+            ERR {fmtCount(metrics, metrics.recentErrorCount)}
           </span>
         )}
         {isDormant && (
@@ -140,9 +148,9 @@ function nodeIcon(t: StepDescriptor['nodeType']): string {
 }
 
 /**
- * code-WARN-2 a11y — single-letter marker so the dot color isn't the only
- * channel carrying the health status. H/W/S/D/E correspond to PRD N3
- * health buckets (Healthy / Warn / Stale / Dormant / Empty).
+ * a11y — single-letter marker so the dot color isn't the only channel
+ * carrying the health status. H/W/S/D/E correspond to PRD N3 health
+ * buckets (Healthy / Warn / Stale / Dormant / Empty).
  */
 function healthLetter(h: ReturnType<typeof computeHealth>): string {
   switch (h) {
