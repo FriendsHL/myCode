@@ -98,6 +98,11 @@ public class SessionAnnotationSignalService {
      * and persist one annotation row per (session × reason) into
      * {@code t_session_annotation}.
      *
+     * <p>Backward-compat 1-arg form — equivalent to
+     * {@code detectAndPersist(window, null)}. Cron-driven callers (hourly task
+     * #5 session-annotator + the legacy {@code DetectSignalAnnotationsTool}
+     * without {@code agentId}) get the original cross-agent behavior.
+     *
      * @param window look-back window (e.g. {@code Duration.ofHours(1)}).
      *               Must be positive; non-positive values throw IllegalArgumentException
      *               to avoid silently scanning the entire history.
@@ -107,6 +112,25 @@ public class SessionAnnotationSignalService {
      */
     @Transactional
     public int detectAndPersist(Duration window) {
+        return detectAndPersist(window, null);
+    }
+
+    /**
+     * FLYWHEEL-PER-AGENT-RUN-NOW (2026-05-21) — 2-arg overload with scope filter.
+     *
+     * <p>{@code agentIdFilter=null} → original cron behavior (every production
+     * agent's session is in scope). {@code agentIdFilter} non-null → restricts
+     * the scan to a single agent for the on-demand
+     * {@code POST /api/flywheel/agents/{id}/run-loop} dispatch path. Same
+     * idempotency guarantee as the 1-arg form (UNIQUE constraint on
+     * {@code (session_id, annotation_type, annotation_value, source)}).
+     *
+     * @param window         look-back window (positive Duration).
+     * @param agentIdFilter  optional agent id to restrict the scan; {@code null}
+     *                       = scan all production agents (cron behavior).
+     */
+    @Transactional
+    public int detectAndPersist(Duration window, Long agentIdFilter) {
         if (window == null || window.isZero() || window.isNegative()) {
             throw new IllegalArgumentException("window must be a positive Duration; got " + window);
         }
@@ -118,9 +142,10 @@ public class SessionAnnotationSignalService {
         // downstream PatternClusterService + CanaryMetricsService isolation
         // (they consume rows we write here).
         List<SessionEntity> sessions = sessionRepository.findCompletedByOriginSince(
-                SessionEntity.ORIGIN_PRODUCTION, since);
+                SessionEntity.ORIGIN_PRODUCTION, since, agentIdFilter);
         if (sessions.isEmpty()) {
-            log.info("[signal] no production sessions completed in window {} since {}", window, since);
+            log.info("[signal] no production sessions completed in window {} since {} agentIdFilter={}",
+                    window, since, agentIdFilter);
             return 0;
         }
 
@@ -136,8 +161,8 @@ public class SessionAnnotationSignalService {
                 log.warn("[signal] sessionId={} annotation failed: {}", session.getId(), e.getMessage(), e);
             }
         }
-        log.info("[signal] window={} since={} sessions={} annotationsWritten={}",
-                window, since, sessions.size(), totalWritten);
+        log.info("[signal] window={} since={} agentIdFilter={} sessions={} annotationsWritten={}",
+                window, since, agentIdFilter, sessions.size(), totalWritten);
         return totalWritten;
     }
 
@@ -180,11 +205,39 @@ public class SessionAnnotationSignalService {
      */
     @Transactional(readOnly = true)
     public List<SessionNeedingLlmDto> findSessionsNeedingLlmAnnotation(int limit) {
+        return findSessionsNeedingLlmAnnotation(limit, null);
+    }
+
+    /**
+     * FLYWHEEL-PER-AGENT-RUN-NOW r2 fix (2026-05-21): overload accepting an
+     * optional {@code agentIdFilter}. When non-null, the 3-tier prioritisation
+     * (user → system → orphan fallback) is bypassed and we scan ONLY rows for
+     * the specified agent — prevents the on-demand per-agent loop from
+     * silently annotating other agents' pending sessions (code-reviewer r1
+     * W2: scope leak).
+     *
+     * <p>When {@code agentIdFilter == null} (cron path) the original 3-tier
+     * behaviour is preserved byte-identically.
+     */
+    @Transactional(readOnly = true)
+    public List<SessionNeedingLlmDto> findSessionsNeedingLlmAnnotation(int limit, Long agentIdFilter) {
         int capped = Math.max(1, Math.min(limit, DEFAULT_LLM_QUEUE_LIMIT));
         int overFetch = capped * 3;
 
         // Preserve insertion order = priority order (user → system → orphan).
         LinkedHashMap<String, List<String>> reasonsBySession = new LinkedHashMap<>();
+
+        if (agentIdFilter != null) {
+            // PER-AGENT SCOPE: skip 3-tier prioritisation. Scope-leak guard:
+            // only enqueue sessions belonging to the requested agent so a
+            // dashboard "Run loop on agent X" trigger never annotates other
+            // agents' pending sessions.
+            accumulateReasons(reasonsBySession,
+                    sessionAnnotationRepository.findRecentBySourceAndAgentId(
+                            SessionAnnotationEntity.SOURCE_SIGNAL, agentIdFilter, overFetch));
+            removeAlreadyLlmAnnotated(reasonsBySession);
+            return materialiseQueue(reasonsBySession, capped);
+        }
 
         // Tier 1: user-agent signals (F7 priority).
         accumulateReasons(reasonsBySession,
@@ -215,6 +268,16 @@ public class SessionAnnotationSignalService {
             removeAlreadyLlmAnnotated(reasonsBySession);
         }
 
+        return materialiseQueue(reasonsBySession, capped);
+    }
+
+    /**
+     * Extract the post-tier "load session names + cap to size" tail logic into
+     * a helper so the per-agent overload (FLYWHEEL-PER-AGENT-RUN-NOW r2 fix)
+     * can reuse it after its single-tier scan.
+     */
+    private List<SessionNeedingLlmDto> materialiseQueue(LinkedHashMap<String, List<String>> reasonsBySession,
+                                                         int capped) {
         if (reasonsBySession.isEmpty()) {
             return Collections.emptyList();
         }

@@ -75,7 +75,7 @@ class SessionAnnotationSignalServiceTest {
         LlmSpanEntity toolErr = span("span-1", "trace-1", "tool", "ok");
         toolErr.setError("Tool execution failed");
 
-        when(sessionRepository.findCompletedByOriginSince(eq("production"), any(Instant.class)))
+        when(sessionRepository.findCompletedByOriginSince(eq("production"), any(Instant.class), org.mockito.ArgumentMatchers.isNull()))
                 .thenReturn(List.of(session));
         when(llmTraceRepository.findBySessionIdAndOriginOrderByStartedAtDesc("sess-1", "production"))
                 .thenReturn(List.of(trace));
@@ -117,7 +117,7 @@ class SessionAnnotationSignalServiceTest {
         LlmTraceEntity trace = trace("trace-2", "trace-2", "sess-2", 42L, "error", 0, 0, 0);
         trace.setError("Agent loop failed");  // → agent_error reason
 
-        when(sessionRepository.findCompletedByOriginSince(eq("production"), any(Instant.class)))
+        when(sessionRepository.findCompletedByOriginSince(eq("production"), any(Instant.class), org.mockito.ArgumentMatchers.isNull()))
                 .thenReturn(List.of(session));
         when(llmTraceRepository.findBySessionIdAndOriginOrderByStartedAtDesc("sess-2", "production"))
                 .thenReturn(List.of(trace));
@@ -144,7 +144,7 @@ class SessionAnnotationSignalServiceTest {
         // SessionRepository query is the authoritative filter; this test asserts the
         // service passes 'production' (not 'eval', not null) when scanning. Stubbing
         // the production filter to return empty proves no fallback scan exists.
-        when(sessionRepository.findCompletedByOriginSince(eq("production"), any(Instant.class)))
+        when(sessionRepository.findCompletedByOriginSince(eq("production"), any(Instant.class), org.mockito.ArgumentMatchers.isNull()))
                 .thenReturn(List.of());
 
         int written = service.detectAndPersist(Duration.ofHours(1));
@@ -160,7 +160,7 @@ class SessionAnnotationSignalServiceTest {
     @Test
     @DisplayName("detectAndPersist returns zero when no matching sessions")
     void detectAndPersist_returnsZero_whenNoMatchingSessions() {
-        when(sessionRepository.findCompletedByOriginSince(eq("production"), any(Instant.class)))
+        when(sessionRepository.findCompletedByOriginSince(eq("production"), any(Instant.class), org.mockito.ArgumentMatchers.isNull()))
                 .thenReturn(List.of());
 
         assertThat(service.detectAndPersist(Duration.ofHours(2))).isEqualTo(0);
@@ -175,6 +175,41 @@ class SessionAnnotationSignalServiceTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> service.detectAndPersist(null))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("FLYWHEEL-PER-AGENT-RUN-NOW: detectAndPersist(window, agentId) threads agentId to repository query")
+    void detectAndPersist_withAgentIdFilter_threadsToRepository() {
+        // Stub the agentId-aware lookup. Default-method overload (2-arg) will
+        // route through the abstract 3-arg method; here we exercise the
+        // service's 2-arg overload directly.
+        when(sessionRepository.findCompletedByOriginSince(eq("production"), any(Instant.class), eq(99L)))
+                .thenReturn(List.of());
+
+        int written = service.detectAndPersist(Duration.ofHours(1), 99L);
+
+        assertThat(written).isEqualTo(0);
+        // Verify the agentId arg landed on the repo call exactly as supplied —
+        // critical for the per-agent scope filter not silently degrading to
+        // the cross-agent scan.
+        ArgumentCaptor<Long> agentIdCap = ArgumentCaptor.forClass(Long.class);
+        verify(sessionRepository).findCompletedByOriginSince(eq("production"), any(Instant.class), agentIdCap.capture());
+        assertThat(agentIdCap.getValue()).isEqualTo(99L);
+    }
+
+    @Test
+    @DisplayName("FLYWHEEL-PER-AGENT-RUN-NOW: 1-arg detectAndPersist(window) delegates to 2-arg with null filter (cron preserved)")
+    void detectAndPersist_oneArgOverload_passesNullAgentIdFilter() {
+        when(sessionRepository.findCompletedByOriginSince(eq("production"), any(Instant.class), org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(List.of());
+
+        service.detectAndPersist(Duration.ofHours(1));
+
+        ArgumentCaptor<Long> agentIdCap = ArgumentCaptor.forClass(Long.class);
+        verify(sessionRepository).findCompletedByOriginSince(eq("production"), any(Instant.class), agentIdCap.capture());
+        // Cron path must call with null — preserving the original cross-agent
+        // semantics that V75's hourly task relies on.
+        assertThat(agentIdCap.getValue()).isNull();
     }
 
     @Test

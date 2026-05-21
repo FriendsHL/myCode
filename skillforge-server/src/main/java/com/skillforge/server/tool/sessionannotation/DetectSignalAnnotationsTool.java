@@ -64,7 +64,10 @@ public class DetectSignalAnnotationsTool implements Tool {
                 + "and persist source='signal' rows into t_session_annotation. Idempotent "
                 + "on re-run via UNIQUE constraint. Returns the next batch of sessions "
                 + "(cap " + LLM_QUEUE_LIMIT + ") that still need source='llm' annotation "
-                + "from STEP 2 (AnnotateSession). No LLM judgment performed here.";
+                + "from STEP 2 (AnnotateSession). No LLM judgment performed here. "
+                + "Optional agent_id restricts the scan to a single agent's sessions "
+                + "(for the on-demand per-agent loop trigger); omit it for the "
+                + "default cron behavior that scans every production agent.";
     }
 
     @Override
@@ -80,10 +83,19 @@ public class DetectSignalAnnotationsTool implements Tool {
                 "type", "integer",
                 "description", "Look-back window in hours (default " + DEFAULT_WINDOW_HOURS
                         + ", clamped to [" + MIN_WINDOW_HOURS + ", " + MAX_WINDOW_HOURS + "])."));
+        // FLYWHEEL-PER-AGENT-RUN-NOW (2026-05-21): optional scope filter. The
+        // hourly cron path never sets this (user message "Process all"); the
+        // on-demand per-agent loop trigger sets agent_id=<id> in the user
+        // message so the agent threads it to this tool.
+        properties.put("agent_id", Map.of(
+                "type", "integer",
+                "description", "Optional agent id to restrict the scan to a single "
+                        + "agent's sessions. Omit it for the default cron behavior "
+                        + "that scans every production agent."));
         Map<String, Object> schema = new LinkedHashMap<>();
         schema.put("type", "object");
         schema.put("properties", properties);
-        // window_hours intentionally not required — sensible default keeps the agent prompt simple.
+        // window_hours + agent_id intentionally not required — sensible defaults keep the agent prompt simple.
         return new ToolSchema(getName(), getDescription(), schema);
     }
 
@@ -91,14 +103,31 @@ public class DetectSignalAnnotationsTool implements Tool {
     public SkillResult execute(Map<String, Object> input, SkillContext context) {
         try {
             int windowHours = DEFAULT_WINDOW_HOURS;
+            Long agentIdFilter = null;
             if (input != null) {
                 windowHours = SkillInputUtils.toInt(input.get("window_hours"), DEFAULT_WINDOW_HOURS);
+                Object agentIdRaw = input.get("agent_id");
+                if (agentIdRaw != null) {
+                    // toLong returns null on unparseable input (e.g. LLM wrote
+                    // "all" or omitted the value as a string). Treat null +
+                    // 0 + negative all as "drop the filter, scan everything"
+                    // — caller wanting the on-demand scope must supply a real
+                    // positive agent id.
+                    Long parsed = SkillInputUtils.toLong(agentIdRaw);
+                    if (parsed != null && parsed > 0L) {
+                        agentIdFilter = parsed;
+                    }
+                }
             }
             if (windowHours < MIN_WINDOW_HOURS) windowHours = MIN_WINDOW_HOURS;
             if (windowHours > MAX_WINDOW_HOURS) windowHours = MAX_WINDOW_HOURS;
 
-            int signalCount = signalService.detectAndPersist(Duration.ofHours(windowHours));
-            List<SessionNeedingLlmDto> queue = signalService.findSessionsNeedingLlmAnnotation(LLM_QUEUE_LIMIT);
+            int signalCount = signalService.detectAndPersist(Duration.ofHours(windowHours), agentIdFilter);
+            // r2 fix (code-reviewer W2 scope leak): when agentIdFilter is set,
+            // the LLM queue must also filter by agent — otherwise on-demand
+            // "Run loop on agent X" silently annotates other agents' pending
+            // sessions. cron path (agentIdFilter=null) preserves 3-tier behaviour.
+            List<SessionNeedingLlmDto> queue = signalService.findSessionsNeedingLlmAnnotation(LLM_QUEUE_LIMIT, agentIdFilter);
 
             List<Map<String, Object>> queueOut = new ArrayList<>(queue.size());
             for (SessionNeedingLlmDto dto : queue) {
@@ -112,9 +141,10 @@ public class DetectSignalAnnotationsTool implements Tool {
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("signal_count", signalCount);
             payload.put("window_hours", windowHours);
+            payload.put("agent_id", agentIdFilter);
             payload.put("sessions_needing_llm", queueOut);
-            log.info("DetectSignalAnnotationsTool: windowHours={} signalCount={} queueSize={}",
-                    windowHours, signalCount, queueOut.size());
+            log.info("DetectSignalAnnotationsTool: windowHours={} agentIdFilter={} signalCount={} queueSize={}",
+                    windowHours, agentIdFilter, signalCount, queueOut.size());
             return SkillResult.success(objectMapper.writeValueAsString(payload));
         } catch (Exception e) {
             log.error("DetectSignalAnnotationsTool execute failed", e);

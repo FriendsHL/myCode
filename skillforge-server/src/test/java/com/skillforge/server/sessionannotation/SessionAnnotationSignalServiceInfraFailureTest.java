@@ -64,7 +64,7 @@ class SessionAnnotationSignalServiceInfraFailureTest {
     void zeroMessageErrorEmptyTraces_writesSyntheticAgentError() {
         SessionEntity sess = infraFailureSession("sess-infra-1");
 
-        when(sessionRepository.findCompletedByOriginSince(eq("production"), any(Instant.class)))
+        when(sessionRepository.findCompletedByOriginSince(eq("production"), any(Instant.class), org.mockito.ArgumentMatchers.isNull()))
                 .thenReturn(List.of(sess));
         when(llmTraceRepository.findBySessionIdAndOriginOrderByStartedAtDesc("sess-infra-1", "production"))
                 .thenReturn(List.of());
@@ -102,7 +102,7 @@ class SessionAnnotationSignalServiceInfraFailureTest {
     void zeroMessageErrorEmptyTraces_idempotentOnRerun() {
         SessionEntity sess = infraFailureSession("sess-infra-2");
 
-        when(sessionRepository.findCompletedByOriginSince(eq("production"), any(Instant.class)))
+        when(sessionRepository.findCompletedByOriginSince(eq("production"), any(Instant.class), org.mockito.ArgumentMatchers.isNull()))
                 .thenReturn(List.of(sess));
         when(llmTraceRepository.findBySessionIdAndOriginOrderByStartedAtDesc("sess-infra-2", "production"))
                 .thenReturn(List.of());
@@ -126,7 +126,7 @@ class SessionAnnotationSignalServiceInfraFailureTest {
         sess.setMessageCount(0);
         sess.setRuntimeStatus("idle");  // critical: NOT 'error'
 
-        when(sessionRepository.findCompletedByOriginSince(eq("production"), any(Instant.class)))
+        when(sessionRepository.findCompletedByOriginSince(eq("production"), any(Instant.class), org.mockito.ArgumentMatchers.isNull()))
                 .thenReturn(List.of(sess));
         when(llmTraceRepository.findBySessionIdAndOriginOrderByStartedAtDesc("sess-idle-1", "production"))
                 .thenReturn(List.of());
@@ -145,7 +145,7 @@ class SessionAnnotationSignalServiceInfraFailureTest {
         sess.setMessageCount(3);  // critical: had user/assistant exchange before crash
         sess.setRuntimeStatus("error");
 
-        when(sessionRepository.findCompletedByOriginSince(eq("production"), any(Instant.class)))
+        when(sessionRepository.findCompletedByOriginSince(eq("production"), any(Instant.class), org.mockito.ArgumentMatchers.isNull()))
                 .thenReturn(List.of(sess));
         when(llmTraceRepository.findBySessionIdAndOriginOrderByStartedAtDesc("sess-mid-1", "production"))
                 .thenReturn(List.of());

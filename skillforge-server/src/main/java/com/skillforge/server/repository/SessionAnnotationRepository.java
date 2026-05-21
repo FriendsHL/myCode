@@ -80,6 +80,28 @@ public interface SessionAnnotationRepository
             @Param("lim") int lim);
 
     /**
+     * FLYWHEEL-PER-AGENT-RUN-NOW r2 fix (2026-05-21): recent signal rows scoped
+     * to a single {@code t_session.agent_id}. Used by
+     * {@link com.skillforge.server.sessionannotation.SessionAnnotationSignalService#findSessionsNeedingLlmAnnotation(int, Long)}
+     * on-demand path so per-agent trigger does NOT scope-leak to other agents'
+     * pending-LLM sessions (code-reviewer r1 W2 fix — without this Tool's
+     * scope hint was honored for signal detection but lost at LLM queue
+     * lookup, silently annotating unrelated agents' sessions).
+     */
+    @Query(value = """
+            SELECT sa.* FROM t_session_annotation sa
+              JOIN t_session s ON s.id = sa.session_id
+             WHERE sa.source = :source
+               AND s.agent_id = :agentId
+             ORDER BY sa.created_at DESC, sa.id DESC
+             LIMIT :lim
+            """, nativeQuery = true)
+    List<SessionAnnotationEntity> findRecentBySourceAndAgentId(
+            @Param("source") String source,
+            @Param("agentId") Long agentId,
+            @Param("lim") int lim);
+
+    /**
      * Phase 1.2: of the given {@code sessionIds}, returns those that already have
      * ≥ 1 row with the given {@code source} (typically {@code source='llm'}).
      * Used to filter the signal queue down to sessions still pending LLM annotation.

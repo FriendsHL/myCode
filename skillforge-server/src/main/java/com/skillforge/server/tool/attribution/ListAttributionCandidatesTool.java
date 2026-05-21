@@ -90,7 +90,10 @@ public class ListAttributionCandidatesTool implements Tool {
                 + "Unrouted candidates leave their sentinels behind — "
                 + "cleanupOrphanSentinels() sweeps them at the next hour. "
                 + "max is optional (default " + DEFAULT_MAX
-                + ", clamped to [" + MIN_MAX + ", " + MAX_MAX + "]).";
+                + ", clamped to [" + MIN_MAX + ", " + MAX_MAX + "]). "
+                + "Optional agent_id_filter restricts the scan to a single "
+                + "agent's patterns (for the on-demand per-agent loop trigger); "
+                + "omit it for the default cron behavior that scans every agent.";
     }
 
     @Override
@@ -107,6 +110,13 @@ public class ListAttributionCandidatesTool implements Tool {
                 "description", "Optional cap on candidates to reserve this run "
                         + "(default " + DEFAULT_MAX + ", clamped to ["
                         + MIN_MAX + ", " + MAX_MAX + "])."));
+        // FLYWHEEL-PER-AGENT-RUN-NOW (2026-05-21): optional scope filter for the
+        // on-demand per-agent loop trigger. Hourly cron path never sets this.
+        properties.put("agent_id_filter", Map.of(
+                "type", "integer",
+                "description", "Optional agent id to restrict the scan to a single "
+                        + "agent's patterns. Omit it for the default cron behavior "
+                        + "that scans every agent's patterns."));
 
         Map<String, Object> schema = new LinkedHashMap<>();
         schema.put("type", "object");
@@ -118,8 +128,20 @@ public class ListAttributionCandidatesTool implements Tool {
     @Override
     public SkillResult execute(Map<String, Object> input, SkillContext context) {
         int max = DEFAULT_MAX;
+        Long agentIdFilter = null;
         if (input != null) {
             max = SkillInputUtils.toInt(input.get("max"), DEFAULT_MAX);
+            Object agentIdRaw = input.get("agent_id_filter");
+            if (agentIdRaw != null) {
+                // Match DetectSignalAnnotationsTool's scope-filter contract:
+                // null / 0 / negative / unparseable all collapse to "no
+                // filter" — caller wanting the on-demand scope must supply a
+                // real positive agent id.
+                Long parsed = SkillInputUtils.toLong(agentIdRaw);
+                if (parsed != null && parsed > 0L) {
+                    agentIdFilter = parsed;
+                }
+            }
         }
         // Defensive clamp: LLM-supplied input is untrusted. Caller asking
         // "0 or negative" is honored with MIN_MAX (1) rather than silently
@@ -128,7 +150,7 @@ public class ListAttributionCandidatesTool implements Tool {
         max = Math.max(MIN_MAX, Math.min(MAX_MAX, max));
 
         try {
-            CandidateListResult result = dispatcherService.listAndReserveCandidates(max);
+            CandidateListResult result = dispatcherService.listAndReserveCandidates(max, agentIdFilter);
             List<Map<String, Object>> items = new ArrayList<>(result.candidates().size());
             for (CandidateEntry c : result.candidates()) {
                 Map<String, Object> row = new LinkedHashMap<>();
@@ -151,6 +173,7 @@ public class ListAttributionCandidatesTool implements Tool {
             payload.put("total_scanned", result.totalScanned());
             payload.put("filtered_out", result.filteredOut());
             payload.put("reserved_count", items.size());
+            payload.put("agent_id_filter", agentIdFilter);
             return SkillResult.success(objectMapper.writeValueAsString(payload));
         } catch (Exception e) {
             // Mirrors the legacy DispatchAttributionPatternsTool W4 fix:

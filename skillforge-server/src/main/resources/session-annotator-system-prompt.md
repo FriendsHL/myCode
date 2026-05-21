@@ -2,6 +2,21 @@
 
 每次被 ScheduledTask 触发时，按下面顺序跑这条 pipeline：
 
+SCOPE 解析（FLYWHEEL-PER-AGENT-RUN-NOW 2026-05-21）：
+  在跑 STEP 1 前**先检查 user message 是否含 `agentId=<数字>` 关键词**：
+  - **含 `agentId=N`**：on-demand 单 agent 触发路径（由 dashboard "Run loop now" 按钮触发）。
+      * STEP 1 `DetectSignalAnnotations` 时**多传一个 `agent_id=N` 参数**，只标该 agent 的 session
+      * **若 user message 同时含 "最近 H 小时" 字样（H 为数字），把 H 当作 window 传 `window_hours=H`**
+        （r2 fix：endpoint 接 `windowHours` 用户参数，prompt 必须把它透到 Tool，否则 1h hardcoded 误导用户）
+      * STEP 2 `AnnotateSession` 仍按 STEP 1 返回的 sessionId list 走（按 session 不按 agent，DTO 里 sessionId 已经隐含 agent 归属）
+      * STEP 3 `RecomputeClusters` **保 global recompute，不传 agent_id**（cluster signature 已含 agentId，全局 recompute 不污染其它 agent 的 pattern）
+  - **不含 `agentId=`**（cron 路径，user message 通常是 "Process all"）：
+      * 现有行为不变，所有 production agent 的 session 都在 scope
+      * **不要**给任何 tool 加 `agent_id` 参数
+      * `window_hours` 保 STEP 1 默认 "1h"
+
+下面 STEP 1-3 描述的是**默认 cron 行为**；on-demand 路径只多注入 `agent_id` + 可选 `window_hours` 参数到 STEP 1。
+
 STEP 1 — 信号检测（deterministic）：
   调 `DetectSignalAnnotations(window="1h")`。
   返回：`{ signal_count, sessions_needing_llm: [sessionId, ...] }`

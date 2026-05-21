@@ -378,4 +378,56 @@ class AttributionDispatcherServiceTest {
         verify(sessionService, never()).createSession(anyLong(), anyLong());
         verify(chatService, never()).chatAsync(anyString(), anyString(), anyLong());
     }
+
+    // ─── FLYWHEEL-PER-AGENT-RUN-NOW (2026-05-21): scope-filter overload ───
+
+    @Test
+    @DisplayName("listAndReserveCandidates(max, null) → patternRepository called with agentId=null (cron behavior preserved)")
+    void listAndReserveCandidates_nullAgentIdFilter_passesNullToRepository() {
+        when(patternRepository.findWithFilters(any(), any(), any(), any(Pageable.class)))
+                .thenReturn(List.of(pattern(42L, OptimizationEventEntity.SURFACE_SKILL, 5)));
+
+        AttributionDispatcherService.CandidateListResult result =
+                service.listAndReserveCandidates(10, null);
+
+        assertThat(result.candidates()).hasSize(1);
+        // Capture the actual agentId arg passed to the repo: must be null so
+        // the JPQL `(:agentId IS NULL OR p.agentId = :agentId)` clause
+        // degenerates to "no agent filter" (cron behavior).
+        org.mockito.ArgumentCaptor<Long> agentIdCap = org.mockito.ArgumentCaptor.forClass(Long.class);
+        verify(patternRepository).findWithFilters(any(), any(), agentIdCap.capture(), any(Pageable.class));
+        assertThat(agentIdCap.getValue()).isNull();
+    }
+
+    @Test
+    @DisplayName("listAndReserveCandidates(max, 42L) → patternRepository called with agentId=42L (scope filter active)")
+    void listAndReserveCandidates_withAgentIdFilter_passesIdToRepository() {
+        when(patternRepository.findWithFilters(any(), any(), any(), any(Pageable.class)))
+                .thenReturn(List.of(pattern(42L, OptimizationEventEntity.SURFACE_SKILL, 5)));
+
+        AttributionDispatcherService.CandidateListResult result =
+                service.listAndReserveCandidates(10, 42L);
+
+        assertThat(result.candidates()).hasSize(1);
+        assertThat(result.candidates().get(0).patternId()).isEqualTo(42L);
+
+        org.mockito.ArgumentCaptor<Long> agentIdCap = org.mockito.ArgumentCaptor.forClass(Long.class);
+        verify(patternRepository).findWithFilters(any(), any(), agentIdCap.capture(), any(Pageable.class));
+        assertThat(agentIdCap.getValue()).isEqualTo(42L);
+    }
+
+    @Test
+    @DisplayName("1-arg overload listAndReserveCandidates(max) preserved → delegates to 2-arg with null filter")
+    void listAndReserveCandidates_oneArgOverload_isBackwardCompatible() {
+        when(patternRepository.findWithFilters(any(), any(), any(), any(Pageable.class)))
+                .thenReturn(List.of());
+
+        AttributionDispatcherService.CandidateListResult result =
+                service.listAndReserveCandidates(10);
+
+        assertThat(result.candidates()).isEmpty();
+        org.mockito.ArgumentCaptor<Long> agentIdCap = org.mockito.ArgumentCaptor.forClass(Long.class);
+        verify(patternRepository).findWithFilters(any(), any(), agentIdCap.capture(), any(Pageable.class));
+        assertThat(agentIdCap.getValue()).isNull();
+    }
 }

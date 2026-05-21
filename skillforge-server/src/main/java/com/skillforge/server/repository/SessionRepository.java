@@ -203,6 +203,14 @@ public interface SessionRepository extends JpaRepository<SessionEntity, String> 
      * for hourly signal annotation. Sub sessions (parentSessionId NOT NULL) and eval
      * sessions (origin='eval') are excluded — we only annotate the user-facing
      * production traffic.
+     *
+     * <p>FLYWHEEL-PER-AGENT-RUN-NOW (2026-05-21): {@code agentIdFilter} is optional
+     * — {@code null} keeps the original cron behavior (all production agents).
+     * Non-null restricts the scan to a single agent for the on-demand
+     * per-agent loop trigger ({@code POST /api/flywheel/agents/{id}/run-loop}).
+     * Kept as a single overloaded query (vs adding a second method) so the
+     * cron / on-demand paths share one source of truth on the parentSessionId /
+     * origin / completedAt invariants.
      */
     @Query("""
             SELECT s FROM SessionEntity s
@@ -210,9 +218,20 @@ public interface SessionRepository extends JpaRepository<SessionEntity, String> 
               AND s.origin = :origin
               AND s.completedAt IS NOT NULL
               AND s.completedAt >= :since
+              AND (:agentIdFilter IS NULL OR s.agentId = :agentIdFilter)
             ORDER BY s.completedAt ASC
             """)
     List<SessionEntity> findCompletedByOriginSince(
             @Param("origin") String origin,
-            @Param("since") java.time.Instant since);
+            @Param("since") java.time.Instant since,
+            @Param("agentIdFilter") Long agentIdFilter);
+
+    /**
+     * Backward-compat overload — defaults {@code agentIdFilter=null} so existing
+     * hourly-cron callers keep their original "scan all production agents"
+     * behavior without churn. New on-demand callers use the 3-arg variant.
+     */
+    default List<SessionEntity> findCompletedByOriginSince(String origin, java.time.Instant since) {
+        return findCompletedByOriginSince(origin, since, null);
+    }
 }

@@ -287,7 +287,10 @@ public class AttributionDispatcherService {
         }
         Long curatorAgentId = curatorOpt.get().getId();
 
-        FilterScanOutcome scan = scanAndReserve(cap);
+        // Legacy fan-out keeps the cross-agent scope (null filter) — only the
+        // on-demand per-agent loop endpoint (Phase FLYWHEEL-PER-AGENT-RUN-NOW)
+        // narrows by agentId via listAndReserveCandidates(max, agentIdFilter).
+        FilterScanOutcome scan = scanAndReserve(cap, null);
 
         int dispatched = 0;
         for (CandidateEntry candidate : scan.candidates()) {
@@ -342,8 +345,33 @@ public class AttributionDispatcherService {
      *            {@link #DEFAULT_MAX_DISPATCH_PER_RUN}
      */
     public CandidateListResult listAndReserveCandidates(int max) {
+        return listAndReserveCandidates(max, null);
+    }
+
+    /**
+     * FLYWHEEL-PER-AGENT-RUN-NOW (2026-05-21) — 2-arg overload with scope filter.
+     *
+     * <p>{@code agentIdFilter=null} → cron behavior (every pattern in scope —
+     * same as the 1-arg form). Non-null → restricts the scan to a single
+     * agent's patterns via {@link SessionPatternRepository#findWithFilters}
+     * (which already accepts a nullable {@code agentId}). All 4 ratify-locked
+     * filters + sentinel reservation semantics are identical between the two
+     * scopes — the only difference is the upstream pattern set.
+     *
+     * <p>Used by the on-demand
+     * {@code POST /api/flywheel/agents/{id}/run-loop} dispatch path so the
+     * operator's "run my agent's flywheel now" click only walks patterns
+     * belonging to that agent (cluster signatures already encode agentId, so
+     * a per-agent filter does not pollute other agents' patterns either way —
+     * the filter is mostly a budget cap on sentinel rows produced per click).
+     *
+     * @param max            maximum candidates to return; values ≤0 fall back to
+     *                       {@link #DEFAULT_MAX_DISPATCH_PER_RUN}
+     * @param agentIdFilter  optional agent id; {@code null} = cron behavior.
+     */
+    public CandidateListResult listAndReserveCandidates(int max, Long agentIdFilter) {
         int cap = max > 0 ? max : DEFAULT_MAX_DISPATCH_PER_RUN;
-        FilterScanOutcome scan = scanAndReserve(cap);
+        FilterScanOutcome scan = scanAndReserve(cap, agentIdFilter);
         int filteredOut = scan.skippedSurface() + scan.skippedCooldown() + scan.skippedActive()
                 + scan.skippedMemberCount();
         return new CandidateListResult(scan.candidates(), scan.scanned(), filteredOut);
@@ -354,14 +382,20 @@ public class AttributionDispatcherService {
      * {@link #dispatchPendingPatterns(int)} (legacy Java fan-out) and
      * {@link #listAndReserveCandidates(int)} (new LLM-orchestrated path). One
      * source of truth for filter semantics + sentinel write ordering.
+     *
+     * <p>FLYWHEEL-PER-AGENT-RUN-NOW: {@code agentIdFilter} threads to
+     * {@link SessionPatternRepository#findWithFilters} ({@code null} = no
+     * filter, original cron behavior).
      */
-    private FilterScanOutcome scanAndReserve(int cap) {
-        // Wide scan: filter null on all dims so we see every pattern. Page size 100
-        // is a defensive ceiling — V1 dogfood produces <20 distinct patterns per
-        // recompute cycle in current data. SCAN_PAGE_SIZE bump is a one-line
-        // change if observed pattern count rises.
+    private FilterScanOutcome scanAndReserve(int cap, Long agentIdFilter) {
+        // Wide scan: filter null on outcome / surface so we see every pattern
+        // (the dispatcher applies its own filter set downstream); only agentId
+        // is conditionally narrowed for the on-demand per-agent loop trigger.
+        // Page size 100 is a defensive ceiling — V1 dogfood produces <20
+        // distinct patterns per recompute cycle in current data. SCAN_PAGE_SIZE
+        // bump is a one-line change if observed pattern count rises.
         List<SessionPatternEntity> patterns = patternRepository.findWithFilters(
-                null, null, null, PageRequest.of(0, SCAN_PAGE_SIZE));
+                null, null, agentIdFilter, PageRequest.of(0, SCAN_PAGE_SIZE));
 
         int scanned = patterns.size();
         int skippedSurface = 0;
