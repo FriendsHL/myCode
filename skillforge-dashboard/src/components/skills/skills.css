@@ -714,6 +714,9 @@
 .draft-stat.pending .dot { background: var(--color-warn); }
 .draft-stat.approved .dot { background: var(--color-ok); }
 .draft-stat.discarded .dot { background: var(--color-err); }
+.draft-stat.evaluating .dot { background: #6366f1; }
+.draft-stat.evaluated .dot { background: #22c55e; }
+.draft-stat.rejected .dot { background: #ef4444; }
 
 .drafts-head-actions {
   display: flex;
@@ -1454,4 +1457,28 @@
 .evolution-flash {
   font-size: 11px;
   color: var(--accent);
+}
+
+/* Evaluation report footer */
+.eval-footer {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-1);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.eval-footer-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.btn-ghost-sf:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
 }

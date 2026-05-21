@@ -13,7 +13,7 @@
  * mounting and gates render when `result` is absent.
  */
 import { useMemo } from 'react';
-import { Alert, Button, Statistic, Table, Tag, Empty } from 'antd';
+import { Alert, Statistic, Table, Tag, Empty } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import {
   PASS_RATE_DELTA_THRESHOLD,
@@ -302,31 +302,21 @@ export function SkillDraftEvaluationReport({
       />
 
       {/* Source sessions drill-down + metadata footer */}
-      <div
-        style={{
-          marginTop: 20,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 12,
-          flexWrap: 'wrap',
-        }}
-      >
-        <div style={{ fontSize: 12, color: 'var(--fg-3, #8a8a93)' }}>
+      <div className="eval-footer">
+        <div className="eval-footer-meta">
           {result.scenarioCount} scenario{result.scenarioCount === 1 ? '' : 's'} ·{' '}
           evaluator {result.evaluatorVersion} · evaluated{' '}
           {new Date(result.evaluatedAt).toLocaleString()} ·{' '}
           threshold +{Math.round(PASS_RATE_DELTA_THRESHOLD * 100)}pp pass rate
         </div>
-        <Button
-          type="default"
-          size="small"
+        <button
+          className="btn-ghost-sf"
           disabled={result.sourceSessionIds.length === 0}
           onClick={handleDrillToSessions}
           data-testid="eval-drilldown-btn"
         >
           View source sessions ({result.sourceSessionIds.length})
-        </Button>
+        </button>
       </div>
     </div>
   );

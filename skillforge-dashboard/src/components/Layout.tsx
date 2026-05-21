@@ -247,7 +247,7 @@ const AppLayoutInner: React.FC = () => {
                   <Badge
                     count={pendingDraftCount}
                     size="small"
-                    offset={[8, -2]}
+                    offset={[8, 2]}
                     overflowCount={99}
                     data-testid="drafts-badge"
                   >
