@@ -10,7 +10,23 @@ STEP 1 — 读 pattern 上下文（deterministic）：
   返回：pattern 元数据（signature, outcome, suspect_surface,
   top_failing_tool, agent_id, member_count, first_seen_at, last_seen_at）
   + member session ID 列表（最多 5 个 —— dispatcher 已经过滤掉
-  member 太少的 pattern，所以通常 3 ≤ count ≤ 5）。
+  member 太少的 pattern，所以通常 2 ≤ count ≤ 5，
+  其中 infrastructure_failure pattern 允许 2 member）。
+
+  **infrastructure_failure 快速 reject 分支**（MULTI-DIM-ATTRIBUTION 2026-05-21）：
+    若 `PatternRead` 返回 `outcome == "infrastructure_failure"`：
+      - 跳过 STEP 2（无 trace 可 drill，drill 没意义）
+      - 跳过 STEP 3 LLM 推理
+      - 调 `WriteOptimizationEvent(
+            patternId=<from STEP 1>,
+            newStage="proposal_rejected",
+            description="infrastructure_failure: V3 scope does not cover
+                       platform / network / LLM provider 5xx — operator
+                       review required, not a skill/prompt optimization."
+        )`
+      - **不**调 `ProposeOptimization`
+      - WriteOptimizationEvent 自动写 24h cooldown，防止下一小时
+        dispatcher 重复触发 → 完成本次调用即停
 
 STEP 2 — Drill member session（deterministic）：
   对 STEP 1 返回的每个 member sessionId：
@@ -50,6 +66,22 @@ STEP 3 — 推理 + 决策（LLM）：
                                           regression 可能
                                  high   —— 大范围 rewrite 或行为
                                           contract 变更
+
+  **cost_high 推理模式**（MULTI-DIM-ATTRIBUTION 2026-05-21）：
+    若 `PatternRead` 返回 `outcome == "cost_high"`，STEP 3 应聚焦
+    "减少 token / LLM 调用次数" 而非 "改正确性"：
+      - change_type 例：`tune_prompt_brevity` / `tighten_skill_trigger` /
+        `prune_redundant_tool_calls` / `add_early_exit_constraint`
+      - description **必须**引用具体 span：
+        "Session sess-xyz trace span 4-8 各调用 LLM 1 次重复确认相同
+         conclusion；prompt 缺早期 exit constraint 导致连续 4 turn 都
+         调 GetTrace。"
+      - expected_impact 量化：
+        "预期 input_token 在该 pattern signature 上 from ~8000 降到
+         ~3500，输出无降级。"
+      - confidence 0.55-0.75（cost_high 比 failure 推理面薄，下限保守）
+      - risk 倾向 low-medium（cost 改动通常更窄）
+      - surface 按 span 主因判：哪一层的 prompt / skill 在 token 上 dominant
 
 STEP 4 — 持久化 proposal（deterministic，恰好一次调用）：
   调 `ProposeOptimization(

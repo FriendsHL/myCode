@@ -13,6 +13,8 @@ import com.skillforge.server.util.SkillInputUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Clock;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -53,6 +55,17 @@ public class WriteOptimizationEventTool implements Tool {
 
     private static final Logger log = LoggerFactory.getLogger(WriteOptimizationEventTool.class);
 
+    /**
+     * MULTI-DIM-ATTRIBUTION 2026-05-21: cooldown applied when this tool writes
+     * {@code stage=proposal_rejected} without an explicit
+     * {@code cooldown_expires_at}. Mirrors {@code ProposeOptimizationTool}'s
+     * {@code COOLDOWN_DURATION} so a rejected pattern (infra failure, low
+     * confidence, scope mismatch) doesn't re-trigger every hourly dispatcher
+     * tick → cron loop. Operator can shorten it explicitly via
+     * {@code WriteOptimizationEvent} with a custom cooldown column if needed.
+     */
+    static final Duration REJECT_COOLDOWN_DURATION = Duration.ofHours(24);
+
     static final Set<String> KNOWN_STAGES = Set.of(
             OptimizationEventEntity.STAGE_DISPATCH_INITIATED,
             OptimizationEventEntity.STAGE_PROPOSAL_PENDING,
@@ -73,13 +86,16 @@ public class WriteOptimizationEventTool implements Tool {
     private final OptimizationEventRepository eventRepository;
     private final SessionPatternRepository patternRepository;
     private final ObjectMapper objectMapper;
+    private final Clock clock;
 
     public WriteOptimizationEventTool(OptimizationEventRepository eventRepository,
                                       SessionPatternRepository patternRepository,
-                                      ObjectMapper objectMapper) {
+                                      ObjectMapper objectMapper,
+                                      Clock clock) {
         this.eventRepository = eventRepository;
         this.patternRepository = patternRepository;
         this.objectMapper = objectMapper;
+        this.clock = clock;
     }
 
     @Override
@@ -240,6 +256,31 @@ public class WriteOptimizationEventTool implements Tool {
                 if (!descOverride.isBlank()) {
                     event.setDescription(descOverride.trim());
                 }
+            }
+            // MULTI-DIM-ATTRIBUTION 2026-05-21: auto-cooldown on
+            // proposal_rejected. The dispatcher's Filter 1 infra bypass means
+            // infrastructure_failure patterns flow through to the curator,
+            // which writes proposal_rejected ("not actionable in V3 scope") —
+            // without a cooldown, the *very next* hourly dispatch would
+            // re-dispatch the same pattern, burning curator LLM budget on
+            // identical 1-line reject decisions every hour until the pattern
+            // ages out of the recompute window. Set a 24h cooldown by default
+            // (mirrors ProposeOptimization's COOLDOWN_DURATION) so the
+            // operator sees one rejection / 24h instead of one / hour.
+            //
+            // Applies to ALL proposal_rejected writes (not just the infra
+            // path) because the same "rejected pattern persists in
+            // t_session_pattern → next dispatch re-fires" problem exists for
+            // any reject reason (low_confidence / scope mismatch /
+            // behavior_rule). Only skip if the caller already supplied a
+            // cooldown override (Approval / downstream services that
+            // intentionally set their own window).
+            if (OptimizationEventEntity.STAGE_PROPOSAL_REJECTED.equals(newStage)
+                    && event.getCooldownExpiresAt() == null) {
+                event.setCooldownExpiresAt(clock.instant().plus(REJECT_COOLDOWN_DURATION));
+                log.info("[WriteOptimizationEvent] auto-cooldown applied on proposal_rejected: "
+                        + "patternId={} expires_at={}",
+                        event.getPatternId(), event.getCooldownExpiresAt());
             }
             // updatedAt is auto-populated by @PreUpdate (Phase 1.1 fix).
 

@@ -880,10 +880,11 @@ public class SkillForgeConfig {
             com.skillforge.server.repository.OptimizationEventRepository eventRepository,
             com.skillforge.server.repository.SessionPatternRepository patternRepository,
             ObjectMapper objectMapper,
+            java.time.Clock clock,
             SkillRegistry skillRegistry) {
         com.skillforge.server.tool.attribution.WriteOptimizationEventTool tool =
                 new com.skillforge.server.tool.attribution.WriteOptimizationEventTool(
-                        eventRepository, patternRepository, objectMapper);
+                        eventRepository, patternRepository, objectMapper, clock);
         skillRegistry.registerTool(tool);
         log.info("Registered WriteOptimizationEventTool into SkillRegistry");
         return tool;

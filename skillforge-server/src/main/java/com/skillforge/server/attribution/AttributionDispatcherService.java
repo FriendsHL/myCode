@@ -9,6 +9,7 @@ import com.skillforge.server.repository.OptimizationEventRepository;
 import com.skillforge.server.repository.SessionPatternRepository;
 import com.skillforge.server.service.ChatService;
 import com.skillforge.server.service.SessionService;
+import com.skillforge.server.sessionannotation.SessionAnnotationLlmService.SessionAnnotationConstants;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
@@ -65,6 +66,15 @@ public class AttributionDispatcherService {
     public static final String CURATOR_AGENT_NAME = "attribution-curator";
     public static final int DEFAULT_MAX_DISPATCH_PER_RUN = 5;
     public static final int MIN_MEMBER_COUNT = 3;
+    /**
+     * MULTI-DIM-ATTRIBUTION 2026-05-21: relaxed threshold for
+     * {@code outcome=infrastructure_failure} patterns — aligns with
+     * {@code SessionPatternClusterService.MIN_MEMBERS_INFRA_OUTCOME}. Without
+     * this the cluster would admit a 2-session infra pattern but the
+     * dispatcher would silently drop it at Filter 2 ("defensive duplicate of
+     * V1 cluster rule"), defeating the per-outcome admission relaxation.
+     */
+    public static final int MIN_MEMBER_COUNT_INFRA = 2;
     public static final int SCAN_PAGE_SIZE = 100;
     /** SYSTEM user marker — same convention as V69 / V75 / V79 ScheduledTask creator_user_id. */
     public static final long SYSTEM_USER_ID = 0L;
@@ -229,14 +239,29 @@ public class AttributionDispatcherService {
             }
 
             // Filter 1: surface allowlist (ratify #6).
-            if (!ELIGIBLE_SURFACES.contains(p.getSuspectSurface())) {
+            // MULTI-DIM-ATTRIBUTION 2026-05-21: infrastructure_failure outcomes
+            // bypass the surface allowlist because they're inherently
+            // surface-less (no skill / prompt was even reached — the agent
+            // crashed at platform layer). The curator's STEP 1 will
+            // fast-reject via WriteOptimizationEvent(proposal_rejected)
+            // because there's no actionable optimization in V3 scope, but
+            // dispatch still has to happen so the rejection lands on the
+            // timeline (operator-visible signal that "we saw this pattern
+            // and chose not to act").
+            boolean isInfraFailure = SessionAnnotationConstants.OUTCOME_INFRASTRUCTURE_FAILURE
+                    .equals(p.getOutcome());
+            if (!isInfraFailure && !ELIGIBLE_SURFACES.contains(p.getSuspectSurface())) {
                 skippedSurface++;
                 continue;
             }
             // Filter 2: member count threshold (defensive duplicate of V1
             // cluster recompute rule — clusters with <3 members are rarely
             // signal; skip without counting in a specific bucket).
-            if (p.getMemberCount() < MIN_MEMBER_COUNT) {
+            // MULTI-DIM-ATTRIBUTION 2026-05-21: infrastructure_failure uses
+            // the relaxed MIN_MEMBER_COUNT_INFRA=2 to stay aligned with
+            // SessionPatternClusterService.MIN_MEMBERS_INFRA_OUTCOME.
+            int minMembers = isInfraFailure ? MIN_MEMBER_COUNT_INFRA : MIN_MEMBER_COUNT;
+            if (p.getMemberCount() < minMembers) {
                 continue;
             }
             // Filter 3: 24h cooldown (ratify #2). Any event row for this
@@ -389,14 +414,22 @@ public class AttributionDispatcherService {
     /**
      * Compose the dispatch prompt. Package-private so tests can pin the wire
      * format without going through chatAsync.
+     *
+     * <p>MULTI-DIM-ATTRIBUTION 2026-05-21: includes {@code outcome=...} so the
+     * curator can fast-reject {@code infrastructure_failure} at STEP 1 before
+     * burning STEP 2 trace-drill budget. {@code outcome} is harmless for legacy
+     * outcomes (failure / partial_success / cancelled) since the curator
+     * already infers them from {@code PatternRead}'s response — having it on
+     * the wire just shortens the path.
      */
     static String composeDispatchPrompt(SessionPatternEntity pattern) {
         return String.format(
                 "Run the 4-STEP attribution pipeline for patternId=%d "
-                        + "(agentId=%s, suspectSurface=%s, memberCount=%d). "
+                        + "(agentId=%s, outcome=%s, suspectSurface=%s, memberCount=%d). "
                         + "STEP 1: PatternRead(%d); STEP 2-4 follow your system prompt.",
                 pattern.getId(),
                 pattern.getAgentId() == null ? "null" : pattern.getAgentId().toString(),
+                pattern.getOutcome() == null ? "null" : pattern.getOutcome(),
                 pattern.getSuspectSurface(),
                 pattern.getMemberCount(),
                 pattern.getId());

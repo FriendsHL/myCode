@@ -14,6 +14,9 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -31,11 +34,13 @@ class WriteOptimizationEventToolTest {
     @Mock private OptimizationEventRepository eventRepository;
     @Mock private SessionPatternRepository patternRepository;
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private static final Instant FIXED_NOW = Instant.parse("2026-05-21T12:00:00Z");
     private WriteOptimizationEventTool tool;
 
     @BeforeEach
     void setUp() {
-        tool = new WriteOptimizationEventTool(eventRepository, patternRepository, objectMapper);
+        Clock fixed = Clock.fixed(FIXED_NOW, ZoneOffset.UTC);
+        tool = new WriteOptimizationEventTool(eventRepository, patternRepository, objectMapper, fixed);
     }
 
     private OptimizationEventEntity sampleEvent() {
@@ -103,6 +108,45 @@ class WriteOptimizationEventToolTest {
 
         assertThat(result.isSuccess()).isFalse();
         verify(eventRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("MULTI-DIM-ATTRIBUTION: stage transition → proposal_rejected auto-sets 24h cooldown")
+    void execute_proposalRejected_autoSetsCooldown() {
+        when(eventRepository.findById(99L)).thenReturn(Optional.of(sampleEvent()));
+        ArgumentCaptor<OptimizationEventEntity> captor = ArgumentCaptor.forClass(OptimizationEventEntity.class);
+        when(eventRepository.save(captor.capture())).thenAnswer(inv -> inv.getArgument(0));
+
+        Map<String, Object> in = new HashMap<>();
+        in.put("eventId", 99);
+        in.put("newStage", OptimizationEventEntity.STAGE_PROPOSAL_REJECTED);
+        in.put("description", "infrastructure_failure: V3 scope does not cover platform");
+        SkillResult result = tool.execute(in, null);
+
+        assertThat(result.isSuccess()).isTrue();
+        OptimizationEventEntity saved = captor.getValue();
+        assertThat(saved.getStage()).isEqualTo(OptimizationEventEntity.STAGE_PROPOSAL_REJECTED);
+        // Critical: cooldown was auto-set so the next hourly dispatcher tick won't re-fire.
+        assertThat(saved.getCooldownExpiresAt())
+                .isEqualTo(FIXED_NOW.plus(WriteOptimizationEventTool.REJECT_COOLDOWN_DURATION));
+    }
+
+    @Test
+    @DisplayName("MULTI-DIM-ATTRIBUTION: stage transition that is NOT proposal_rejected does not touch cooldown")
+    void execute_nonRejectTransition_doesNotTouchCooldown() {
+        OptimizationEventEntity existing = sampleEvent();
+        existing.setCooldownExpiresAt(null);
+        when(eventRepository.findById(99L)).thenReturn(Optional.of(existing));
+        ArgumentCaptor<OptimizationEventEntity> captor = ArgumentCaptor.forClass(OptimizationEventEntity.class);
+        when(eventRepository.save(captor.capture())).thenAnswer(inv -> inv.getArgument(0));
+
+        Map<String, Object> in = new HashMap<>();
+        in.put("eventId", 99);
+        in.put("newStage", OptimizationEventEntity.STAGE_PROPOSAL_APPROVED);
+        tool.execute(in, null);
+
+        // Approve transition must NOT carry the reject auto-cooldown.
+        assertThat(captor.getValue().getCooldownExpiresAt()).isNull();
     }
 
     @Test

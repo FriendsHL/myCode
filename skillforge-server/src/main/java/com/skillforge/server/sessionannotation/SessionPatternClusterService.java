@@ -67,6 +67,18 @@ public class SessionPatternClusterService {
     /** PRD §5.2 — bucket admission threshold. */
     static final int MIN_MEMBERS_PER_PATTERN = 3;
 
+    /**
+     * MULTI-DIM-ATTRIBUTION 2026-05-21: relaxed threshold for
+     * {@code outcome=infrastructure_failure} buckets. Infra failures are
+     * fundamentally low-cardinality signals (each network blip / LLM 5xx is a
+     * one-shot event) — the {@code member_count >= 3} bar would suppress them
+     * even though 2 same-agent infra failures are already a useful pattern
+     * for the curator to inspect. Other outcomes (failure / cost_high /
+     * partial_success / cancelled) keep the {@link #MIN_MEMBERS_PER_PATTERN}
+     * threshold to suppress small-sample noise (PRD §5.2).
+     */
+    static final int MIN_MEMBERS_INFRA_OUTCOME = 2;
+
     /** PRD §5.2 — LLM confidence below this is excluded from clustering. */
     static final BigDecimal MIN_LLM_CONFIDENCE = new BigDecimal("0.5");
 
@@ -142,16 +154,29 @@ public class SessionPatternClusterService {
         int patternsUpserted = 0;
         int membersAdded = 0;
         for (Bucket bucket : buckets.values()) {
-            if (bucket.sessionIds().size() < MIN_MEMBERS_PER_PATTERN) continue;
+            if (bucket.sessionIds().size() < minMembersFor(bucket.outcome())) continue;
             UpsertResult res = upsertBucket(bucket);
             patternsUpserted++;
             membersAdded += res.newMembers();
         }
 
         log.info("[cluster] window={} since={} sessionsScanned={} bucketsEligible={} patternsUpserted={} membersAdded={}",
-                window, since, sessionIds.size(), buckets.values().stream().filter(b -> b.sessionIds().size() >= MIN_MEMBERS_PER_PATTERN).count(),
+                window, since, sessionIds.size(),
+                buckets.values().stream().filter(b -> b.sessionIds().size() >= minMembersFor(b.outcome())).count(),
                 patternsUpserted, membersAdded);
         return new RecomputeResult(patternsUpserted, membersAdded);
+    }
+
+    /**
+     * MULTI-DIM-ATTRIBUTION 2026-05-21: bucket admission threshold per outcome.
+     * Infra failures use a relaxed 2-member threshold (see
+     * {@link #MIN_MEMBERS_INFRA_OUTCOME}); all other outcomes keep the
+     * standard 3-member threshold.
+     */
+    static int minMembersFor(String outcome) {
+        return SessionAnnotationConstants.OUTCOME_INFRASTRUCTURE_FAILURE.equals(outcome)
+                ? MIN_MEMBERS_INFRA_OUTCOME
+                : MIN_MEMBERS_PER_PATTERN;
     }
 
     /**

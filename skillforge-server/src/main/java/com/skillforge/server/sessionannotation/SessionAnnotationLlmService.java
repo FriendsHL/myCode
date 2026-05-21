@@ -24,7 +24,9 @@ import java.util.Set;
  *
  * <p>Per PRD §"标注层" each LLM annotation writes 2-3 rows:
  * <ul>
- *   <li>{@code outcome}: success | partial_success | failure | cancelled</li>
+ *   <li>{@code outcome}: success | partial_success | failure | cancelled |
+ *       infrastructure_failure | cost_high (last two added 2026-05-21
+ *       MULTI-DIM-ATTRIBUTION)</li>
  *   <li>{@code suspect_surface}: skill | prompt | behavior_rule | other | unclear</li>
  *   <li>{@code top_failing_tool}: tool name (only written when supplied + non-blank)</li>
  * </ul>
@@ -180,8 +182,29 @@ public class SessionAnnotationLlmService {
         public static final String OUTCOME_PARTIAL_SUCCESS = "partial_success";
         public static final String OUTCOME_FAILURE = "failure";
         public static final String OUTCOME_CANCELLED = "cancelled";
+        /**
+         * MULTI-DIM-ATTRIBUTION 2026-05-21: 0-trace / 0-message sessions where the
+         * agent loop crashed before producing any user-visible work (server restart,
+         * LLM provider 5xx, network timeout). Treated as separate from
+         * {@link #OUTCOME_FAILURE} because the curator's STEP 2 trace-drill is
+         * impossible (no traces) and the right surface is "platform" (network /
+         * config / dependency), not skill / prompt. Signaled upstream by
+         * {@code SessionAnnotationSignalService.annotateOne} writing
+         * {@code agent_error=true} on (messageCount=0, runtimeStatus=error,
+         * 0-trace) sessions.
+         */
+        public static final String OUTCOME_INFRASTRUCTURE_FAILURE = "infrastructure_failure";
+        /**
+         * MULTI-DIM-ATTRIBUTION 2026-05-21: agent succeeded but spent excessive
+         * tokens (high_token signal + no agent_error / tool_failure / span_error
+         * negative signals). Curator inspects spans for redundant LLM calls /
+         * verbose prompts / over-eager retries to suggest cost-reducing
+         * optimizations.
+         */
+        public static final String OUTCOME_COST_HIGH = "cost_high";
         public static final Set<String> OUTCOME_VALUES = Set.of(
-                OUTCOME_SUCCESS, OUTCOME_PARTIAL_SUCCESS, OUTCOME_FAILURE, OUTCOME_CANCELLED);
+                OUTCOME_SUCCESS, OUTCOME_PARTIAL_SUCCESS, OUTCOME_FAILURE, OUTCOME_CANCELLED,
+                OUTCOME_INFRASTRUCTURE_FAILURE, OUTCOME_COST_HIGH);
 
         public static final String SURFACE_SKILL = "skill";
         public static final String SURFACE_PROMPT = "prompt";

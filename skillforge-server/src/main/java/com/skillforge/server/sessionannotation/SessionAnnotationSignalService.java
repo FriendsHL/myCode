@@ -283,9 +283,41 @@ public class SessionAnnotationSignalService {
         List<LlmTraceEntity> traces = llmTraceRepository.findBySessionIdAndOriginOrderByStartedAtDesc(
                 sessionId, SessionEntity.ORIGIN_PRODUCTION);
         if (traces.isEmpty()) {
-            // No production traces — nothing to signal. Note we don't try to handle
-            // the "session completed but traces still ingesting" race here; the
-            // next hourly run will pick it up via overlapping window.
+            // MULTI-DIM-ATTRIBUTION 2026-05-21: infrastructure-failure early-bail
+            // fix. A session that completed with runtime_status='error' AND zero
+            // messages AND zero traces is the signature of an agent loop that
+            // crashed before producing any user-visible work (server restart,
+            // LLM provider 5xx, network timeout before first token). Without
+            // this hook annotateOne returned 0 and the session never surfaced
+            // to the LLM annotator → no outcome row → never reached the curator.
+            // Write one synthetic agent_error=true signal so STEP 2 of the
+            // annotator pipeline can later mark these sessions as
+            // outcome=infrastructure_failure (see SessionAnnotationConstants
+            // OUTCOME_INFRASTRUCTURE_FAILURE).
+            //
+            // Guard ordering matters: messageCount==0 + runtimeStatus=='error'
+            // are both required so we don't false-positive on sessions that
+            // are mid-creation (no traces yet but messages exist) or that
+            // ended idle / completed cleanly with zero traces (e.g. a session
+            // that was created but never sent a chat message).
+            if (session.getMessageCount() == 0 && "error".equals(session.getRuntimeStatus())) {
+                Long insertedId = sessionAnnotationRepository.upsertSkipDuplicate(
+                        sessionId,
+                        "agent_error",
+                        "true",
+                        SessionAnnotationEntity.SOURCE_SIGNAL,
+                        new BigDecimal("1.00"),
+                        null);
+                if (insertedId != null) {
+                    log.info("[signal] sessionId={} 0-trace+0-msg+error → wrote synthetic agent_error signal", sessionId);
+                    return 1;
+                }
+                log.debug("[signal] sessionId={} 0-trace+0-msg+error agent_error already annotated — skipping", sessionId);
+                return 0;
+            }
+            // Otherwise: no traces just means the session has nothing to signal
+            // yet (e.g. session completed but traces still ingesting; next
+            // hourly run will pick it up via overlapping window).
             return 0;
         }
 
