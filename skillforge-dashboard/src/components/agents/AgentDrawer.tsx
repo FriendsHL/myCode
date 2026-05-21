@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { InputNumber, Modal, Select, Switch, Tag, Tooltip, message } from 'antd';
+import { Button, InputNumber, Modal, Select, Switch, Tag, Tooltip, message } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   deleteAgent,
@@ -13,6 +13,7 @@ import {
   type CustomRuleSeverity,
 } from '../../api';
 import { listMcpServers } from '../../api/mcpServers';
+import { runFlywheelLoopForAgent } from '../../api/flywheel';
 import { useAuth } from '../../contexts/AuthContext';
 import type { AgentDto, ThinkingMode, ReasoningEffort } from '../../api/schemas';
 import { initials, guessRole } from './AgentCard';
@@ -468,6 +469,42 @@ const AgentDrawer: React.FC<AgentDrawerProps> = ({ agent, onClose }) => {
     onError: () => message.error('Failed to update agent'),
   });
 
+  const runFlywheelMutation = useMutation({
+    mutationFn: () => runFlywheelLoopForAgent(agent.id),
+    onSuccess: (res) => {
+      const d = res.data;
+      // r2 W1 fix: longer duration (8s) so operator has time to click the
+      // drill-down link before toast disappears (3s default too short for
+      // actionable links).
+      // r2 W2 fix: open drill-down in new tab so AgentDrawer context doesn't
+      // get lost. rel="noopener noreferrer" prevents window.opener leak.
+      message.success({
+        content: (
+          <span>
+            Opt Loop triggered for <strong>{d.agentName}</strong>{' '}
+            (annotator: {d.annotatorSessionId.slice(0, 8)}…).{' '}
+            Dispatcher fires after ~30s-2min.{' '}
+            <a
+              href={`/insights?tab=optimization&agentId=${d.agentId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: 'var(--accent)' }}
+            >
+              View progress →
+            </a>
+          </span>
+        ),
+        duration: 8,
+      });
+    },
+    onError: (err: unknown) => {
+      const axiosErr = err as { response?: { status?: number; data?: { message?: string } } };
+      const status = axiosErr?.response?.status ?? 0;
+      const msg = axiosErr?.response?.data?.message ?? 'Unknown error';
+      message.error(`[${status}] ${msg}`);
+    },
+  });
+
   const handleSavePrompts = () => {
     updateMutation.mutate({ id: agent.id, payload: {
       systemPrompt: promptDraft['AGENT.md'],
@@ -805,6 +842,21 @@ const AgentDrawer: React.FC<AgentDrawerProps> = ({ agent, onClose }) => {
                   <div className="overview-card"><div className="overview-k">Hooks</div><div className="overview-v">{hooksCount}</div></div>
                   <div className="overview-card"><div className="overview-k">Skills</div><div className="overview-v">{skills.length}</div></div>
                 </div>
+              </div>
+              <div className="spec-block">
+                <div className="spec-h"><h3>Flywheel</h3></div>
+                <p style={{ color: 'var(--fg-3)', fontSize: 12, margin: '0 0 10px' }}>
+                  Triggers session-annotator + attribution-dispatcher on this agent's recent sessions. Async, ~30s-2min.
+                </p>
+                <Button
+                  size="small"
+                  loading={runFlywheelMutation.isPending}
+                  disabled={runFlywheelMutation.isPending}
+                  onClick={() => runFlywheelMutation.mutate()}
+                  data-testid="run-opt-loop-btn"
+                >
+                  Run Opt Loop
+                </Button>
               </div>
             </>
           )}

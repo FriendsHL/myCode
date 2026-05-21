@@ -187,3 +187,52 @@ import type { SkillDraft } from './index';
 
 export const listSkillDraftsBySource = (params: ListSkillDraftsBySourceParams) =>
   api.get<SkillDraft[]>('/skill-drafts', { params });
+
+// ───────────────── /api/flywheel/agents/{agentId}/run-loop (on-demand) ───────
+//
+// FLYWHEEL-PER-AGENT-RUN-NOW Round 1 BE (commit 004689d) — on-demand per-agent
+// opt loop trigger. POST returns 202 immediately; downstream chain runs async.
+//
+// Error cases FE handles:
+//   404 — agent not found
+//   503 — session-annotator / attribution-dispatcher system agent not seeded
+//   400 — agentId invalid
+
+export interface RunFlywheelLoopParams {
+  /** Number of hours back to look for sessions (BE default: 24). */
+  windowHours?: number;
+  /** Max sessions to annotate in this run (BE default: 10). */
+  max?: number;
+}
+
+/**
+ * 202 ACCEPTED response body from
+ * `POST /api/flywheel/agents/{agentId}/run-loop`.
+ *
+ * Mirrors BE `FlywheelPerAgentRunResponse` record — field names are Jackson
+ * camelCase defaults. Java Long → number, Java int → number, String → string.
+ */
+export interface RunFlywheelLoopResponse {
+  agentId: number;
+  agentName: string;
+  /** UUID string — the newly created session-annotator session. */
+  annotatorSessionId: string;
+  windowHours: number;
+  max: number;
+  /** Always `"triggered"` on 202. */
+  status: 'triggered';
+  note: string;
+}
+
+/**
+ * `POST /api/flywheel/agents/{agentId}/run-loop` — triggers an on-demand
+ * opt loop for the given agent. Returns 202 immediately; the downstream
+ * chain (session-annotator → attribution-dispatcher) runs async (~30s-2min).
+ *
+ * Query params `windowHours` and `max` are optional; BE defaults apply when
+ * absent. Body is intentionally empty (params are query-string only).
+ */
+export const runFlywheelLoopForAgent = (
+  agentId: number,
+  params?: RunFlywheelLoopParams,
+) => api.post<RunFlywheelLoopResponse>(`/flywheel/agents/${agentId}/run-loop`, null, { params });
