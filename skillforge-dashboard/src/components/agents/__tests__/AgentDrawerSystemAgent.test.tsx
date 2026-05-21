@@ -114,20 +114,7 @@ describe('AgentDrawer — system agent read-only gate (SYSTEM-AGENT-TYPING Phase
     vi.mocked(deleteAgent).mockClear();
   });
 
-  it('renders the system-agent warning banner when agentType=system', () => {
-    renderDrawer(makeAgent({ agentType: 'system' }));
-    const banner = screen.getByTestId('system-agent-drawer-banner');
-    expect(banner).toBeInTheDocument();
-    expect(banner.textContent).toMatch(/managed by V1-V5 bootstrap/i);
-    expect(banner.textContent).toMatch(/overwritten on next server restart/i);
-  });
-
-  it('does NOT render the banner for user agents', () => {
-    renderDrawer(makeAgent({ agentType: 'user' }));
-    expect(screen.queryByTestId('system-agent-drawer-banner')).not.toBeInTheDocument();
-  });
-
-  it('disables the Delete button for system agents', () => {
+it('disables the Delete button for system agents', () => {
     renderDrawer(makeAgent({ agentType: 'system' }));
     const deleteBtn = screen.getByTestId('delete-agent-btn');
     expect(deleteBtn).toBeDisabled();

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, InputNumber, Modal, Select, Switch, Tag, Tooltip, message } from 'antd';
+import { InputNumber, Modal, Select, Switch, Tag, Tooltip, message } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   deleteAgent,
@@ -649,16 +649,6 @@ const AgentDrawer: React.FC<AgentDrawerProps> = ({ agent, onClose }) => {
         </div>
 
         <div className="agent-drawer-body">
-          {isSystemAgent && (
-            <Alert
-              type="warning"
-              showIcon
-              data-testid="system-agent-drawer-banner"
-              title="System agent — managed by V1-V5 bootstrap"
-              description="Edits to system_prompt / tool_ids / behavior_rules / lifecycle_hooks will be overwritten on next server restart. To stop the cron, disable the matching schedule on the /schedules page."
-              style={{ marginBottom: 16 }}
-            />
-          )}
           {tab === 'overview' && (
             <>
               {agent.description && (
