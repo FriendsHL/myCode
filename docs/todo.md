@@ -93,6 +93,16 @@
 
 ## 暂缓
 
+> **2026-05-22 新增 5 项 FE 重构 backlog**（FLYWHEEL-PER-AGENT-RUN-NOW 完工后做 FE re-render audit 静态扫产出 — 没 bug 但有改进空间，按 ROI 排）:
+> - **FE-AGENT-DRAWER-REFACTOR** (P3) — `AgentDrawer.tsx` 1100+ 行 / 45 hook 调，含 Overview/Prompts/Rules/Hooks/Skill 管理/Tool 管理/SystemAgentMonitor/Flywheel 按钮等所有 tab。**症状**：单 state 变 → 全树 re-render / 改新 tab 易碰旧逻辑 / 测试需 mock 大量 dep / code review grep 找代码。**重构方向**：拆 sub-tab 各自一文件 (`AgentDrawerOverview.tsx` / `AgentDrawerPrompts.tsx` 等)，主 Drawer 只做 tab 切换 + shared props。**Effort** 1-2 天。**触发**：下次加新 tab 时强制做（rule of three 临界已过）/ 真感受到 Drawer 操作卡顿。
+> - **FE-USEPOLLING-HOOK** (P3) — `ChildSessionsPanel` / `ChildAgentFeed` / `CollabRunTimeline` / `SubAgentRunsPanel` / `CollabRunPanel` 5 个 Panel **各自**实现 pollRef + useEffect 启停 timer + fetch+setState 模式（每个 ~30 行重复）。**重构方向**：抽 `usePolling(fetchFn, intervalMs, deps)` hook + 重构 5 组件 + 测试。**Effort** ~3 小时。**Value**：~150 行重复 → ~50 行。**触发**：下次加新 polling Panel 时强制做。
+> - **FE-INLINE-STYLE-CLEANUP** (P3) — `AgentDrawer` 39 处 inline `style={{...}}`，每次 render 创新对象 → 若 child memo' d 触发不必要 re-render。**当前** antd 组件大部分自己 memo 影响小。**重构方向**：抽 const 外层 / 移到 CSS class。**Effort** ~1 小时。**触发**：真活 Profiler 报告显示 child 重 render 才做。
+> - **FE-WHY-DID-YOU-RENDER** (P3) — 装 dev-only `@welldone-software/why-did-you-render` 自动 log "没 prop change 但 re-render" 的 component。**Effort** 30 分钟 (npm install + dev mode 配置)。**Value**：长期诊断比静态扫准。**触发**：multi-user 上线前 / 加新 panel 反复出现意外 re-render。
+> - **FE-COMPONENTS-FEATURE-DIRS** (P3) — `src/components/` 现部分分 feature 目录 (`chat/` / `agents/` / `flywheel/` / `skills/` / `insights/`) + 部分顶层平铺 (`Layout.tsx` / `TaskPanel.tsx` / 等 ~30 文件)。**重构方向**：全按 feature 分。**Effort** ~半天机械 mv + 修 import。**Value**：边际 navigability 改善。**触发**：FE 文件 >120 时 / 新人 onboard 时。
+>
+> **2026-05-22 新增 1 项 FE 优化（1 行改）**：
+> - **RIGHTRAIL-SUBAGENT-ADAPTIVE-POLL** (P3) — `RightRail.tsx:829` SubAgent 5s polling 永远开，但大部分 chat session data 永远 `[]`。改 `refetchInterval: (q) => (q.state.data?.length ? 5000 : 30000)` data 空时降到 30s = 6x 空请求减少。**Effort** 1 行。**触发**：随手做 / multi-user 上线前。
+>
 > **2026-05-20 新增 3 项**（user 提 + 我在 FLYWHEEL-PER-RUN dogfood 时发现的 dual-schedule bug）:
 > - **USER-SSO-MULTITENANT** (P1) — SSO 认证 + 多租户工作空间隔离（当前 single-tenant dogfood, owner_id=1 / system agent owner=1）。需要做：identity provider 接入 (OIDC / SAML) / `t_workspace` 或 `t_tenant` 表 / 所有 agent/skill/session 加 tenant_id / RLS or service-layer scope filter / FE login flow / RBAC 基础。Full 红灯（schema + 协议 + 跨模块）。**触发条件**：开放给真用户 / 团队协作 / 公网上线前必做。
 > - **FE-RENDER-AUDIT** (P2) — 审计 dashboard 各 page 用户点按钮是不是重复渲染多次（如 Insights tab 切换 / Drawer 开关 / sidebar selected change）。手段：React DevTools Profiler + `<Profiler onRender>` 包关键 page / 找 useMemo 缺 / useCallback 漏 / context 太大 re-render 全树。**触发条件**：dogfood 期间有顿、复杂 panel 点击有视觉 lag、或加新 feature 前先把 baseline 性能锁住。
