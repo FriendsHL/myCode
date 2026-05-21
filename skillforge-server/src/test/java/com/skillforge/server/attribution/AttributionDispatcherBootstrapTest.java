@@ -62,9 +62,15 @@ class AttributionDispatcherBootstrapTest {
         verify(agentRepository).save(saved.capture());
         String swapped = saved.getValue().getSystemPrompt();
         assertThat(swapped).doesNotStartWith("SEE_FILE:");
-        // Sanity: known content fragments from attribution-dispatcher-system-prompt.md
+        // Sanity: known content fragments from
+        // attribution-dispatcher-system-prompt.md (post DISPATCHER-ORCHESTRATOR-
+        // REFACTOR). The dispatcher now orchestrates per-pattern routing via
+        // ListAttributionCandidates → SubAgent(attribution-curator) instead of
+        // the legacy DispatchAttributionPatterns single-tool fan-out.
         assertThat(swapped).contains("attribution-dispatcher");
-        assertThat(swapped).contains("DispatchAttributionPatterns");
+        assertThat(swapped).contains("ListAttributionCandidates");
+        assertThat(swapped).contains("SubAgent");
+        assertThat(swapped).contains("attribution-curator");
     }
 
     @Test
@@ -139,8 +145,13 @@ class AttributionDispatcherBootstrapTest {
         String content = bootstrap.loadPromptFromClasspath(
                 AttributionDispatcherBootstrap.PROMPT_RESOURCE_PATH);
         assertThat(content).isNotNull();
+        // Post DISPATCHER-ORCHESTRATOR-REFACTOR — the agent now invokes
+        // ListAttributionCandidates (STEP 1) and SubAgent (STEP 3) per
+        // candidate, replacing the legacy DispatchAttributionPatterns
+        // single-tool fan-out.
         assertThat(content).contains("attribution-dispatcher");
-        assertThat(content).contains("DispatchAttributionPatterns");
+        assertThat(content).contains("ListAttributionCandidates");
+        assertThat(content).contains("SubAgent");
     }
 
     private static AgentEntity newAgent(String prompt) {

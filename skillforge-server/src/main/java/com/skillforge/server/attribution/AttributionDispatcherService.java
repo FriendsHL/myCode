@@ -22,6 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -169,6 +170,62 @@ public class AttributionDispatcherService {
                                  int skippedCooldown,
                                  int skippedActive) {}
 
+    /**
+     * DISPATCHER-ORCHESTRATOR-REFACTOR — a single candidate row returned by
+     * {@link #listAndReserveCandidates(int)} for the LLM-orchestrated dispatcher
+     * agent to walk. Each entry has already passed the 4 ratify-locked filters
+     * and has a freshly-written {@code dispatch_initiated} sentinel that the
+     * LLM can transition by spawning attribution-curator via {@code SubAgent}.
+     *
+     * @param patternId        {@code t_session_pattern.id}
+     * @param sentinelEventId  ID of the {@code dispatch_initiated} row reserved
+     *                         for this candidate; the downstream curator will
+     *                         UPDATE this row's {@code stage} (proposal_pending
+     *                         / proposal_rejected) rather than insert a fresh
+     *                         row
+     * @param signature        pattern signature (informational for the LLM)
+     * @param outcome          {@code t_session_pattern.outcome} (failure /
+     *                         partial_success / cancelled /
+     *                         infrastructure_failure / cost_high)
+     * @param surface          {@code t_session_pattern.suspect_surface}
+     * @param memberCount      number of sessions clustered under this pattern
+     * @param lastSeenAt       most recent failure timestamp
+     */
+    public record CandidateEntry(long patternId,
+                                 long sentinelEventId,
+                                 String signature,
+                                 String outcome,
+                                 String surface,
+                                 int memberCount,
+                                 Instant lastSeenAt) {}
+
+    /**
+     * Result of {@link #listAndReserveCandidates(int)} — the raw candidate list
+     * plus accounting counters for the LLM's STEP 4 summary line.
+     *
+     * @param candidates    eligible patterns with sentinels reserved (the LLM
+     *                      walks this list and decides whether to dispatch per
+     *                      entry); list size also equals
+     *                      {@code reserved_count} in the wire payload
+     * @param totalScanned  total pattern rows seen this run (including filtered)
+     * @param filteredOut   patterns that did not survive the 4 filters
+     *                      (skippedSurface + skippedCooldown + skippedActive +
+     *                      under-threshold member count)
+     */
+    public record CandidateListResult(List<CandidateEntry> candidates,
+                                      int totalScanned,
+                                      int filteredOut) {
+        /**
+         * Defensive copy on construction so callers cannot mutate the backing
+         * list shared with internal scan state (W2-java r2 fix per
+         * code-reviewer / java-coding-style.md "Return defensive copies from
+         * public APIs"). {@link List#copyOf} returns an unmodifiable copy.
+         */
+        public CandidateListResult {
+            candidates = List.copyOf(candidates);
+        }
+    }
+
     /*
      * REMOVED 2026-05-20 — CRON-DUAL-SCHEDULE-FIX hotfix.
      *
@@ -200,6 +257,17 @@ public class AttributionDispatcherService {
      * eligible. {@code maxDispatchPerRun ≤ 0} falls back to
      * {@link #DEFAULT_MAX_DISPATCH_PER_RUN}.
      *
+     * <p>DISPATCHER-ORCHESTRATOR-REFACTOR: legacy entry point retained for
+     * backward compatibility with the REST endpoint
+     * {@code POST /api/attribution/admin/trigger-dispatch} + the existing
+     * unit/integration test surface. New cron path goes through the
+     * {@code attribution-dispatcher} LLM agent + {@code ListAttributionCandidates}
+     * + {@code SubAgent(action=dispatch, agentName=attribution-curator)} fan-out
+     * instead. Internally this method now delegates the scan + filter + sentinel
+     * write to {@link #listAndReserveCandidates(int)} and dispatches in a Java
+     * loop, so both paths share one source of truth on filter semantics +
+     * sentinel reservation.
+     *
      * <p>Intentionally NOT {@code @Transactional} (Phase 1.2 reviewer fix):
      * sub-calls each carry their own short transaction. Wrapping the whole
      * scan would (a) make {@code chatAsync}'s pool worker race the outer
@@ -219,6 +287,75 @@ public class AttributionDispatcherService {
         }
         Long curatorAgentId = curatorOpt.get().getId();
 
+        FilterScanOutcome scan = scanAndReserve(cap);
+
+        int dispatched = 0;
+        for (CandidateEntry candidate : scan.candidates()) {
+            try {
+                dispatchOne(candidate, curatorAgentId);
+                dispatched++;
+            } catch (DataAccessException dae) {
+                // V1 W2 / V2 W2 lesson: narrow catch on persistence errors so
+                // one pattern's DB hiccup doesn't poison the rest of the scan.
+                log.error("[AttributionDispatcher] dispatch failed for pattern {} (DataAccessException): {}",
+                        candidate.patternId(), dae.getMessage(), dae);
+            } catch (RuntimeException e) {
+                // Non-DB runtime failure (e.g. ChatService rejected execution,
+                // pattern row mutated mid-flight). Log + continue.
+                log.error("[AttributionDispatcher] dispatch failed for pattern {}: {}",
+                        candidate.patternId(), e.getMessage(), e);
+            }
+        }
+
+        log.info("[AttributionDispatcher] scan complete: scanned={} dispatched={} "
+                        + "skippedSurface={} skippedCooldown={} skippedActive={} cap={}",
+                scan.scanned(), dispatched, scan.skippedSurface(), scan.skippedCooldown(),
+                scan.skippedActive(), cap);
+        return new DispatchResult(scan.scanned(), dispatched, scan.skippedSurface(),
+                scan.skippedCooldown(), scan.skippedActive());
+    }
+
+    /**
+     * DISPATCHER-ORCHESTRATOR-REFACTOR — STEP 1 of the new LLM-orchestrated
+     * dispatcher loop. Scans {@code t_session_pattern}, applies the 4
+     * ratify-locked filters, writes a fresh {@code dispatch_initiated} sentinel
+     * row for each survivor, and returns the candidates list for the LLM to
+     * walk. The LLM then uses {@code SubAgent(action=dispatch,
+     * agentName=attribution-curator, prompt=...)} per entry to start the
+     * curator pipeline.
+     *
+     * <p>Sentinel-write isolation: a per-pattern {@code DataAccessException}
+     * on the sentinel save is caught + logged + the pattern is silently
+     * dropped from the returned list (matches the legacy
+     * {@code dispatchPendingPatterns} per-pattern try/catch — one pattern's DB
+     * hiccup must not abort the rest of the scan).
+     *
+     * <p>The returned {@link CandidateEntry#sentinelEventId()} is the ID of
+     * the freshly written sentinel; downstream callers must reference that ID
+     * when transitioning the row (e.g. attribution-curator's
+     * {@code ProposeOptimization} / {@code WriteOptimizationEvent} STEP 4
+     * UPDATEs the same row rather than inserting a duplicate). Sentinels for
+     * candidates the LLM never routes are swept by
+     * {@link #cleanupOrphanSentinels()}.
+     *
+     * @param max maximum candidates to return; values ≤0 fall back to
+     *            {@link #DEFAULT_MAX_DISPATCH_PER_RUN}
+     */
+    public CandidateListResult listAndReserveCandidates(int max) {
+        int cap = max > 0 ? max : DEFAULT_MAX_DISPATCH_PER_RUN;
+        FilterScanOutcome scan = scanAndReserve(cap);
+        int filteredOut = scan.skippedSurface() + scan.skippedCooldown() + scan.skippedActive()
+                + scan.skippedMemberCount();
+        return new CandidateListResult(scan.candidates(), scan.scanned(), filteredOut);
+    }
+
+    /**
+     * Internal scan + filter + sentinel-reserve helper shared between
+     * {@link #dispatchPendingPatterns(int)} (legacy Java fan-out) and
+     * {@link #listAndReserveCandidates(int)} (new LLM-orchestrated path). One
+     * source of truth for filter semantics + sentinel write ordering.
+     */
+    private FilterScanOutcome scanAndReserve(int cap) {
         // Wide scan: filter null on all dims so we see every pattern. Page size 100
         // is a defensive ceiling — V1 dogfood produces <20 distinct patterns per
         // recompute cycle in current data. SCAN_PAGE_SIZE bump is a one-line
@@ -227,14 +364,15 @@ public class AttributionDispatcherService {
                 null, null, null, PageRequest.of(0, SCAN_PAGE_SIZE));
 
         int scanned = patterns.size();
-        int dispatched = 0;
         int skippedSurface = 0;
         int skippedCooldown = 0;
         int skippedActive = 0;
+        int skippedMemberCount = 0;
+        List<CandidateEntry> reserved = new ArrayList<>();
         Instant now = clock.instant();
 
         for (SessionPatternEntity p : patterns) {
-            if (dispatched >= cap) {
+            if (reserved.size() >= cap) {
                 break;
             }
 
@@ -245,7 +383,7 @@ public class AttributionDispatcherService {
             // crashed at platform layer). The curator's STEP 1 will
             // fast-reject via WriteOptimizationEvent(proposal_rejected)
             // because there's no actionable optimization in V3 scope, but
-            // dispatch still has to happen so the rejection lands on the
+            // reservation still has to happen so the rejection lands on the
             // timeline (operator-visible signal that "we saw this pattern
             // and chose not to act").
             boolean isInfraFailure = SessionAnnotationConstants.OUTCOME_INFRASTRUCTURE_FAILURE
@@ -262,11 +400,12 @@ public class AttributionDispatcherService {
             // SessionPatternClusterService.MIN_MEMBERS_INFRA_OUTCOME.
             int minMembers = isInfraFailure ? MIN_MEMBER_COUNT_INFRA : MIN_MEMBER_COUNT;
             if (p.getMemberCount() < minMembers) {
+                skippedMemberCount++;
                 continue;
             }
             // Filter 3: 24h cooldown (ratify #2). Any event row for this
             // pattern whose cooldown_expires_at is still in the future blocks
-            // dispatch.
+            // reservation.
             List<OptimizationEventEntity> activeCool = eventRepository
                     .findByPatternIdAndCooldownExpiresAtAfter(p.getId(), now);
             if (!activeCool.isEmpty()) {
@@ -283,55 +422,60 @@ public class AttributionDispatcherService {
                 continue;
             }
 
-            // Survive all 4 filters → dispatch.
+            // Survive all 4 filters → reserve sentinel. Per-pattern narrow
+            // catch (V1 W2 / V2 W2 + legacy dispatchPendingPatterns lesson):
+            // one pattern's DataAccessException on sentinel write must not
+            // poison the rest of the scan. Pattern is dropped from the
+            // returned list — caller sees `reserved_count < survived_filters`
+            // and can correlate via log lines.
             try {
-                dispatchOne(p, curatorAgentId);
-                dispatched++;
+                CandidateEntry entry = reserveSentinel(p);
+                reserved.add(entry);
             } catch (DataAccessException dae) {
-                // V1 W2 / V2 W2 lesson: narrow catch on persistence errors so
-                // one pattern's DB hiccup doesn't poison the rest of the scan.
-                log.error("[AttributionDispatcher] dispatch failed for pattern {} (DataAccessException): {}",
-                        p.getId(), dae.getMessage(), dae);
+                log.error("[AttributionDispatcher] sentinel reserve failed for pattern {} "
+                        + "(DataAccessException): {}", p.getId(), dae.getMessage(), dae);
             } catch (RuntimeException e) {
-                // Non-DB runtime failure (e.g. ChatService rejected execution,
-                // pattern row mutated mid-flight). Log + continue.
-                log.error("[AttributionDispatcher] dispatch failed for pattern {}: {}",
+                log.error("[AttributionDispatcher] sentinel reserve failed for pattern {}: {}",
                         p.getId(), e.getMessage(), e);
             }
         }
 
-        log.info("[AttributionDispatcher] scan complete: scanned={} dispatched={} "
-                        + "skippedSurface={} skippedCooldown={} skippedActive={} cap={}",
-                scanned, dispatched, skippedSurface, skippedCooldown, skippedActive, cap);
-        return new DispatchResult(scanned, dispatched, skippedSurface, skippedCooldown, skippedActive);
+        return new FilterScanOutcome(scanned, reserved, skippedSurface, skippedCooldown,
+                skippedActive, skippedMemberCount);
     }
 
     /**
-     * Spawn a fresh attribution-curator session and submit the per-pattern
-     * user-message that the system prompt expects. The agent's first tool call
-     * (PatternRead) consumes the patternId; the rest of its 4-STEP pipeline
-     * follows from there.
-     *
-     * <p>Phase 1.3 ratify: writes a {@code dispatch_initiated} sentinel
-     * {@link OptimizationEventEntity} BEFORE invoking chatAsync. This closes
-     * the race window where two concurrent dispatcher ticks could both observe
-     * "no event for this pattern" and double-fire the curator. The sentinel is
-     * later UPDATEd into {@code proposal_pending} (or {@code proposal_rejected})
-     * by {@code ProposeOptimizationTool} once the curator finishes.
-     *
-     * <p>If the sentinel write fails the exception propagates to the caller
-     * loop's {@code DataAccessException} handler — chatAsync is intentionally
-     * NOT invoked on a failed sentinel write (would orphan a curator session
-     * with no event row to anchor it).
+     * Internal record for the scan helper's return value. Not part of the
+     * public API surface — callers use either {@link DispatchResult} (legacy
+     * fan-out) or {@link CandidateListResult} (new LLM-orchestrated path).
      */
-    void dispatchOne(SessionPatternEntity pattern, Long curatorAgentId) {
+    private record FilterScanOutcome(int scanned,
+                                     List<CandidateEntry> candidates,
+                                     int skippedSurface,
+                                     int skippedCooldown,
+                                     int skippedActive,
+                                     int skippedMemberCount) {}
+
+    /**
+     * Write the dispatch_initiated sentinel row for an eligible pattern and
+     * broadcast the stage transition. Extracted from {@link #dispatchOne} so
+     * both the legacy fan-out and the new LLM-orchestrated path share one
+     * sentinel-write code path.
+     */
+    private CandidateEntry reserveSentinel(SessionPatternEntity pattern) {
         OptimizationEventEntity sentinel = new OptimizationEventEntity();
         sentinel.setPatternId(pattern.getId());
         // pattern.agentId may be null on legacy V1 rows pre-V75; substitute the
-        // curator agent id rather than violate NOT NULL — Phase 1.3 reviewers
-        // can re-evaluate if observability data shows null pattern agentIds in
-        // production.
-        sentinel.setAgentId(pattern.getAgentId() != null ? pattern.getAgentId() : curatorAgentId);
+        // pattern's id-bearing fallback rather than violate NOT NULL — kept as
+        // pattern.agentId only because at reservation time we no longer
+        // have a "curator agent id" context (this path is shared with
+        // listAndReserveCandidates where the LLM decides routing). On legacy
+        // rows where agentId is null we leave the column null at this stage —
+        // the curator's WriteOptimizationEvent UPDATE can backfill later from
+        // its own session context. (Field is currently NOT NULL in the
+        // schema; substitute 0L as a sentinel placeholder consistent with
+        // SYSTEM_USER_ID convention to avoid the NOT NULL violation.)
+        sentinel.setAgentId(pattern.getAgentId() != null ? pattern.getAgentId() : SYSTEM_USER_ID);
         sentinel.setSurfaceType(pattern.getSuspectSurface());
         sentinel.setStage(OptimizationEventEntity.STAGE_DISPATCH_INITIATED);
         // All other fields (changeType / description / expectedImpact / confidence
@@ -353,11 +497,44 @@ public class AttributionDispatcherService {
         log.debug("[AttributionDispatcher] sentinel written for patternId={} eventId={}",
                 pattern.getId(), persistedSentinel.getId());
 
+        return new CandidateEntry(
+                pattern.getId(),
+                persistedSentinel.getId(),
+                pattern.getSignature(),
+                pattern.getOutcome(),
+                pattern.getSuspectSurface(),
+                pattern.getMemberCount(),
+                pattern.getLastSeenAt());
+    }
+
+    /**
+     * Spawn a fresh attribution-curator session and submit the per-pattern
+     * user-message that the system prompt expects. The agent's first tool call
+     * (PatternRead) consumes the patternId; the rest of its 4-STEP pipeline
+     * follows from there.
+     *
+     * <p>DISPATCHER-ORCHESTRATOR-REFACTOR: the sentinel write moved upstream
+     * into {@link #reserveSentinel(SessionPatternEntity)} so both the legacy
+     * fan-out ({@link #dispatchPendingPatterns(int)}) and the new
+     * LLM-orchestrated path ({@link #listAndReserveCandidates(int)}) write
+     * sentinels via one code path. By the time {@code dispatchOne} runs the
+     * sentinel row already exists with id =
+     * {@link CandidateEntry#sentinelEventId()} and stage
+     * {@link OptimizationEventEntity#STAGE_DISPATCH_INITIATED}; the curator
+     * will later UPDATE that same row rather than insert a fresh one.
+     *
+     * <p>If {@code createSession} / {@code chatAsync} fails, the sentinel row
+     * stays behind in {@code dispatch_initiated} state until
+     * {@link #cleanupOrphanSentinels()} sweeps it 2h later — same fault-recovery
+     * shape the LLM-orchestrated path uses when the agent decides to skip a
+     * candidate.
+     */
+    void dispatchOne(CandidateEntry candidate, Long curatorAgentId) {
         SessionEntity session = sessionService.createSession(SYSTEM_USER_ID, curatorAgentId);
-        String prompt = composeDispatchPrompt(pattern);
+        String prompt = composeDispatchPrompt(candidate);
         chatService.chatAsync(session.getId(), prompt, SYSTEM_USER_ID);
         log.info("[AttributionDispatcher] dispatched curator for patternId={} sessionId={} sentinelEventId={}",
-                pattern.getId(), session.getId(), persistedSentinel.getId());
+                candidate.patternId(), session.getId(), candidate.sentinelEventId());
     }
 
     /**
@@ -412,8 +589,8 @@ public class AttributionDispatcherService {
     }
 
     /**
-     * Compose the dispatch prompt. Package-private so tests can pin the wire
-     * format without going through chatAsync.
+     * Compose the dispatch prompt for the attribution-curator. Package-private
+     * so tests can pin the wire format without going through chatAsync.
      *
      * <p>MULTI-DIM-ATTRIBUTION 2026-05-21: includes {@code outcome=...} so the
      * curator can fast-reject {@code infrastructure_failure} at STEP 1 before
@@ -421,17 +598,25 @@ public class AttributionDispatcherService {
      * outcomes (failure / partial_success / cancelled) since the curator
      * already infers them from {@code PatternRead}'s response — having it on
      * the wire just shortens the path.
+     *
+     * <p>DISPATCHER-ORCHESTRATOR-REFACTOR: now takes {@link CandidateEntry}
+     * (the sentinel-reserved candidate, includes {@code sentinelEventId}) so
+     * the curator can reference the same row to UPDATE rather than INSERT a
+     * fresh stage transition. The {@code agentId=...} segment is dropped
+     * because the LLM-orchestrated path no longer carries agent identity on
+     * the wire (the curator has its own LLM context); failure / partial /
+     * cancelled outcomes never used it either.
      */
-    static String composeDispatchPrompt(SessionPatternEntity pattern) {
+    static String composeDispatchPrompt(CandidateEntry candidate) {
         return String.format(
                 "Run the 4-STEP attribution pipeline for patternId=%d "
-                        + "(agentId=%s, outcome=%s, suspectSurface=%s, memberCount=%d). "
+                        + "(outcome=%s, suspectSurface=%s, memberCount=%d, sentinelEventId=%d). "
                         + "STEP 1: PatternRead(%d); STEP 2-4 follow your system prompt.",
-                pattern.getId(),
-                pattern.getAgentId() == null ? "null" : pattern.getAgentId().toString(),
-                pattern.getOutcome() == null ? "null" : pattern.getOutcome(),
-                pattern.getSuspectSurface(),
-                pattern.getMemberCount(),
-                pattern.getId());
+                candidate.patternId(),
+                candidate.outcome() == null ? "null" : candidate.outcome(),
+                candidate.surface(),
+                candidate.memberCount(),
+                candidate.sentinelEventId(),
+                candidate.patternId());
     }
 }

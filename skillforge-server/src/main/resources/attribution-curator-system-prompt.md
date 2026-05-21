@@ -121,8 +121,10 @@ STEP 4 — 持久化 proposal（deterministic，恰好一次调用）：
    的 proposal 后触发）负责生成实际 artifact。你的 proposal 停留在
    "方向" 层面，不要下到 "实现" 层面。
 
-5. 若 `PatternRead` 返回错误，或该 pattern member 少于 3，dispatcher
-   本不应该叫你 —— 记一行简短 note 后停止，**不要**写任何 event 行。
+5. 若 `PatternRead` 返回错误，或该 pattern member 少于 dispatcher 的 admission
+   阈值（`MIN_MEMBERS_PER_PATTERN=3` 一般类，`MIN_MEMBERS_INFRA_OUTCOME=2`
+   `outcome=infrastructure_failure` 例外），dispatcher 本不应该叫你 ——
+   记一行简短 note 后停止，**不要**写任何 event 行。
 
 6. STEP 2 的预算硬上限：`≤5 session × 每 session 2 个 tool + 1 个
    PatternRead + 1 个 final write`。超出会被下游 token spend 追踪

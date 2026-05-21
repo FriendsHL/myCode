@@ -891,23 +891,24 @@ public class SkillForgeConfig {
     }
 
     /**
-     * ATTRIBUTION-DISPATCHER-AGENT (V93): wraps
-     * {@link com.skillforge.server.attribution.AttributionDispatcherService#dispatchPendingPatterns(int)}
-     * so the dedicated {@code attribution-dispatcher} system agent (seeded by
-     * V93) can invoke the dispatch logic via the standard LLM tool-call path
-     * instead of having a {@code @Scheduled} cron call the service directly.
-     * Consistent with the V81 curator tool-wrap pattern.
+     * DISPATCHER-ORCHESTRATOR-REFACTOR (post-V93): replaces
+     * {@code DispatchAttributionPatternsTool} (deleted) with a STEP-1 tool that
+     * returns a candidates list rather than fan-out'ing per-pattern in Java.
+     * The dispatcher agent's system prompt now drives per-candidate routing
+     * decisions via {@code SubAgent(action=dispatch,
+     * agentName=attribution-curator)} — moves dispatch policy from baked-in
+     * Java into the configurable agent prompt.
      */
     @Bean
-    public com.skillforge.server.tool.attribution.DispatchAttributionPatternsTool dispatchAttributionPatternsTool(
+    public com.skillforge.server.tool.attribution.ListAttributionCandidatesTool listAttributionCandidatesTool(
             com.skillforge.server.attribution.AttributionDispatcherService dispatcherService,
             ObjectMapper objectMapper,
             SkillRegistry skillRegistry) {
-        com.skillforge.server.tool.attribution.DispatchAttributionPatternsTool tool =
-                new com.skillforge.server.tool.attribution.DispatchAttributionPatternsTool(
+        com.skillforge.server.tool.attribution.ListAttributionCandidatesTool tool =
+                new com.skillforge.server.tool.attribution.ListAttributionCandidatesTool(
                         dispatcherService, objectMapper);
         skillRegistry.registerTool(tool);
-        log.info("Registered DispatchAttributionPatternsTool into SkillRegistry");
+        log.info("Registered ListAttributionCandidatesTool into SkillRegistry");
         return tool;
     }
 
