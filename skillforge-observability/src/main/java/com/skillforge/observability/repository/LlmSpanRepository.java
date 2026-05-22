@@ -59,4 +59,36 @@ public interface LlmSpanRepository extends JpaRepository<LlmSpanEntity, String> 
             + "GROUP BY s.traceId")
     List<Object[]> countByTraceIdsAndKind(@Param("traceIds") Collection<String> traceIds,
                                           @Param("kind") String kind);
+
+    /**
+     * ANNOTATOR-BEHAVIOR-SIGNALS (2026-05-22): per-tool call count for a session.
+     * Used by {@code SpanBehaviorStatsTool} (STEP 1.5 of the session-annotator pipeline)
+     * to derive behavioral efficiency signals (hasToolOveruse, top tool churn).
+     *
+     * <p>Returns one {@code [name, count]} row per tool that was invoked at least once
+     * in the session, ordered by descending count. {@code name} may be NULL for legacy
+     * pre-OBS-2 M0 rows where {@code kind=tool} but {@code name} was not yet captured —
+     * callers should filter NULLs out client-side or treat them as an "unknown tool"
+     * bucket.
+     */
+    @Query("SELECT s.name, COUNT(s) FROM LlmSpanEntity s "
+            + "WHERE s.sessionId = :sessionId AND s.kind = 'tool' "
+            + "GROUP BY s.name ORDER BY COUNT(s) DESC")
+    List<Object[]> countToolCallsByNameForSession(@Param("sessionId") String sessionId);
+
+    /**
+     * ANNOTATOR-BEHAVIOR-SIGNALS (2026-05-22): total LLM-call count for a session.
+     * Used by {@code SpanBehaviorStatsTool} as {@code totalTurns} — each LLM call is
+     * one Agent Loop turn, so a session with >20 LLM spans is a candidate
+     * {@code loop_inefficiency} outcome.
+     */
+    long countBySessionIdAndKind(String sessionId, String kind);
+
+    /**
+     * ANNOTATOR-BEHAVIOR-SIGNALS (2026-05-22): count of error spans for a session.
+     * Used by {@code SpanBehaviorStatsTool} to populate {@code errorSpanCount} which
+     * the LLM annotator inspects alongside per-tool counts to derive
+     * {@code suspect_surface} (e.g. error span + high-count tool name → behavior_rule).
+     */
+    long countBySessionIdAndErrorIsNotNull(String sessionId);
 }

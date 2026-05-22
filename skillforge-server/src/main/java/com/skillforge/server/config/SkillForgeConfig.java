@@ -80,6 +80,9 @@ import com.skillforge.server.tool.scheduling.DeleteScheduledTaskTool;
 import com.skillforge.server.tool.scheduling.GetScheduledTaskTool;
 import com.skillforge.server.tool.scheduling.ListScheduledTasksTool;
 import com.skillforge.server.tool.scheduling.UpdateScheduledTaskTool;
+import com.skillforge.observability.repository.LlmSpanRepository;
+import com.skillforge.observability.repository.LlmTraceRepository;
+import com.skillforge.server.tool.sessionannotation.SpanBehaviorStatsTool;
 import com.skillforge.server.subagent.AgentRoster;
 import com.skillforge.server.subagent.CollabRunService;
 import com.skillforge.server.subagent.SubAgentRegistry;
@@ -755,6 +758,26 @@ public class SkillForgeConfig {
                 new com.skillforge.server.tool.sessionannotation.DetectSignalAnnotationsTool(signalService, objectMapper);
         skillRegistry.registerTool(tool);
         log.info("Registered DetectSignalAnnotationsTool into SkillRegistry");
+        return tool;
+    }
+
+    /**
+     * ANNOTATOR-BEHAVIOR-SIGNALS (2026-05-22) — STEP 1.5 of the session-annotator
+     * agent pipeline. Computes behavioral efficiency stats (per-tool counts,
+     * total turns, error span count) from {@code t_llm_span} + latest
+     * {@code t_llm_trace} for a given session. V96 migration adds
+     * {@code SpanBehaviorStats} to the session-annotator's tool_ids + injects
+     * STEP 1.5 into the system_prompt.
+     */
+    @Bean
+    public SpanBehaviorStatsTool spanBehaviorStatsTool(
+            LlmSpanRepository spanRepository,
+            LlmTraceRepository traceRepository,
+            ObjectMapper objectMapper,
+            SkillRegistry skillRegistry) {
+        SpanBehaviorStatsTool tool = new SpanBehaviorStatsTool(spanRepository, traceRepository, objectMapper);
+        skillRegistry.registerTool(tool);
+        log.info("Registered SpanBehaviorStatsTool into SkillRegistry");
         return tool;
     }
 
