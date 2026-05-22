@@ -208,6 +208,7 @@ skillforge:
         model: claude-sonnet-4-20250514
         models:
           - claude-sonnet-4-20250514
+          - claude-opus-4-5-20251001
         # MULTIMODAL-MVP: vision-capable models. FE picker tags these with a
         # "多模态" chip; user can upload images/PDFs when their agent.modelId
         # is one of these. ChatService.runLoop keeps capability check as

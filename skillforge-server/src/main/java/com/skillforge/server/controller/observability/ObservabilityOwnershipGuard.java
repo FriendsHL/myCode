@@ -44,7 +44,12 @@ public class ObservabilityOwnershipGuard {
         } catch (RuntimeException e) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Session not found");
         }
-        if (session.getUserId() == null || !session.getUserId().equals(userId)) {
+        // System sessions (userId=0) are accessible to any authenticated user —
+        // opt-loop chain sessions (annotator / dispatcher) run as SYSTEM_USER_ID=0
+        // and operators need to inspect them via the dashboard.
+        Long owner = session.getUserId();
+        boolean isSystemSession = (owner == null || owner == 0L);
+        if (!isSystemSession && !owner.equals(userId)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Session not owned");
         }
         return session;

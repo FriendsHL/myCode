@@ -78,6 +78,16 @@ public class SessionAnnotationSignalService {
     /** Tool returns at most this many "needs LLM" sessions per detect call — matches §4.1 STEP 2 cap. */
     static final int DEFAULT_LLM_QUEUE_LIMIT = 10;
 
+    /**
+     * ANNOTATOR-BEHAVIOR-SIGNALS (2026-05-22): behavioral efficiency thresholds.
+     * Sessions that exceed these trigger signal annotations even if detectReasons
+     * returns empty — ensuring sessions with tool overuse or excessive loop
+     * iterations enter the LLM annotation queue for SpanBehaviorStats (STEP 1.5)
+     * and outcome classification (tool_overuse / loop_inefficiency).
+     */
+    static final int HIGH_TOOL_CALL_THRESHOLD = 15;
+    static final int HIGH_LOOP_THRESHOLD = 20;
+
     private final SessionRepository sessionRepository;
     private final LlmTraceRepository llmTraceRepository;
     private final LlmSpanRepository llmSpanRepository;
@@ -401,8 +411,19 @@ public class SessionAnnotationSignalService {
         int totalToolCalls = traces.stream().mapToInt(LlmTraceEntity::getToolCallCount).sum();
         int totalLlmCalls = (int) spans.stream().filter(sp -> "llm".equals(sp.getKind())).count();
 
-        List<String> reasons = TraceScenarioImportService.detectReasons(
-                primary, spans, totalTokens, totalToolCalls, totalLlmCalls, DEFAULT_MIN_TOKENS);
+        List<String> reasons = new ArrayList<>(TraceScenarioImportService.detectReasons(
+                primary, spans, totalTokens, totalToolCalls, totalLlmCalls, DEFAULT_MIN_TOKENS));
+
+        // ANNOTATOR-BEHAVIOR-SIGNALS (2026-05-22): add behavioral signals for sessions
+        // that exceed efficiency thresholds but have no original detectReasons signal.
+        // These let SpanBehaviorStats (STEP 1.5) classify tool_overuse / loop_inefficiency
+        // even when the session completed without errors.
+        if (totalToolCalls > HIGH_TOOL_CALL_THRESHOLD) {
+            reasons.add("high_tool_call_count");
+        }
+        if (totalLlmCalls > HIGH_LOOP_THRESHOLD) {
+            reasons.add("high_loop_count");
+        }
 
         if (reasons.isEmpty()) {
             return 0;
