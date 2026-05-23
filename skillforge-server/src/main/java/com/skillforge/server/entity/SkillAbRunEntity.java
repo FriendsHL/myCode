@@ -61,6 +61,21 @@ public class SkillAbRunEntity {
 
     private Instant completedAt;
 
+    /**
+     * EVAL-DATASET-LAYER V1 r2 mandatory fix (V113): pin each skill A/B run to
+     * an immutable {@link EvalDatasetVersionEntity} snapshot so cross-run
+     * comparisons stay meaningful even after the dataset evolves. Nullable for
+     * backward compatibility with attribution-derived runs (which use ephemeral
+     * scenarios, not a dataset) and pre-V113 historical rows.
+     *
+     * <p>Mirrors {@link PromptAbRunEntity#datasetVersionId} (V111). Without
+     * this column Jackson would silently drop the field from the request body
+     * and the run would fall back to the legacy held_out path — pipeline.md
+     * severity B silent-failure.
+     */
+    @Column(name = "dataset_version_id", length = 36)
+    private String datasetVersionId;
+
     public SkillAbRunEntity() {
     }
 
@@ -114,4 +129,7 @@ public class SkillAbRunEntity {
 
     public Instant getCompletedAt() { return completedAt; }
     public void setCompletedAt(Instant completedAt) { this.completedAt = completedAt; }
+
+    public String getDatasetVersionId() { return datasetVersionId; }
+    public void setDatasetVersionId(String datasetVersionId) { this.datasetVersionId = datasetVersionId; }
 }

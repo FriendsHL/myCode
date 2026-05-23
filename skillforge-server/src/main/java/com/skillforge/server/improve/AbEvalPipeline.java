@@ -9,6 +9,7 @@ import com.skillforge.core.engine.LoopResult;
 import com.skillforge.core.model.AgentDefinition;
 import com.skillforge.core.skill.SkillRegistry;
 import com.skillforge.server.entity.AgentEntity;
+import com.skillforge.server.entity.EvalDatasetVersionEntity;
 import com.skillforge.server.entity.EvalScenarioEntity;
 import com.skillforge.server.entity.EvalTaskEntity;
 import com.skillforge.server.entity.PromptAbRunEntity;
@@ -20,9 +21,11 @@ import com.skillforge.server.eval.ScenarioRunResult;
 import com.skillforge.server.eval.sandbox.SandboxSkillRegistryFactory;
 import com.skillforge.server.eval.scenario.EvalScenario;
 import com.skillforge.server.eval.scenario.ScenarioLoader;
+import com.skillforge.server.repository.EvalDatasetVersionRepository;
 import com.skillforge.server.repository.PromptAbRunRepository;
 import com.skillforge.server.repository.PromptVersionRepository;
 import com.skillforge.server.service.AgentService;
+import com.skillforge.server.service.EvalDatasetService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -58,6 +61,12 @@ public class AbEvalPipeline {
     private final ChatEventBroadcaster broadcaster;
     private final ExecutorService loopExecutor;
     private final long scenarioTimeoutMs;
+    // EVAL-DATASET-LAYER V1: nullable so the existing unit test ctor
+    // (AbEvalPipelineAttributionBaselineTest) doesn't have to wire these — the
+    // new dataset-version path that uses them is exercised by a separate test.
+    // In production, Spring DI wires them.
+    private final EvalDatasetService evalDatasetService;
+    private final EvalDatasetVersionRepository evalDatasetVersionRepository;
 
     public AbEvalPipeline(ScenarioLoader scenarioLoader,
                            SandboxSkillRegistryFactory sandboxFactory,
@@ -70,6 +79,30 @@ public class AbEvalPipeline {
                            ChatEventBroadcaster broadcaster,
                            @Qualifier("abEvalLoopExecutor") ExecutorService loopExecutor,
                            @Value("${skillforge.flywheel.ab-eval.scenario-timeout-ms:120000}") long scenarioTimeoutMs) {
+        this(scenarioLoader, sandboxFactory, evalEngineFactory, evalJudgeTool,
+             promptAbRunRepository, promptVersionRepository, agentService, objectMapper,
+             broadcaster, loopExecutor, scenarioTimeoutMs, null, null);
+    }
+
+    /**
+     * EVAL-DATASET-LAYER V1: full constructor used by Spring DI in production
+     * (autowires the dataset-version dependencies). The narrower ctor above
+     * is preserved so existing tests (Mockito @Mock-only) compile unchanged.
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    public AbEvalPipeline(ScenarioLoader scenarioLoader,
+                           SandboxSkillRegistryFactory sandboxFactory,
+                           EvalEngineFactory evalEngineFactory,
+                           EvalJudgeTool evalJudgeTool,
+                           PromptAbRunRepository promptAbRunRepository,
+                           PromptVersionRepository promptVersionRepository,
+                           AgentService agentService,
+                           ObjectMapper objectMapper,
+                           ChatEventBroadcaster broadcaster,
+                           @Qualifier("abEvalLoopExecutor") ExecutorService loopExecutor,
+                           @Value("${skillforge.flywheel.ab-eval.scenario-timeout-ms:120000}") long scenarioTimeoutMs,
+                           EvalDatasetService evalDatasetService,
+                           EvalDatasetVersionRepository evalDatasetVersionRepository) {
         this.scenarioLoader = scenarioLoader;
         this.sandboxFactory = sandboxFactory;
         this.evalEngineFactory = evalEngineFactory;
@@ -81,6 +114,8 @@ public class AbEvalPipeline {
         this.broadcaster = broadcaster;
         this.loopExecutor = loopExecutor;
         this.scenarioTimeoutMs = scenarioTimeoutMs;
+        this.evalDatasetService = evalDatasetService;
+        this.evalDatasetVersionRepository = evalDatasetVersionRepository;
     }
 
     public void run(PromptAbRunEntity abRun, PromptVersionEntity candidate,
@@ -208,11 +243,71 @@ public class AbEvalPipeline {
      * doesn't collide. Per-scenario errors are recorded as ERROR status and
      * do not abort the batch.
      */
+    /**
+     * EVAL-DATASET-LAYER V1 (★ r4 D2 fix ★) — legacy overload kept for the
+     * attribution-derived (ephemeral) path. Marked
+     * {@link Deprecated} {@code forRemoval = true}: V2 will remove this
+     * once attribution callers migrate to the dataset-version path
+     * ({@link #run(PromptAbRunEntity, PromptVersionEntity, PromptVersionEntity, AgentEntity, String)}).
+     *
+     * <p>A {@link Logger#warn} is emitted on every invocation so the
+     * migration path is visible to operators.
+     */
+    @Deprecated(forRemoval = true, since = "EVAL-DATASET-LAYER V1")
     public void run(PromptAbRunEntity abRun,
                     PromptVersionEntity candidate,
                     PromptVersionEntity baselineVersion,
                     AgentEntity agent,
                     List<EvalScenarioEntity> scenarios) {
+        log.warn("AbEvalPipeline.run(scenarios) legacy overload invoked — V2 will remove this; "
+                + "migrate to run(abRun, candidate, baseline, agent, datasetVersionId). abRunId={}",
+                abRun.getId());
+        runWithScenarios(abRun, candidate, baselineVersion, agent, scenarios, null);
+    }
+
+    /**
+     * EVAL-DATASET-LAYER V1: new overload that takes an immutable dataset
+     * version reference. Behavioural parity with the legacy
+     * {@link #run(PromptAbRunEntity, PromptVersionEntity, PromptVersionEntity, AgentEntity, List)}
+     * for per-scenario execution, plus:
+     * <ul>
+     *   <li>{@code abRun.datasetVersionId} is set so the run row is forever
+     *       linked back to the immutable snapshot.</li>
+     *   <li>The version's {@code actualBaselinePassRate} is back-written
+     *       (moving-average if multiple runs) — ★ r4 D1 fix ★.</li>
+     * </ul>
+     */
+    public void run(PromptAbRunEntity abRun,
+                    PromptVersionEntity candidate,
+                    PromptVersionEntity baselineVersion,
+                    AgentEntity agent,
+                    String datasetVersionId) {
+        if (datasetVersionId == null || datasetVersionId.isBlank()) {
+            throw new IllegalArgumentException("datasetVersionId required for this overload");
+        }
+        if (evalDatasetService == null || evalDatasetVersionRepository == null) {
+            throw new IllegalStateException(
+                    "AbEvalPipeline was built without EvalDatasetService / EvalDatasetVersionRepository "
+                            + "— dataset-version path unavailable. Wire via the Spring DI constructor.");
+        }
+        List<EvalScenarioEntity> scenarios =
+                evalDatasetService.getScenariosForVersion(datasetVersionId);
+        abRun.setDatasetVersionId(datasetVersionId);
+        runWithScenarios(abRun, candidate, baselineVersion, agent, scenarios, datasetVersionId);
+    }
+
+    /**
+     * Internal helper: the shared body for both the legacy List<EvalScenarioEntity>
+     * overload and the new datasetVersionId overload. Mutates {@code abRun}
+     * and persists; if {@code datasetVersionId} is non-null, also back-writes
+     * the version's actualBaselinePassRate after the run completes.
+     */
+    private void runWithScenarios(PromptAbRunEntity abRun,
+                                   PromptVersionEntity candidate,
+                                   PromptVersionEntity baselineVersion,
+                                   AgentEntity agent,
+                                   List<EvalScenarioEntity> scenarios,
+                                   String datasetVersionId) {
         abRun.setStatus("RUNNING");
         abRun.setStartedAt(Instant.now());
         promptAbRunRepository.save(abRun);
@@ -287,8 +382,30 @@ public class AbEvalPipeline {
         candidate.setAbRunId(abRun.getId());
         promptVersionRepository.save(candidate);
 
-        log.info("Attribution A/B run {} COMPLETED: baseline={} candidate={} delta={}",
-                abRun.getId(), baselinePassRate, candidatePassRate, delta);
+        // ★ r4 D1 fix ★: back-write the version's actualBaselinePassRate so
+        // the FE can prefer this over the static heuristic estimate. Multiple
+        // runs against the same version use a simple moving average — over
+        // many runs this converges to the true mean. Stored as fraction
+        // [0.0, 1.0] to match the composition_stats.expected_baseline_pass_rate
+        // field. baselinePassRate above is in 0-100 percentage form.
+        if (datasetVersionId != null && evalDatasetVersionRepository != null) {
+            try {
+                evalDatasetVersionRepository.findById(datasetVersionId).ifPresent(v -> {
+                    double newFraction = baselinePassRate / 100.0;
+                    Double prior = v.getActualBaselinePassRate();
+                    double updated = (prior == null) ? newFraction : (prior + newFraction) / 2.0;
+                    v.setActualBaselinePassRate(updated);
+                    evalDatasetVersionRepository.save(v);
+                });
+            } catch (Exception e) {
+                // Best-effort: a back-write failure shouldn't fail the A/B run.
+                log.warn("Failed to back-write actualBaselinePassRate for "
+                        + "datasetVersionId={}: {}", datasetVersionId, e.getMessage());
+            }
+        }
+
+        log.info("Attribution A/B run {} COMPLETED: baseline={} candidate={} delta={} datasetVersionId={}",
+                abRun.getId(), baselinePassRate, candidatePassRate, delta, datasetVersionId);
     }
 
     /**

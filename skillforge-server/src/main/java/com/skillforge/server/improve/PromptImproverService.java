@@ -35,6 +35,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
@@ -105,6 +106,11 @@ public class PromptImproverService extends AbstractAbEvalRunner<PromptVersionEnt
     // (REQUIRES_NEW) actually take effect for ephemeral cleanup that runs in
     // async coordinatorExecutor finally (publisher tx is already committed).
     private final EphemeralScenarioCleanupService ephemeralScenarioCleanupService;
+    // EVAL-DATASET-LAYER V1 (V109): optional collaborator for the new
+    // dataset-version path. Nullable so existing Mockito tests with the
+    // 17-arg ctor continue to compile; in production Spring DI calls the
+    // 18-arg ctor below via @Autowired.
+    private final com.skillforge.server.service.EvalDatasetService evalDatasetService;
 
     public PromptImproverService(AgentRepository agentRepository,
                                   EvalTaskRepository evalRunRepository,
@@ -124,6 +130,38 @@ public class PromptImproverService extends AbstractAbEvalRunner<PromptVersionEnt
                                   com.skillforge.server.repository.SessionRepository sessionRepository,
                                   SessionScenarioExtractorService sessionScenarioExtractor,
                                   EphemeralScenarioCleanupService ephemeralScenarioCleanupService) {
+        this(agentRepository, evalRunRepository, promptVersionRepository, promptAbRunRepository,
+             abEvalPipeline, promotionService, llmProviderFactory, objectMapper, coordinatorExecutor,
+             llmProperties, promptSurface, promptEvalService, evalScenarioRepository,
+             optimizationEventRepository, patternSessionMemberRepository, sessionRepository,
+             sessionScenarioExtractor, ephemeralScenarioCleanupService, null);
+    }
+
+    /**
+     * EVAL-DATASET-LAYER V1: full Spring-DI constructor. The 17-arg ctor above
+     * delegates here with {@code evalDatasetService=null}, preserved for existing
+     * unit-test wiring.
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    public PromptImproverService(AgentRepository agentRepository,
+                                  EvalTaskRepository evalRunRepository,
+                                  PromptVersionRepository promptVersionRepository,
+                                  PromptAbRunRepository promptAbRunRepository,
+                                  AbEvalPipeline abEvalPipeline,
+                                  PromptPromotionService promotionService,
+                                  LlmProviderFactory llmProviderFactory,
+                                  ObjectMapper objectMapper,
+                                  @Qualifier("abEvalCoordinatorExecutor") ExecutorService coordinatorExecutor,
+                                  LlmProperties llmProperties,
+                                  @Lazy PromptSurface promptSurface,
+                                  PromptEvalService promptEvalService,
+                                  com.skillforge.server.repository.EvalScenarioDraftRepository evalScenarioRepository,
+                                  com.skillforge.server.repository.OptimizationEventRepository optimizationEventRepository,
+                                  com.skillforge.server.repository.PatternSessionMemberRepository patternSessionMemberRepository,
+                                  com.skillforge.server.repository.SessionRepository sessionRepository,
+                                  SessionScenarioExtractorService sessionScenarioExtractor,
+                                  EphemeralScenarioCleanupService ephemeralScenarioCleanupService,
+                                  com.skillforge.server.service.EvalDatasetService evalDatasetService) {
         // @Lazy on promptSurface breaks the DI cycle: PromptSurface's @Lazy
         // injection of PromptImproverService bootstrap order. Super constructor
         // only stores the reference (no method call), so proxy is safe.
@@ -152,6 +190,7 @@ public class PromptImproverService extends AbstractAbEvalRunner<PromptVersionEnt
         this.sessionRepository = sessionRepository;
         this.sessionScenarioExtractor = sessionScenarioExtractor;
         this.ephemeralScenarioCleanupService = ephemeralScenarioCleanupService;
+        this.evalDatasetService = evalDatasetService;
     }
 
     @Transactional
@@ -363,11 +402,48 @@ public class PromptImproverService extends AbstractAbEvalRunner<PromptVersionEnt
      * @throws UnsupportedOperationException Phase 1.3 stub; Phase 1.4 wires
      *                                       the async fan-out body
      */
+    /**
+     * EVAL-DATASET-LAYER V1 (★ r4 D3 fix ★): new param-object entry point that
+     * additionally accepts an immutable {@code datasetVersionId}. Mutually
+     * exclusive with {@code evalScenarioIds} (the record's compact constructor
+     * enforces).
+     *
+     * <p>This method is the V1 forward-facing API; the legacy 4-arg overload
+     * below is marked {@link Deprecated} and delegates here.
+     */
+    @Transactional
+    public String runAbTestAgainst(AbEvalRunRequest req) {
+        Objects.requireNonNull(req, "AbEvalRunRequest required");
+        return runAbTestAgainstInternal(
+                req.agentId(),
+                req.baselineVersionId(),
+                req.candidateVersionId(),
+                req.evalScenarioIds(),
+                req.datasetVersionId());
+    }
+
+    /**
+     * Legacy 4-arg API. ★ r4 D2 fix ★: {@link Deprecated} {@code forRemoval}
+     * so callers migrate to the {@link AbEvalRunRequest} record. Delegates
+     * to the internal implementation with {@code datasetVersionId=null}.
+     */
+    @Deprecated(forRemoval = true, since = "EVAL-DATASET-LAYER V1")
     @Transactional
     public String runAbTestAgainst(String agentId,
                                    String baselineVersionId,
                                    String candidateVersionId,
                                    List<String> evalScenarioIds) {
+        log.warn("PromptImproverService.runAbTestAgainst(4-arg) legacy overload invoked — "
+                + "migrate to runAbTestAgainst(AbEvalRunRequest). agentId={}", agentId);
+        return runAbTestAgainstInternal(agentId, baselineVersionId, candidateVersionId,
+                evalScenarioIds, null);
+    }
+
+    private String runAbTestAgainstInternal(String agentId,
+                                             String baselineVersionId,
+                                             String candidateVersionId,
+                                             List<String> evalScenarioIds,
+                                             String datasetVersionId) {
         if (agentId == null || agentId.isBlank()) {
             throw new IllegalArgumentException("agentId is required");
         }
@@ -453,12 +529,22 @@ public class PromptImproverService extends AbstractAbEvalRunner<PromptVersionEnt
                 .orElseThrow(() -> new IllegalArgumentException(
                         "Baseline prompt version not found: " + baselineId));
 
-        // Phase 1.4 Ratify #7-E — ephemeral scenario fallback. Resolve held-out
-        // scenarios, or fall back to extracting from pattern members of the
-        // attribution event that produced this candidate.
+        // EVAL-DATASET-LAYER V1: 3 paths for scenario resolution.
+        //   (1) datasetVersionId (new) — resolve via EvalDatasetService bridge.
+        //   (2) evalScenarioIds (explicit) — caller knows exactly what to run.
+        //   (3) ephemeral fallback (legacy) — held_out for agent or attribution
+        //       pattern-derived ephemerals.
+        // (1)/(2) are mutually exclusive at the AbEvalRunRequest record level;
+        // here we just branch on which one is non-null.
         List<EvalScenarioEntity> scenarios;
         List<String> ephemeralIds = null;
-        if (evalScenarioIds != null && !evalScenarioIds.isEmpty()) {
+        if (datasetVersionId != null && !datasetVersionId.isBlank()) {
+            if (evalDatasetService == null) {
+                throw new IllegalStateException(
+                        "datasetVersionId path requested but EvalDatasetService not wired");
+            }
+            scenarios = evalDatasetService.getScenariosForVersion(datasetVersionId);
+        } else if (evalScenarioIds != null && !evalScenarioIds.isEmpty()) {
             scenarios = evalScenarioRepository.findAllById(evalScenarioIds);
         } else {
             scenarios = evalScenarioRepository.findByAgentIdAndSplit(agentId, "held_out");
@@ -488,6 +574,10 @@ public class PromptImproverService extends AbstractAbEvalRunner<PromptVersionEnt
         abRun.setId(UUID.randomUUID().toString());
         abRun.setAgentId(agentId);
         abRun.setPromptVersionId(candidate.getId());
+        // EVAL-DATASET-LAYER V1 (V111): pin the run to its dataset version
+        // snapshot for cross-run comparability. Set unconditionally — null on
+        // the legacy/ephemeral path is intentional (acceptance #6 of MRD).
+        abRun.setDatasetVersionId(datasetVersionId);
         // No EvalTaskEntity for the baseline anchor — attribution path doesn't
         // have a prior eval run. Leave baselineEvalRunId null; downstream
         // Phase 1.4b AbEvalPipeline attribution overload will populate
@@ -497,6 +587,7 @@ public class PromptImproverService extends AbstractAbEvalRunner<PromptVersionEnt
 
         final String abRunId = abRun.getId();
         final List<String> capturedEphemeralIds = ephemeralIds;
+        final String capturedDatasetVersionId = datasetVersionId;
         // F4 fix (Phase 2 r2, code reviewer HIGH-2): pass IDs, NOT entity
         // references. This @Transactional method commits after return; if the
         // async runnable were to hold direct entity refs from the outer tx,
@@ -535,9 +626,18 @@ public class PromptImproverService extends AbstractAbEvalRunner<PromptVersionEnt
                 List<EvalScenarioEntity> reloadedScenarios =
                         evalScenarioRepository.findAllById(capturedScenarioIds);
                 log.info("[AttrAB-async] all reloads OK — invoking abEvalPipeline.run "
-                        + "abRunId={} scenarios={}", abRunId, reloadedScenarios.size());
-                abEvalPipeline.run(reloadedAbRun, reloadedCandidate, reloadedBaseline,
-                        reloadedAgent, reloadedScenarios);
+                        + "abRunId={} scenarios={} datasetVersionId={}",
+                        abRunId, reloadedScenarios.size(), capturedDatasetVersionId);
+                if (capturedDatasetVersionId != null && !capturedDatasetVersionId.isBlank()) {
+                    // EVAL-DATASET-LAYER V1: new dataset-version overload also
+                    // back-writes actualBaselinePassRate on the version row.
+                    abEvalPipeline.run(reloadedAbRun, reloadedCandidate, reloadedBaseline,
+                            reloadedAgent, capturedDatasetVersionId);
+                } else {
+                    // Legacy/ephemeral path — scenarios list is the source of truth.
+                    abEvalPipeline.run(reloadedAbRun, reloadedCandidate, reloadedBaseline,
+                            reloadedAgent, reloadedScenarios);
+                }
                 log.info("Attribution A/B run {} dispatched + completed via AbEvalPipeline",
                         abRunId);
             } catch (Throwable t) {

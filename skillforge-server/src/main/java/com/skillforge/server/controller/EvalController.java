@@ -155,7 +155,26 @@ public class EvalController {
 
     @GetMapping("/scenarios")
     public ResponseEntity<List<Map<String, Object>>> listScenarios(
-            @RequestParam(value = "agentId", required = false) String agentId) {
+            @RequestParam(value = "agentId", required = false) String agentId,
+            @RequestParam(value = "sourceType", required = false) String sourceType) {
+        // EVAL-DATASET-LAYER V1: new sourceType filter (V109 closed enum
+        // benchmark / session_derived / manual). When sourceType is given,
+        // return DB-stored EvalScenarioEntity rows of that source_type
+        // regardless of agentId — the FE source_type tab uses this path.
+        if (sourceType != null && !sourceType.isBlank()) {
+            if (!EvalScenarioEntity.ALLOWED_SOURCE_TYPES.contains(sourceType)) {
+                return ResponseEntity.badRequest().body(List.of(Map.of(
+                        "error", "invalid sourceType; allowed: "
+                                + EvalScenarioEntity.ALLOWED_SOURCE_TYPES)));
+            }
+            List<EvalScenarioEntity> rows = evalScenarioDraftRepository
+                    .findBySourceTypeOrderByCreatedAtDesc(sourceType);
+            List<Map<String, Object>> result = rows.stream()
+                    .map(this::toScenarioEntityMap)
+                    .collect(Collectors.toList());
+            return ResponseEntity.ok(result);
+        }
+
         // EVAL-V2 M0: when agentId is given, return DB-stored EvalScenarioEntity
         // (per-agent dataset). Without agentId, retain legacy behavior of returning
         // classpath YAML scenarios (used by other consumers).
@@ -468,6 +487,10 @@ public class EvalController {
         map.put("parentScenarioId", entity.getParentScenarioId());
         map.put("sourceSessionId", entity.getSourceSessionId());
         map.put("extractionRationale", entity.getExtractionRationale());
+        // EVAL-DATASET-LAYER V1 (V109): new closed-enum fields exposed for FE filtering.
+        map.put("sourceType", entity.getSourceType());
+        map.put("sourceRef", entity.getSourceRef());
+        map.put("purpose", entity.getPurpose());
         map.put("createdAt", entity.getCreatedAt());
         map.put("reviewedAt", entity.getReviewedAt());
         // EVAL-V2 M2: parse conversation_turns String → List<{role, content}> so

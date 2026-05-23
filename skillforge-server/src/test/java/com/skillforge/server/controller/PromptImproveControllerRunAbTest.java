@@ -69,8 +69,8 @@ class PromptImproveControllerRunAbTest {
     @DisplayName("happy: explicit scenarios → service.runAbTestAgainst called with "
             + "candidate UUID + scenarios; 202 + body abRunId")
     void runAb_happy_returnsAbRunId() {
-        when(promptImproverService.runAbTestAgainst(
-                eq("7"), isNull(), eq("candidate-uuid-1"), any()))
+        // EVAL-DATASET-LAYER V1: controller now passes AbEvalRunRequest record.
+        when(promptImproverService.runAbTestAgainst(any(com.skillforge.server.improve.AbEvalRunRequest.class)))
                 .thenReturn("ab-run-id-happy");
 
         Map<String, Object> body = new HashMap<>();
@@ -92,8 +92,7 @@ class PromptImproveControllerRunAbTest {
     @DisplayName("candidate not found: IllegalArgumentException w/ \"not found\" → 404 NOT_FOUND "
             + "(generic message, internal detail logged only)")
     void runAb_candidateNotFound_returns404() {
-        when(promptImproverService.runAbTestAgainst(
-                anyString(), any(), anyString(), any()))
+        when(promptImproverService.runAbTestAgainst(any(com.skillforge.server.improve.AbEvalRunRequest.class)))
                 .thenThrow(new IllegalArgumentException(
                         "Candidate prompt version not found: missing-uuid"));
 
@@ -116,8 +115,7 @@ class PromptImproveControllerRunAbTest {
     @DisplayName("ephemeral fallback: null body / null scenarios → service-internal fallback → "
             + "202 + abRunId (response shape unchanged from explicit path)")
     void runAb_ephemeralFallback_returnsAbRunId() {
-        when(promptImproverService.runAbTestAgainst(
-                eq("7"), isNull(), eq("candidate-uuid-2"), isNull()))
+        when(promptImproverService.runAbTestAgainst(any(com.skillforge.server.improve.AbEvalRunRequest.class)))
                 .thenReturn("ab-run-id-ephemeral");
 
         // null body — exercises the null-guard branch in the controller body.
@@ -133,8 +131,7 @@ class PromptImproveControllerRunAbTest {
     @Test
     @DisplayName("active A/B conflict (ImprovementConflictException) → 409 CONFLICT")
     void runAb_activeAbConflict_returns409() {
-        when(promptImproverService.runAbTestAgainst(
-                anyString(), any(), anyString(), any()))
+        when(promptImproverService.runAbTestAgainst(any(com.skillforge.server.improve.AbEvalRunRequest.class)))
                 .thenThrow(new ImprovementConflictException(
                         "An A/B run is already active for agent 7"));
 

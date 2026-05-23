@@ -24,4 +24,16 @@ public interface EvalScenarioDraftRepository extends JpaRepository<EvalScenarioE
      * back to the ephemeral path (ratify #4).
      */
     List<EvalScenarioEntity> findByAgentIdAndSplit(String agentId, String split);
+
+    /**
+     * EVAL-DATASET-LAYER V1 (V109): list scenarios by their source_type closed-
+     * enum value. Used by the FE EvalScenarios source_type tab.
+     */
+    List<EvalScenarioEntity> findBySourceTypeOrderByCreatedAtDesc(String sourceType);
+
+    /**
+     * EVAL-DATASET-LAYER V1 (V109): list scenarios by their purpose closed-
+     * enum value. Used by health / composition policy diagnostics.
+     */
+    List<EvalScenarioEntity> findByPurposeOrderByCreatedAtDesc(String purpose);
 }

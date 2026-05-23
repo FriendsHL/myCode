@@ -403,6 +403,12 @@ public class SkillController {
                 ? body.get("baselineEvalRunId").toString() : null;
         Long triggeredByUserId = body.containsKey("triggeredByUserId") && body.get("triggeredByUserId") != null
                 ? Long.parseLong(body.get("triggeredByUserId").toString()) : null;
+        // EVAL-DATASET-LAYER V1 r2 mandatory fix (V113): accept optional
+        // datasetVersionId so the SkillAbPanel's dataset selection actually
+        // pins the run (pipeline.md severity B silent-failure guard: previously
+        // Jackson silently dropped this field).
+        String datasetVersionId = body.containsKey("datasetVersionId") && body.get("datasetVersionId") != null
+                ? body.get("datasetVersionId").toString() : null;
         if (candidateSkillId == null) {
             return ResponseEntity.badRequest().body(Map.of("error", "candidateSkillId is required"));
         }
@@ -414,7 +420,8 @@ public class SkillController {
         }
         try {
             SkillAbRunEntity abRun = skillAbEvalService.createAndTrigger(
-                    id, candidateSkillId, agentId, baselineEvalRunId, triggeredByUserId);
+                    id, candidateSkillId, agentId, baselineEvalRunId, triggeredByUserId,
+                    datasetVersionId);
             return ResponseEntity.accepted().body(toAbRunMap(abRun));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
@@ -510,6 +517,10 @@ public class SkillController {
         m.put("manuallyPromoted", manuallyPromoted);
         m.put("startedAt", r.getStartedAt());
         m.put("completedAt", r.getCompletedAt());
+        // EVAL-DATASET-LAYER V1 r2 (V113): emit the pinned dataset version id
+        // so the FE can render "Dataset: <name>@v<n>" by lazy-fetching
+        // /api/eval/dataset-versions/{id}. null = legacy/ephemeral run.
+        m.put("datasetVersionId", r.getDatasetVersionId());
         return m;
     }
 

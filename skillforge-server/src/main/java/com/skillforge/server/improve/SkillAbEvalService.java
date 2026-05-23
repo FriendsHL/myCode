@@ -167,9 +167,34 @@ public class SkillAbEvalService extends AbstractAbEvalRunner<SkillEntity> {
         this.scenarioTimeoutMs = scenarioTimeoutMs;
     }
 
+    /**
+     * Legacy 5-arg overload — kept for callers that don't carry a dataset_version
+     * id (attribution path, legacy tests, etc.). Delegates to the 6-arg form
+     * with {@code datasetVersionId=null}.
+     *
+     * <p>EVAL-DATASET-LAYER V1 r2: new callers should use the 6-arg overload
+     * below so {@code t_skill_ab_run.dataset_version_id} (V113) is populated.
+     */
     public SkillAbRunEntity createAndTrigger(Long parentSkillId, Long candidateSkillId,
                                               String agentId, String baselineEvalRunId,
                                               Long triggeredByUserId) {
+        return createAndTrigger(parentSkillId, candidateSkillId, agentId,
+                baselineEvalRunId, triggeredByUserId, null);
+    }
+
+    /**
+     * EVAL-DATASET-LAYER V1 r2 mandatory fix: 6-arg overload accepting an
+     * optional {@code datasetVersionId} that pins the A/B run to an immutable
+     * {@link EvalDatasetVersionEntity}. Mirrors the prompt-surface flow
+     * (see {@link PromptImproveController}'s /run-ab path).
+     *
+     * <p>Null/blank {@code datasetVersionId} is treated as the legacy/ephemeral
+     * path — the runtime uses the agent's default scenarios as before.
+     */
+    public SkillAbRunEntity createAndTrigger(Long parentSkillId, Long candidateSkillId,
+                                              String agentId, String baselineEvalRunId,
+                                              Long triggeredByUserId,
+                                              String datasetVersionId) {
         SkillEntity parent = skillRepository.findById(parentSkillId)
                 .orElseThrow(() -> new RuntimeException("Skill not found: " + parentSkillId));
         SkillEntity candidate = skillRepository.findById(candidateSkillId)
@@ -197,6 +222,11 @@ public class SkillAbEvalService extends AbstractAbEvalRunner<SkillEntity> {
         abRun.setBaselineEvalRunId(baselineEvalRunId);
         abRun.setStatus("PENDING");
         abRun.setTriggeredByUserId(triggeredByUserId);
+        // EVAL-DATASET-LAYER V1 r2 (V113): nullable; treat blank as null so
+        // FE can send "" or null interchangeably.
+        if (datasetVersionId != null && !datasetVersionId.isBlank()) {
+            abRun.setDatasetVersionId(datasetVersionId);
+        }
         SkillAbRunEntity saved = skillAbRunRepository.save(abRun);
 
         // R4 fix (Phase 1.6 dogfood, 2026-05-17): caller is typically inside

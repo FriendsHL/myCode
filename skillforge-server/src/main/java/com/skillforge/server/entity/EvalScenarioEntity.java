@@ -9,16 +9,41 @@ import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 
 import java.time.Instant;
+import java.util.Set;
 
 @Entity
 @Table(name = "t_eval_scenario")
 @EntityListeners(AuditingEntityListener.class)
 public class EvalScenarioEntity {
 
+    // EVAL-DATASET-LAYER V1 (V109): closed enum of source_type values. Use these
+    // constants to flag scenarios at creation time instead of magic strings.
+    // CHECK constraint chk_eval_scenario_source_type enforces at DB layer.
+    public static final String SOURCE_TYPE_BENCHMARK = "benchmark";
+    public static final String SOURCE_TYPE_SESSION_DERIVED = "session_derived";
+    public static final String SOURCE_TYPE_MANUAL = "manual";
+    public static final Set<String> ALLOWED_SOURCE_TYPES = Set.of(
+            SOURCE_TYPE_BENCHMARK, SOURCE_TYPE_SESSION_DERIVED, SOURCE_TYPE_MANUAL);
+
+    // EVAL-DATASET-LAYER V1 (V109): closed enum of purpose values. Orthogonal
+    // to source_type — a benchmark scenario can be used as baseline_anchor or
+    // ablation; a session_derived scenario is typically regression.
+    public static final String PURPOSE_BASELINE_ANCHOR = "baseline_anchor";
+    public static final String PURPOSE_REGRESSION = "regression";
+    public static final String PURPOSE_ABLATION = "ablation";
+    public static final Set<String> ALLOWED_PURPOSES = Set.of(
+            PURPOSE_BASELINE_ANCHOR, PURPOSE_REGRESSION, PURPOSE_ABLATION);
+
     @Id
     private String id;
 
-    @Column(nullable = false, length = 36)
+    /**
+     * EVAL-DATASET-LAYER V1 (V109): nullable so benchmark scenarios (no
+     * specific agent owner) are legal. Older session_derived rows keep their
+     * non-null value; benchmark/manual rows may leave this null when the
+     * scenario is cross-agent.
+     */
+    @Column(length = 36)
     private String agentId;
 
     @Column(nullable = false, length = 256)
@@ -89,6 +114,31 @@ public class EvalScenarioEntity {
 
     @Column(columnDefinition = "TEXT")
     private String expectedOutcome;
+
+    /**
+     * EVAL-DATASET-LAYER V1 (V109): closed enum source_type — disambiguates
+     * benchmark / session_derived / manual scenarios for dataset composition
+     * + baseline pass-rate heuristics. NOT NULL at the DB layer after V109's
+     * back-fill UPDATE for the 6 historical rows.
+     */
+    @Column(name = "source_type", nullable = false, length = 32)
+    private String sourceType;
+
+    /**
+     * EVAL-DATASET-LAYER V1 (V109): free-form reference to the origin record,
+     * e.g. {@code "gaia/lv1/001"}, {@code "session:5f3f1923-..."}, or
+     * {@code "manual:user-1/...''}. Nullable — historical rows leave NULL;
+     * new benchmark/session_derived/manual scenarios should populate.
+     */
+    @Column(name = "source_ref", length = 256)
+    private String sourceRef;
+
+    /**
+     * EVAL-DATASET-LAYER V1 (V109): closed enum purpose — orthogonal to
+     * source_type. NOT NULL at DB layer.
+     */
+    @Column(name = "purpose", nullable = false, length = 32)
+    private String purpose;
 
     @CreatedDate
     private Instant createdAt;
@@ -282,5 +332,31 @@ public class EvalScenarioEntity {
 
     public void setExpectedOutcome(String expectedOutcome) {
         this.expectedOutcome = expectedOutcome;
+    }
+
+    // EVAL-DATASET-LAYER V1 (V109) getters/setters for source_type/source_ref/purpose.
+
+    public String getSourceType() {
+        return sourceType;
+    }
+
+    public void setSourceType(String sourceType) {
+        this.sourceType = sourceType;
+    }
+
+    public String getSourceRef() {
+        return sourceRef;
+    }
+
+    public void setSourceRef(String sourceRef) {
+        this.sourceRef = sourceRef;
+    }
+
+    public String getPurpose() {
+        return purpose;
+    }
+
+    public void setPurpose(String purpose) {
+        this.purpose = purpose;
     }
 }

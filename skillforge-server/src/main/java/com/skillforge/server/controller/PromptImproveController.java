@@ -106,6 +106,11 @@ public class PromptImproveController {
                                                     @RequestBody(required = false) Map<String, Object> request) {
         String baselineVersionId = null;
         List<String> evalScenarioIds = null;
+        // EVAL-DATASET-LAYER V1 (V111): accept optional datasetVersionId for
+        // the new pin-to-dataset-version path. Mutually exclusive with
+        // evalScenarioIds — enforced inside AbEvalRunRequest record's compact
+        // constructor (we let the IllegalArgumentException bubble up as 400).
+        String datasetVersionId = null;
         if (request != null) {
             Object bv = request.get("baselineVersionId");
             if (bv instanceof String s && !s.isBlank()) baselineVersionId = s;
@@ -118,15 +123,21 @@ public class PromptImproveController {
                         .toList();
                 if (evalScenarioIds.isEmpty()) evalScenarioIds = null;
             }
+            Object dv = request.get("datasetVersionId");
+            if (dv instanceof String s && !s.isBlank()) datasetVersionId = s;
         }
 
         try {
             String abRunId = promptImproverService.runAbTestAgainst(
-                    agentId, baselineVersionId, versionId, evalScenarioIds);
+                    new com.skillforge.server.improve.AbEvalRunRequest(
+                            agentId, baselineVersionId, versionId, evalScenarioIds, datasetVersionId));
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("abRunId", abRunId);
             body.put("candidateVersionId", versionId);
             body.put("agentId", agentId);
+            // EVAL-DATASET-LAYER V1: echo back the pinned dataset version so
+            // the FE has confirmation. null = legacy/ephemeral path.
+            body.put("datasetVersionId", datasetVersionId);
             return ResponseEntity.accepted().body(body);
         } catch (IllegalArgumentException e) {
             // F3 fix (Phase 2 r2): log internal detail server-side; return
@@ -167,6 +178,10 @@ public class PromptImproveController {
                     result.put("startedAt", abRun.getStartedAt());
                     result.put("completedAt", abRun.getCompletedAt());
                     result.put("failureReason", abRun.getFailureReason());
+                    // EVAL-DATASET-LAYER V1 (V111): emit the pinned dataset version id so the FE can
+                    // resolve a "<dataset-name>@v<n>" label by calling /api/eval/dataset-versions/{id}.
+                    // null = legacy/ephemeral path (V110-pre rows or attribution path without dataset).
+                    result.put("datasetVersionId", abRun.getDatasetVersionId());
 
                     // Parse scenario results and compute completedScenarios count
                     if (abRun.getAbScenarioResultsJson() != null) {
@@ -325,6 +340,8 @@ public class PromptImproveController {
         map.put("promoted", abRun.isPromoted());
         map.put("startedAt", abRun.getStartedAt());
         map.put("completedAt", abRun.getCompletedAt());
+        // EVAL-DATASET-LAYER V1 (V111): see getAbRun comment.
+        map.put("datasetVersionId", abRun.getDatasetVersionId());
         return map;
     }
 }

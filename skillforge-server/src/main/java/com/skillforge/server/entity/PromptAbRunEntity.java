@@ -55,6 +55,16 @@ public class PromptAbRunEntity {
 
     private Instant completedAt;
 
+    /**
+     * EVAL-DATASET-LAYER V1 (V111): pin each A/B run to an immutable
+     * {@link EvalDatasetVersionEntity} snapshot so cross-run comparisons stay
+     * meaningful even after the dataset evolves. Nullable for backward
+     * compatibility with attribution-derived runs (which use ephemeral
+     * scenarios, not a dataset) and pre-V111 historical rows.
+     */
+    @Column(name = "dataset_version_id", length = 36)
+    private String datasetVersionId;
+
     public PromptAbRunEntity() {
     }
 
@@ -102,4 +112,7 @@ public class PromptAbRunEntity {
 
     public Instant getCompletedAt() { return completedAt; }
     public void setCompletedAt(Instant completedAt) { this.completedAt = completedAt; }
+
+    public String getDatasetVersionId() { return datasetVersionId; }
+    public void setDatasetVersionId(String datasetVersionId) { this.datasetVersionId = datasetVersionId; }
 }
