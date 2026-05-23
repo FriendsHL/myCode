@@ -12,6 +12,7 @@ import MemoryList from './pages/MemoryList';
 import ModelUsage from './pages/ModelUsage';
 import Traces from './pages/Traces';
 import Eval from './pages/Eval';
+import EvalDatasets from './pages/EvalDatasets';
 import HookMethods from './pages/HookMethods';
 import Channels from './pages/Channels';
 import Insights from './pages/Insights';
@@ -57,6 +58,7 @@ function App() {
             <Route path="usage" element={<ErrorBoundary context="Model Usage"><ModelUsage /></ErrorBoundary>} />
             <Route path="traces" element={<ErrorBoundary context="Traces"><Traces /></ErrorBoundary>} />
             <Route path="eval" element={<ErrorBoundary context="Eval"><Eval /></ErrorBoundary>} />
+            <Route path="eval/datasets" element={<ErrorBoundary context="EvalDatasets"><EvalDatasets /></ErrorBoundary>} />
             <Route path="hooks" element={<ErrorBoundary context="Hook Methods"><HookMethods /></ErrorBoundary>} />
             <Route path="channels" element={<ErrorBoundary context="Channels"><Channels /></ErrorBoundary>} />
             <Route path="tasks" element={<ErrorBoundary context="Tasks"><Tasks /></ErrorBoundary>} />

@@ -6,6 +6,11 @@ import {
   manualPromoteAbRun, rollbackSkill,
   type SkillAbRun, type SkillVersionEntry,
 } from '../../api';
+// EVAL-DATASET-LAYER V1 scope (PRD V2 backlog): "skill / behavior_rule
+// surface 的 dataset (本包 V1 只 prompt surface)" — Skill A/B is intentionally
+// left on the legacy held_out + ephemeral scenarios path for V1. Dataset
+// version selector lives only in the prompt path (PromptImproveController).
+// Do not re-add evalDataset imports here without first updating PRD scope.
 import { useAuth } from '../../contexts/AuthContext';
 // FLYWHEEL-LOOP-CLOSURE Phase 1.5 (2026-05-16) — canary path logic-disabled in
 // dogfood single-user phase. CanaryPanel embed removed; api/canary.ts +
@@ -156,6 +161,10 @@ export const SkillAbPanel: React.FC<SkillAbPanelProps> = ({ skillId, agentId, sk
         candidateSkillId: forked.id,
         agentId: String(agentId),
         triggeredByUserId: currentUserId,
+        // EVAL-DATASET-LAYER V1: skill surface is V2 backlog scope; no
+        // datasetVersionId field sent. Skill A/B continues on the legacy
+        // held_out + ephemeral path. PromptImproveController is the only
+        // V1 caller that accepts datasetVersionId.
       });
       return startRes.data;
     },

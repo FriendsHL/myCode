@@ -614,6 +614,23 @@ export interface SkillAbRun {
   abScenarioResultsJson?: string;
   startedAt?: string;
   completedAt?: string;
+  /**
+   * EVAL-DATASET-LAYER **V2 forward-compat hook** — optional. Skill surface
+   * is V2 backlog (PRD V2 §"不在范围": "skill / behavior_rule surface 的
+   * dataset (本包 V1 只 prompt surface)"). SkillAbRunEntity does NOT
+   * carry a `dataset_version_id` column in V1 and SkillController.toAbRunMap
+   * does NOT emit this field — so this property is always undefined in V1.
+   *
+   * The interface field is preserved so that when V2 widens the entity +
+   * controller, the FE picks up the value with zero TS changes.
+   * Do NOT add UI that relies on this being populated in V1.
+   */
+  datasetVersionId?: string | null;
+  /**
+   * V2 forward-compat label (FE-composed via lazy fetch when the BE emits
+   * datasetVersionId). Always undefined in V1; see datasetVersionId above.
+   */
+  datasetVersionLabel?: string | null;
 }
 
 export interface StartAbTestRequest {
@@ -621,6 +638,17 @@ export interface StartAbTestRequest {
   agentId?: string;
   baselineEvalRunId?: string;
   triggeredByUserId?: number;
+  /**
+   * EVAL-DATASET-LAYER **V2 forward-compat hook** — optional. Skill A/B
+   * start endpoint (`POST /skills/{id}/abtest`) does NOT currently parse
+   * this field; it's accepted in the TS type so that a future V2 BE widen
+   * (when SkillController.startAbTest is rewired to honor it) doesn't
+   * require a contemporaneous FE deploy.
+   *
+   * V1 behavior: sending this in the body is a no-op (Jackson ignores it),
+   * and the run uses the legacy held_out + ephemeral scenarios path.
+   */
+  datasetVersionId?: string;
 }
 
 export const startSkillAbTest = (parentSkillId: number | string, req: StartAbTestRequest) =>
@@ -1399,9 +1427,35 @@ export interface EvalDatasetScenario {
   setupFiles?: string[];
   maxLoops?: number;
   performanceThresholdMs?: number;
+  /**
+   * EVAL-DATASET-LAYER V1 (V109): closed-enum data source classifier.
+   * Populated for rows post-V109 retroactive backfill; legacy data may
+   * still arrive null until the BE projection surfaces the column.
+   * Used by the source_type tab + Dataset composition policy.
+   */
+  sourceType?: 'benchmark' | 'session_derived' | 'manual' | null;
+  /**
+   * EVAL-DATASET-LAYER V1 (V109): source identifier (e.g. `gaia/lv1#001`,
+   * `session:5f3f1923-...`, `manual:user-1/...`). Nullable; only newly
+   * seeded scenarios carry this populated.
+   */
+  sourceRef?: string | null;
+  /**
+   * EVAL-DATASET-LAYER V1 (V109, wiki r2): closed-enum purpose tag —
+   * orthogonal to sourceType. Aligns with SWE-bench regression-aware
+   * categories.
+   */
+  purpose?: 'baseline_anchor' | 'regression' | 'ablation' | null;
 }
-export const getEvalDatasetScenarios = (agentId: string | number) =>
-  api.get<EvalDatasetScenario[]>('/eval/scenarios', { params: { agentId } });
+export const getEvalDatasetScenarios = (
+  agentId: string | number,
+  params: {
+    sourceType?: 'benchmark' | 'session_derived' | 'manual';
+    purpose?: 'baseline_anchor' | 'regression' | 'ablation';
+    sourceRef?: string;
+  } = {},
+) =>
+  api.get<EvalDatasetScenario[]>('/eval/scenarios', { params: { agentId, ...params } });
 export const createEvalScenarioFromTrace = (payload: {
   rootTraceId: string;
   scenarioId?: string;
@@ -1569,6 +1623,17 @@ export interface BaseScenario {
   setupFiles?: string[];
   maxLoops?: number;
   performanceThresholdMs?: number;
+  /**
+   * EVAL-DATASET-LAYER V1 (V109): closed-enum data source classifier.
+   * For base (classpath / home dir JSON) scenarios this typically arrives
+   * as `benchmark` (seeded benchmark packs) or `manual` (user-added).
+   * Null when the on-disk JSON doesn't yet declare it.
+   */
+  sourceType?: 'benchmark' | 'session_derived' | 'manual' | null;
+  /** EVAL-DATASET-LAYER V1 (V109): origin identifier — see EvalDatasetScenario.sourceRef. */
+  sourceRef?: string | null;
+  /** EVAL-DATASET-LAYER V1 (V109): purpose enum — see EvalDatasetScenario.purpose. */
+  purpose?: 'baseline_anchor' | 'regression' | 'ablation' | null;
 }
 export const getBaseScenarios = () => api.get<BaseScenario[]>('/eval/scenarios/base');
 
@@ -1597,6 +1662,15 @@ export interface AbRunDetail {
   completedScenarios: number;
   scenarioResults: AbScenarioResult[];
   failureReason?: string;
+  /**
+   * EVAL-DATASET-LAYER V1 — dataset version this prompt A/B run was bound
+   * to. Null = legacy path (held_out + ephemeral scenarios). Emitted by
+   * PromptImproveController.toAbRunDetail / toAbRunSummary. The FE renders
+   * a "Dataset: <name>@v<n>" label by lazy-fetching `/eval/dataset-versions/{id}`
+   * then `/eval/datasets/{datasetId}` (BE deliberately does not pre-compose
+   * the label — keeps the controller layer thin).
+   */
+  datasetVersionId?: string | null;
 }
 
 export interface PromptVersion {

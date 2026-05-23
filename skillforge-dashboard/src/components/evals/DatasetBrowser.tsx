@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Select, Button } from 'antd';
+import { Select, Button, Tag } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   getEvalDatasetScenarios,
@@ -7,6 +7,12 @@ import {
   type EvalDatasetScenario,
   type BaseScenario,
 } from '../../api';
+import {
+  listDatasets,
+  listVersions,
+  getDatasetVersion,
+  type EvalScenarioSourceType,
+} from '../../api/evalDataset';
 import ScenarioDetailDrawer from './ScenarioDetailDrawer';
 import AnalyzeCaseModal from './AnalyzeCaseModal';
 import AddBaseScenarioModal from './AddBaseScenarioModal';
@@ -22,6 +28,24 @@ const STATUS_OPTIONS = [
   { value: 'active', label: 'Active' },
   { value: 'draft', label: 'Draft' },
   { value: 'discarded', label: 'Discarded' },
+];
+
+/**
+ * EVAL-DATASET-LAYER V1 §5.1 — source_type tab on the scenario browser.
+ * 'all' is the existing behaviour; the other three filter by the new V109
+ * `t_eval_scenario.source_type` enum.
+ *
+ * Note: existing scenarios that were retroactively backfilled to
+ * `session_derived` (V109 migration) will show up under that tab; benchmark
+ * + manual tabs are populated by V112 seed + AddBaseScenarioModal additions.
+ */
+type SourceTypeTab = 'all' | EvalScenarioSourceType;
+
+const SOURCE_TYPE_TABS: Array<{ id: SourceTypeTab; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'benchmark', label: 'Benchmark' },
+  { id: 'session_derived', label: 'Session-derived' },
+  { id: 'manual', label: 'Manual' },
 ];
 
 type DatasetTab = 'base' | 'agent';
@@ -62,11 +86,20 @@ function baseToDataset(s: BaseScenario): EvalDatasetScenario {
     setupFiles: s.setupFiles,
     maxLoops: s.maxLoops,
     performanceThresholdMs: s.performanceThresholdMs,
+    // EVAL-DATASET-LAYER V1 (V109): propagate the new source_type / source_ref
+    // / purpose fields so the source_type tab filter + card chips work for
+    // base scenarios too. Null-tolerant — legacy on-disk specs without
+    // these keys round-trip as undefined.
+    sourceType: s.sourceType ?? null,
+    sourceRef: s.sourceRef ?? null,
+    purpose: s.purpose ?? null,
   };
 }
 
 function DatasetBrowser({ agents, userId }: DatasetBrowserProps) {
   const [tab, setTab] = useState<DatasetTab>('base');
+  const [sourceTypeTab, setSourceTypeTab] = useState<SourceTypeTab>('all');
+  const [datasetIdFilter, setDatasetIdFilter] = useState<string>('');
   const [agentId, setAgentId] = useState<string>(() => {
     const first = agents[0];
     return first ? String(first.id) : '';
@@ -81,6 +114,42 @@ function DatasetBrowser({ agents, userId }: DatasetBrowserProps) {
   const [showTraceImporter, setShowTraceImporter] = useState(false);
   const queryClient = useQueryClient();
 
+  // ── EVAL-DATASET-LAYER V1 §5.1: dataset selector ─────────────────────
+  // Lists EvalDataset rows for the current user; when one is picked,
+  // scenarios are filtered to "belongs to any version of this dataset".
+  // V1 keeps the filter client-side via scenario id intersect once the
+  // version detail is loaded — for the V1 lite UX, we just surface a
+  // shortcut to /eval/datasets/<id> for deeper management.
+  const datasetsQ = useQuery({
+    queryKey: ['eval-datasets', userId],
+    queryFn: () => listDatasets({ ownerId: userId }).then((r) => r.data ?? []),
+  });
+
+  // When a dataset is picked, look up its latest version → resolve the
+  // scenario-id set so we can intersect against the currently-displayed
+  // scenarios. Two-step (versions list → version detail) because list
+  // endpoints don't surface scenario ids inline.
+  const selectedDatasetVersionsQ = useQuery({
+    queryKey: ['eval-dataset-versions', datasetIdFilter],
+    queryFn: () => listVersions(datasetIdFilter).then((r) => r.data ?? []),
+    enabled: !!datasetIdFilter,
+  });
+  const latestVersionId = selectedDatasetVersionsQ.data?.[0]?.id ?? null;
+  const selectedVersionDetailQ = useQuery({
+    queryKey: ['eval-dataset-version', latestVersionId],
+    queryFn: () => getDatasetVersion(latestVersionId!).then((r) => r.data),
+    enabled: !!latestVersionId,
+  });
+  const datasetScenarioIds = useMemo(() => {
+    if (!datasetIdFilter) return null;
+    // BE `/dataset-versions/{id}` envelope provides `scenarioIds: string[]`
+    // alongside the full scenarios projection — use that directly so we
+    // don't walk the scenarios array for ids we already have.
+    const ids = selectedVersionDetailQ.data?.scenarioIds;
+    if (!ids) return new Set<string>();
+    return new Set(ids);
+  }, [datasetIdFilter, selectedVersionDetailQ.data]);
+
   // EVAL-V2 Q2: Base tab fetches classpath + home-dir scenarios via the new
   // GET /eval/scenarios/base endpoint. Disabled when not on the Base tab so
   // we don't burn a request on every render of the Agent tab.
@@ -90,9 +159,13 @@ function DatasetBrowser({ agents, userId }: DatasetBrowserProps) {
     enabled: tab === 'base',
   });
 
+  // EVAL-DATASET-LAYER V1 §5.1: pass sourceType to the BE for server-side
+  // filter. The BE accepts the param; falsy / 'all' → no filter.
+  const beSourceType = sourceTypeTab === 'all' ? undefined : sourceTypeTab;
   const { data: agentScenarios = [], isLoading: agentLoading, isError: agentError } = useQuery({
-    queryKey: ['eval-dataset-scenarios', agentId],
-    queryFn: () => getEvalDatasetScenarios(agentId).then(r => r.data ?? []),
+    queryKey: ['eval-dataset-scenarios', agentId, beSourceType],
+    queryFn: () =>
+      getEvalDatasetScenarios(agentId, beSourceType ? { sourceType: beSourceType } : {}).then(r => r.data ?? []),
     enabled: tab === 'agent' && !!agentId,
   });
 
@@ -124,7 +197,7 @@ function DatasetBrowser({ agents, userId }: DatasetBrowserProps) {
   const filtered = useMemo(() => {
     const ql = q.trim().toLowerCase();
     return scenarios.filter(s => {
-      if (ql && !`${s.name} ${s.task} ${s.category ?? ''}`.toLowerCase().includes(ql)) return false;
+      if (ql && !`${s.name} ${s.task} ${s.category ?? ''} ${s.sourceRef ?? ''}`.toLowerCase().includes(ql)) return false;
       // Status filter only meaningful on Agent tab (Base scenarios are always "active").
       if (tab === 'agent' && statusFilter && s.status !== statusFilter) return false;
       if (categoryFilter && s.category !== categoryFilter) return false;
@@ -133,12 +206,56 @@ function DatasetBrowser({ agents, userId }: DatasetBrowserProps) {
       // baseRaw[idx] cross-indexing because the post-filter mapping breaks
       // that invariant.
       if (tab === 'base' && sourceFilter && s.source !== sourceFilter) return false;
+      // EVAL-DATASET-LAYER V1 §5.1: client-side source_type filter. The
+      // agent tab pre-filters server-side via the `sourceType` query param
+      // (so this is a no-op there for confirmed-good data), but the base
+      // tab loads everything once and filters here.
+      if (sourceTypeTab !== 'all' && s.sourceType !== sourceTypeTab) return false;
+      // EVAL-DATASET-LAYER V1 §5.1: dataset selector intersect. When a
+      // dataset is picked, restrict to scenarios that belong to its latest
+      // version. `null` = no dataset filter active.
+      if (datasetScenarioIds && !datasetScenarioIds.has(s.id)) return false;
       return true;
     });
-  }, [scenarios, q, statusFilter, categoryFilter, tab, sourceFilter]);
+  }, [scenarios, q, statusFilter, categoryFilter, tab, sourceFilter, sourceTypeTab, datasetScenarioIds]);
 
   return (
     <div className="dataset-browser">
+      {/* EVAL-DATASET-LAYER V1 §5.1 — source_type tab strip.
+          Sits above the existing base/agent control because source_type is a
+          cross-cutting filter (applies to either tab). Hand-rolled segmented
+          control instead of antd Tabs to match the surrounding visual idiom. */}
+      <div className="dataset-toolbar" style={{ paddingBottom: 0, borderBottom: 'none' }}>
+        <div className="dataset-segmented-control" aria-label="Filter by source type">
+          {SOURCE_TYPE_TABS.map(({ id, label }) => (
+            <button
+              key={id}
+              className={`dataset-segment-btn ${sourceTypeTab === id ? 'on' : ''}`}
+              onClick={() => setSourceTypeTab(id)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <Select
+          value={datasetIdFilter || undefined}
+          onChange={(v) => setDatasetIdFilter(v ?? '')}
+          placeholder="(any dataset)"
+          allowClear
+          style={{ minWidth: 240 }}
+          loading={datasetsQ.isLoading}
+          options={(datasetsQ.data ?? []).map((d) => ({
+            value: d.id,
+            label: `${d.name}${d.latestVersionNumber ? ` @v${d.latestVersionNumber}` : ''}`,
+          }))}
+        />
+        {datasetIdFilter && (
+          <Tag closable onClose={() => setDatasetIdFilter('')}>
+            dataset:{(datasetsQ.data ?? []).find((d) => d.id === datasetIdFilter)?.name ?? datasetIdFilter.slice(0, 8)}
+          </Tag>
+        )}
+      </div>
+
       <div className="dataset-toolbar">
         {/* Segmented Control for Base/Agent */}
         <div className="dataset-segmented-control">
@@ -266,6 +383,43 @@ function DatasetBrowser({ agents, userId }: DatasetBrowserProps) {
                   ) : null}
                 </div>
                 <div className="dataset-card-meta">
+                  {/* EVAL-DATASET-LAYER V1 §5.1: source_type / purpose / source_ref
+                      chips. Placed first so the closed-enum classification reads
+                      before the open-ended category tag — visual hierarchy
+                      reflects the dataset composition decision in tech-design §1.1. */}
+                  {s.sourceType && (
+                    <span
+                      className="kv-chip-sf"
+                      style={{
+                        color:
+                          s.sourceType === 'benchmark' ? '#5b8def'
+                          : s.sourceType === 'session_derived' ? '#b58dee'
+                          : '#5fb3a1',
+                        fontWeight: 600,
+                      }}
+                      title={`source_type=${s.sourceType}`}
+                    >
+                      {s.sourceType}
+                    </span>
+                  )}
+                  {s.purpose && s.purpose !== 'regression' && (
+                    <span
+                      className="kv-chip-sf"
+                      style={{ opacity: 0.85 }}
+                      title={`purpose=${s.purpose}`}
+                    >
+                      {s.purpose}
+                    </span>
+                  )}
+                  {s.sourceRef && (
+                    <span
+                      className="kv-chip-sf"
+                      style={{ opacity: 0.7, fontFamily: 'var(--font-mono, monospace)', fontSize: 10 }}
+                      title={`source_ref=${s.sourceRef}`}
+                    >
+                      {s.sourceRef.length > 24 ? `${s.sourceRef.slice(0, 22)}…` : s.sourceRef}
+                    </span>
+                  )}
                   {s.category && <span className="kv-chip-sf">{s.category}</span>}
                   {s.split && <span className="kv-chip-sf">{s.split}</span>}
                   {/* Multi-turn indicator */}

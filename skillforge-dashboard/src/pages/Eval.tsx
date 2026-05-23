@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   getEvalAnnotations,
@@ -135,6 +136,14 @@ export default function Eval() {
               <button className="eval-btn-ghost" onClick={() => setCompareSelection([])}>Clear</button>
             </div>
           )}
+          <Link
+            to="/eval/datasets"
+            className="eval-btn-ghost"
+            style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}
+            title="Named + versioned EvalDataset collections (EVAL-DATASET-LAYER V1)"
+          >
+            Manage Datasets →
+          </Link>
           <button className="eval-btn-primary" onClick={() => setRunDialog(true)}>
             {PLAY_ICON} Run Eval
           </button>

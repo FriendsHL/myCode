@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useCallback, useState } from 'react';
 import { Button, message, Tooltip } from 'antd';
+import { useQuery } from '@tanstack/react-query';
 import {
   RocketOutlined, LoadingOutlined, CheckCircleOutlined,
   MinusCircleOutlined, RedoOutlined, StopOutlined,
@@ -8,6 +9,7 @@ import {
   triggerPromptImprove, getActiveImprovement, getAbRunDetail,
   type AbRunDetail,
 } from '../api';
+import { getDatasetVersion, getDataset } from '../api/evalDataset';
 import { useAuth } from '../contexts/AuthContext';
 
 // ── State machine ────────────────────────────────────────────────────────────
@@ -16,8 +18,8 @@ type ImproveState =
   | { phase: 'ineligible'; reason: string }
   | { phase: 'idle' }
   | { phase: 'generating' }
-  | { phase: 'ab_testing'; progress: number }
-  | { phase: 'success'; delta: number; promoted: boolean }
+  | { phase: 'ab_testing'; progress: number; datasetVersionId?: string | null }
+  | { phase: 'success'; delta: number; promoted: boolean; datasetVersionId?: string | null }
   | { phase: 'skipped'; reason: string }
   | { phase: 'failed'; error: string };
 
@@ -61,13 +63,21 @@ const ImprovePromptButton: React.FC<ImprovePromptButtonProps> = ({ agentId, eval
         setState({ phase: 'generating' });
         break;
       case 'RUNNING':
-        setState({ phase: 'ab_testing', progress: detail.completedScenarios });
+        setState({
+          phase: 'ab_testing',
+          progress: detail.completedScenarios,
+          // EVAL-DATASET-LAYER V1 — BE emits only datasetVersionId; the
+          // human-readable label ("<name>@v<n>") is FE-computed via lazy
+          // fetch (see datasetVersionLabel useQuery below).
+          datasetVersionId: detail.datasetVersionId ?? null,
+        });
         break;
       case 'COMPLETED':
         setState({
           phase: 'success',
           delta: detail.deltaPassRate ?? 0,
           promoted: detail.promoted,
+          datasetVersionId: detail.datasetVersionId ?? null,
         });
         break;
       case 'FAILED':
@@ -342,9 +352,46 @@ const ImprovePromptButton: React.FC<ImprovePromptButtonProps> = ({ agentId, eval
     }
   };
 
+  // EVAL-DATASET-LAYER V1 — surface dataset version label when the prompt
+  // A/B run was bound to a versioned dataset. BE emits only the id; FE
+  // composes "<dataset.name>@v<version.versionNumber>" via 2 lazy GETs
+  // (cached + de-duped by React Query, so a 2nd ImprovePromptButton for the
+  // same dataset version hits the cache).
+  const datasetVersionId =
+    (state.phase === 'ab_testing' || state.phase === 'success')
+      ? state.datasetVersionId ?? null
+      : null;
+
+  const versionQ = useQuery({
+    queryKey: ['eval-dataset-version', datasetVersionId],
+    queryFn: () => getDatasetVersion(datasetVersionId!).then((r) => r.data),
+    enabled: !!datasetVersionId,
+    staleTime: 5 * 60_000, // 5 min; version is immutable so cache aggressively
+  });
+  const datasetId = versionQ.data?.version.datasetId ?? null;
+  const versionNumber = versionQ.data?.version.versionNumber;
+
+  const datasetQ = useQuery({
+    queryKey: ['eval-dataset', datasetId],
+    queryFn: () => getDataset(datasetId!).then((r) => r.data),
+    enabled: !!datasetId,
+    staleTime: 5 * 60_000,
+  });
+  const datasetName = datasetQ.data?.name;
+  const datasetVersionLabel =
+    datasetName && versionNumber ? `${datasetName}@v${versionNumber}` : null;
+
   return (
     <div style={{ marginTop: 'var(--sp-3)' }}>
       {renderButton()}
+      {datasetVersionId && (
+        <div style={{
+          fontSize: 10, color: 'var(--fg-4, #8a8a93)',
+          fontFamily: 'var(--font-mono, monospace)', marginTop: 4,
+        }}>
+          Dataset: {datasetVersionLabel ?? `${datasetVersionId.slice(0, 8)}…`}
+        </div>
+      )}
     </div>
   );
 };
