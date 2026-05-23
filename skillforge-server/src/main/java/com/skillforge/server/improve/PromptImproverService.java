@@ -28,6 +28,8 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -509,7 +511,7 @@ public class PromptImproverService extends AbstractAbEvalRunner<PromptVersionEnt
         final String capturedAgentId = String.valueOf(agent.getId());
         final String capturedBaselineId = baselineId;
         final String capturedCandidateId = candidateVersionId;
-        coordinatorExecutor.submit(() -> {
+        Runnable asyncTask = () -> {
             // DIAG-2026-05-23: silent-failure forensics — log entry + every step
             // + uncaught exception (Future-swallowing makes async lambdas
             // invisible in normal operation).
@@ -545,7 +547,37 @@ public class PromptImproverService extends AbstractAbEvalRunner<PromptVersionEnt
             } finally {
                 ephemeralScenarioCleanupService.cleanupEphemerals(capturedEphemeralIds);
             }
-        });
+        };
+
+        // Fix 2026-05-23 (Event 122 retry verify): defer the submit until the
+        // outer @Transactional that just INSERTed the PromptAbRunEntity row
+        // commits. Otherwise the coord thread races the listener thread's
+        // commit and findById(abRunId) returns Optional.empty under READ
+        // COMMITTED → orElseThrow → silent Future-swallowed RuntimeException
+        // → row stays PENDING forever (jstack showed coord-0 in WAITING).
+        // Pattern mirrors Spring's standard AFTER_COMMIT semantics already
+        // used by SkillAbCompletedEventPublisher (different mechanism but
+        // same intent: don't touch DB state from another thread before our
+        // tx is visible).
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    coordinatorExecutor.submit(asyncTask);
+                }
+            });
+        } else {
+            // Defensive fallback: not in an active tx (e.g. unit test calling
+            // bare service). Submit immediately — caller has presumably
+            // already committed any DB writes the lambda depends on, or
+            // they're using mocks.
+            log.warn("[AttrAB-async] runAbTestAgainst invoked outside active "
+                    + "@Transactional — submitting asyncTask without afterCommit "
+                    + "synchronization (abRunId={}). This is fine for tests but "
+                    + "in production indicates the @Transactional proxy was "
+                    + "bypassed.", abRunId);
+            coordinatorExecutor.submit(asyncTask);
+        }
         return abRunId;
     }
 
