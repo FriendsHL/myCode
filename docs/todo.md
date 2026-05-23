@@ -10,7 +10,13 @@
 
 | 顺序  | ID        | 标题                                | 模式   | 状态        | 优先级 | 风险   | 文档                                                        | 下一步                                   |
 | --- | --------- | --------------------------------- | ---- | --------- | --- | ---- | --------------------------------------------------------- | ------------------------------------- |
-| _(队列空闲)_ | — | — | — | — | — | — | — | — |
+| 1 | **EVAL-DATASET-LAYER** | Eval 数据层重构：加 source_type/purpose 字段 + EvalDataset 实体 + 30 benchmark scenarios 种子，解决飞轮 A/B baseline=0% 永不 promote 痛点 | Full | plan-review-passed (r4) | 🔴 P0 | 红（schema + 跨栈 + 新 entity + 30 题种子）| [requirements/active/EVAL-DATASET-LAYER/](requirements/active/EVAL-DATASET-LAYER/) (index/mrd/prd/tech-design/benchmark-selection) | 进 Phase 1 dev (V109-V112 migration + Java entity + Service + REST + FE) |
+
+## 暂缓 / Backlog
+
+| ID | 标题 | 模式 | 触发 | 阶段 |
+| --- | --- | --- | --- | --- |
+| **TRAJECTORY-DEBUG** | Agent 轨迹调试 / Live Pause + Intercept：拦 tool_use → 改 args / 改 result / 改 Tool description / 改 Skill description / 改 agent system_prompt 段 → resume，看效果。**路线 A (live pause)**，覆盖 5 种"现场可改"对象。Full 档（红灯：核心引擎 pause hook + prompt cache invalidation + 跨 surface） | Full | 用户原话 2026-05-24："轨迹测试 有什么好的想法吗？类似 在某次调用工具的时候 进行 debug 修改参数 修改结果 调整 description 然后 继续执行，看效果"。3 个澄清答：(1) 优先级 — 排 EVAL-DATASET-LAYER 之后 (2) scope — 5 种对象都做（含 skill 描述）(3) 路线 — A live pause | 排在 EVAL-DATASET-LAYER 完成后启动需求包起草 |
 
 ## 阻塞 / 待决策
 
