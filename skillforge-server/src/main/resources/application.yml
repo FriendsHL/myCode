@@ -84,6 +84,14 @@ skillforge:
   # — false skips the listener bean entirely (no event delivery, no auto-trigger).
   flywheel:
     auto-trigger-ab-on-candidate-ready: true
+    ab-eval:
+      # Per-scenario timeout for the agent run inside A/B eval (baseline +
+      # candidate sides each). Old hardcoded 30s killed 7/12 scenarios in
+      # Event 122 V108-verify — too short for realistic multi-turn LLM agents
+      # (single LLM call up to 20s × ~3 turns + tool calls = 60-90s baseline).
+      # 120s gives 2× headroom while still bounding worst-case AB pipeline at
+      # ~24min (12 scenarios × 2 sides). Override per env if needed.
+      scenario-timeout-ms: 120000
 
   session-message-store:
     row-read-enabled: true

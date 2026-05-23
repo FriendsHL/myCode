@@ -81,7 +81,8 @@ class SkillAbEvalServiceCreateAndTriggerR4Test {
                 objectMapper, broadcaster, coordinatorExecutor, loopExecutor,
                 skillRegistry, abCompletedEventPublisher,
                 org.mockito.Mockito.mock(SkillSurface.class),
-                org.mockito.Mockito.mock(SkillEvalService.class));
+                org.mockito.Mockito.mock(SkillEvalService.class),
+                120_000L);
     }
 
     @AfterEach

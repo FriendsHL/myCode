@@ -83,7 +83,8 @@ class SkillAbEvalServiceMultiTurnTest {
                 new ObjectMapper(), broadcaster, coordinatorExecutor, loopExecutor,
                 skillRegistry, abCompletedEventPublisher,
                 org.mockito.Mockito.mock(com.skillforge.server.improve.surface.SkillSurface.class),
-                mockEvalService);
+                mockEvalService,
+                120_000L);
         // Phase 1.2 reviewer-r1 fix: SkillEvalService is the EvalService<SkillEntity>
         // adapter. In production it @Lazy-delegates back to runEvalSetInternal;
         // here in tests we mock the adapter and rewire its run() to delegate

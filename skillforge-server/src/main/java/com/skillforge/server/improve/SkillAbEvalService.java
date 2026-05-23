@@ -38,6 +38,7 @@ import com.skillforge.server.service.AgentService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -105,6 +106,7 @@ public class SkillAbEvalService extends AbstractAbEvalRunner<SkillEntity> {
     private final ExecutorService loopExecutor;
     private final SkillRegistry skillRegistry;
     private final SkillAbCompletedEventPublisher abCompletedEventPublisher;
+    private final long scenarioTimeoutMs;
 
     /**
      * Phase 1.2 — per-run ephemeral state shared between {@link #runAbTestAsync}
@@ -133,7 +135,8 @@ public class SkillAbEvalService extends AbstractAbEvalRunner<SkillEntity> {
                               SkillRegistry skillRegistry,
                               SkillAbCompletedEventPublisher abCompletedEventPublisher,
                               @Lazy SkillSurface skillSurface,
-                              SkillEvalService skillEvalService) {
+                              SkillEvalService skillEvalService,
+                              @Value("${skillforge.flywheel.ab-eval.scenario-timeout-ms:120000}") long scenarioTimeoutMs) {
         // @Lazy on skillSurface breaks the DI cycle: SkillSurface's @Lazy
         // injection of SkillAbEvalService bootstrap order. super() only stores
         // the reference (no method call), so the @Lazy proxy is fine.
@@ -161,6 +164,7 @@ public class SkillAbEvalService extends AbstractAbEvalRunner<SkillEntity> {
         this.loopExecutor = loopExecutor;
         this.skillRegistry = skillRegistry;
         this.abCompletedEventPublisher = abCompletedEventPublisher;
+        this.scenarioTimeoutMs = scenarioTimeoutMs;
     }
 
     public SkillAbRunEntity createAndTrigger(Long parentSkillId, Long candidateSkillId,
@@ -896,10 +900,13 @@ public class SkillAbEvalService extends AbstractAbEvalRunner<SkillEntity> {
             long startMs = System.currentTimeMillis();
             LoopResult loopResult;
             try {
-                loopResult = future.get(30, TimeUnit.SECONDS);
+                // Configurable (default 120s); old 30s killed realistic
+                // multi-turn agent runs — see skillforge.flywheel.ab-eval.scenario-timeout-ms
+                loopResult = future.get(scenarioTimeoutMs, TimeUnit.MILLISECONDS);
             } catch (TimeoutException e) {
                 future.cancel(true);
-                return ScenarioRunResult.timeout(scenario.getId(), "30s skill AB eval timeout");
+                return ScenarioRunResult.timeout(scenario.getId(),
+                        scenarioTimeoutMs + "ms skill AB eval timeout");
             }
 
             long executionTimeMs = System.currentTimeMillis() - startMs;

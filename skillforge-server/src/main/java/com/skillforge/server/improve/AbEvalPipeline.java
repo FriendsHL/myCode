@@ -26,6 +26,7 @@ import com.skillforge.server.service.AgentService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.nio.file.Path;
@@ -56,6 +57,7 @@ public class AbEvalPipeline {
     private final ObjectMapper objectMapper;
     private final ChatEventBroadcaster broadcaster;
     private final ExecutorService loopExecutor;
+    private final long scenarioTimeoutMs;
 
     public AbEvalPipeline(ScenarioLoader scenarioLoader,
                            SandboxSkillRegistryFactory sandboxFactory,
@@ -66,7 +68,8 @@ public class AbEvalPipeline {
                            AgentService agentService,
                            ObjectMapper objectMapper,
                            ChatEventBroadcaster broadcaster,
-                           @Qualifier("abEvalLoopExecutor") ExecutorService loopExecutor) {
+                           @Qualifier("abEvalLoopExecutor") ExecutorService loopExecutor,
+                           @Value("${skillforge.flywheel.ab-eval.scenario-timeout-ms:120000}") long scenarioTimeoutMs) {
         this.scenarioLoader = scenarioLoader;
         this.sandboxFactory = sandboxFactory;
         this.evalEngineFactory = evalEngineFactory;
@@ -77,6 +80,7 @@ public class AbEvalPipeline {
         this.objectMapper = objectMapper;
         this.broadcaster = broadcaster;
         this.loopExecutor = loopExecutor;
+        this.scenarioTimeoutMs = scenarioTimeoutMs;
     }
 
     public void run(PromptAbRunEntity abRun, PromptVersionEntity candidate,
@@ -338,17 +342,20 @@ public class AbEvalPipeline {
                 }
             }
 
-            // Run with 30s timeout, no retry
+            // Run with configurable timeout (default 120s — old 30s killed most
+            // realistic LLM multi-turn agent runs at 7/12 scenarios for Event 122
+            // V108 verify). Override via skillforge.flywheel.ab-eval.scenario-timeout-ms.
             Future<LoopResult> future = loopExecutor.submit(
                     () -> engine.run(evalDef, task, null, evalSessionId, null, ctx));
 
             long startMs = System.currentTimeMillis();
             LoopResult loopResult;
             try {
-                loopResult = future.get(30, TimeUnit.SECONDS);
+                loopResult = future.get(scenarioTimeoutMs, TimeUnit.MILLISECONDS);
             } catch (TimeoutException e) {
                 future.cancel(true);
-                return ScenarioRunResult.timeout(scenario.getId(), "30s AB eval timeout");
+                return ScenarioRunResult.timeout(scenario.getId(),
+                        scenarioTimeoutMs + "ms AB eval timeout");
             }
 
             long executionTimeMs = System.currentTimeMillis() - startMs;

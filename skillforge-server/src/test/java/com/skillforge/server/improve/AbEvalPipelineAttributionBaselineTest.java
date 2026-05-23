@@ -61,7 +61,8 @@ class AbEvalPipelineAttributionBaselineTest {
         pipeline = new AbEvalPipeline(
                 scenarioLoader, sandboxFactory, evalEngineFactory,
                 evalJudgeTool, promptAbRunRepository, promptVersionRepository,
-                agentService, new ObjectMapper(), broadcaster, loopExecutor);
+                agentService, new ObjectMapper(), broadcaster, loopExecutor,
+                120_000L);
     }
 
     @Test

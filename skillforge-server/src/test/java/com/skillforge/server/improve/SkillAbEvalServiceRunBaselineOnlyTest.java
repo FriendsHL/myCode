@@ -64,7 +64,8 @@ class SkillAbEvalServiceRunBaselineOnlyTest {
                 objectMapper, broadcaster, coordinatorExecutor, loopExecutor,
                 skillRegistry, abCompletedEventPublisher,
                 org.mockito.Mockito.mock(com.skillforge.server.improve.surface.SkillSurface.class),
-                org.mockito.Mockito.mock(SkillEvalService.class));
+                org.mockito.Mockito.mock(SkillEvalService.class),
+                120_000L);
         // runBaselineOnly does NOT invoke AbstractAbEvalRunner.run(), so the
         // mock SkillEvalService's run() is never called — no setup needed.
     }
