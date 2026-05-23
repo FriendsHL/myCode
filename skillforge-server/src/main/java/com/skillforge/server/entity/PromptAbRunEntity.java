@@ -21,7 +21,11 @@ public class PromptAbRunEntity {
     @Column(length = 36, nullable = false)
     private String promptVersionId;
 
-    @Column(length = 36, nullable = false)
+    // V6-FIX-AB-BASELINE-EVAL (V108): nullable for attribution-derived runs
+    // (genesis path materializes baseline from agent.system_prompt, no
+    // pre-existing eval run to anchor). Standard /run-ab caller path still
+    // passes a non-null evalRunId.
+    @Column(length = 36)
     private String baselineEvalRunId;
 
     @Column(length = 32, nullable = false)
