@@ -510,10 +510,17 @@ public class PromptImproverService extends AbstractAbEvalRunner<PromptVersionEnt
         final String capturedBaselineId = baselineId;
         final String capturedCandidateId = candidateVersionId;
         coordinatorExecutor.submit(() -> {
+            // DIAG-2026-05-23: silent-failure forensics — log entry + every step
+            // + uncaught exception (Future-swallowing makes async lambdas
+            // invisible in normal operation).
+            log.info("[AttrAB-async] ENTRY abRunId={} candidateId={} baselineId={} agentId={} scenarioIds={}",
+                    abRunId, capturedCandidateId, capturedBaselineId, capturedAgentId, capturedScenarioIds.size());
             try {
                 PromptAbRunEntity reloadedAbRun = promptAbRunRepository.findById(abRunId)
                         .orElseThrow(() -> new RuntimeException(
                                 "AB run not found in async reload: " + abRunId));
+                log.info("[AttrAB-async] reloaded abRun status={} for abRunId={}",
+                        reloadedAbRun.getStatus(), abRunId);
                 PromptVersionEntity reloadedCandidate = promptVersionRepository.findById(capturedCandidateId)
                         .orElseThrow(() -> new RuntimeException(
                                 "Candidate prompt version not found in async reload: " + capturedCandidateId));
@@ -525,10 +532,16 @@ public class PromptImproverService extends AbstractAbEvalRunner<PromptVersionEnt
                                 "Agent not found in async reload: " + capturedAgentId));
                 List<EvalScenarioEntity> reloadedScenarios =
                         evalScenarioRepository.findAllById(capturedScenarioIds);
+                log.info("[AttrAB-async] all reloads OK — invoking abEvalPipeline.run "
+                        + "abRunId={} scenarios={}", abRunId, reloadedScenarios.size());
                 abEvalPipeline.run(reloadedAbRun, reloadedCandidate, reloadedBaseline,
                         reloadedAgent, reloadedScenarios);
                 log.info("Attribution A/B run {} dispatched + completed via AbEvalPipeline",
                         abRunId);
+            } catch (Throwable t) {
+                log.error("[AttrAB-async] UNCAUGHT exception abRunId={} — Future "
+                        + "would have swallowed this silently", abRunId, t);
+                throw t;
             } finally {
                 ephemeralScenarioCleanupService.cleanupEphemerals(capturedEphemeralIds);
             }
