@@ -49,7 +49,7 @@ public class OptReportController {
 
     private static final Logger log = LoggerFactory.getLogger(OptReportController.class);
 
-    static final int DEFAULT_WINDOW_DAYS = 14;  // V1.1: wider window to exercise SubAgent fan-out (batchSize=5)
+    static final int DEFAULT_WINDOW_DAYS = 20;  // V1.4: widened from 14 → 20 to give attribution LLM more cross-session signal
     static final int MIN_WINDOW_DAYS = 1;
     static final int MAX_WINDOW_DAYS = 30;
     static final int DEFAULT_LIMIT = 20;

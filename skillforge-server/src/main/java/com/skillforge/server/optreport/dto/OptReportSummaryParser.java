@@ -181,6 +181,45 @@ public final class OptReportSummaryParser {
             expectedImpact = impactNode.asText();
         }
 
+        // V1.5+: actionType is optional. null / missing / blank → null
+        // (downstream treats as "new" for backward compat). If present, must
+        // be one of {"new","modify","duplicate"} or we throw — defends
+        // against LLM drift like "create" / "update" / "upgrade".
+        JsonNode actionTypeNode = node.get("actionType");
+        String actionType = null;
+        if (actionTypeNode != null && !actionTypeNode.isNull()) {
+            if (!actionTypeNode.isTextual() || actionTypeNode.asText().isBlank()) {
+                throw new IllegalArgumentException(
+                        "topIssues[" + idx + "].actionType must be a non-blank string or omitted; "
+                                + "got: " + actionTypeNode.getNodeType());
+            }
+            actionType = actionTypeNode.asText();
+            if (!OptReportIssueDto.ACTION_TYPES.contains(actionType)) {
+                throw new IllegalArgumentException(
+                        "topIssues[" + idx + "].actionType must be one of "
+                                + OptReportIssueDto.ACTION_TYPES + " or omitted; got: '"
+                                + actionType + "'");
+            }
+        }
+
+        // V1.5+: targetRuleText is optional in general but REQUIRED non-blank
+        // when actionType ∈ {modify, duplicate}. This stops the LLM from
+        // labelling an issue "modify existing rule X" without quoting which
+        // rule X — the whole point of V1.5 is letting the operator audit the
+        // claim. {@code actionType=new} (or null) → must be null/blank.
+        JsonNode targetTextNode = node.get("targetRuleText");
+        String targetRuleText = null;
+        if (targetTextNode != null && targetTextNode.isTextual() && !targetTextNode.asText().isBlank()) {
+            targetRuleText = targetTextNode.asText();
+        }
+        if (("modify".equals(actionType) || "duplicate".equals(actionType))
+                && (targetRuleText == null || targetRuleText.isBlank())) {
+            throw new IllegalArgumentException(
+                    "topIssues[" + idx + "].targetRuleText is required and must be a "
+                            + "non-blank string when actionType='" + actionType + "' "
+                            + "(quote the existing rule/skill/prompt segment verbatim)");
+        }
+
         return new OptReportIssueDto(
                 id,
                 title,
@@ -191,7 +230,9 @@ public final class OptReportSummaryParser {
                 fixSurface,
                 confidence,
                 suggestion,
-                expectedImpact);
+                expectedImpact,
+                actionType,
+                targetRuleText);
     }
 
     private static String requireText(JsonNode node, String field, int idx) {

@@ -91,8 +91,8 @@ class OptReportControllerTest {
                 .andExpect(jsonPath("$.agentName").value("design-agent"))
                 .andExpect(jsonPath("$.status").value("running"));
 
-        // Default windowDays=14 (V1.1 — wider window to exercise SubAgent fan-out)
-        verify(reportService).startReport(eq(7L), eq(14));
+        // V1.4: default windowDays=20 (was 14 in V1.1)
+        verify(reportService).startReport(eq(7L), eq(20));
     }
 
     @Test

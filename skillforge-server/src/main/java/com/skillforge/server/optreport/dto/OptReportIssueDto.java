@@ -49,6 +49,20 @@ import java.util.List;
  * @param confidence         Self-rated probability ∈ [0.0, 1.0].
  * @param suggestion         One-line improvement direction. Required, non-blank.
  * @param expectedImpact     Optional, may be null.
+ * @param actionType         V1.5+: 建议落点是"新加"还是"改现有"。让 operator 一眼看出来。
+ *                           <ul>
+ *                             <li>{@code "new"} — 新建 rule / skill / 修改 prompt 段落（无对照）</li>
+ *                             <li>{@code "modify"} — 改现有 customRule / skill 描述 / prompt 现有段
+ *                                 （必须填 {@link #targetRuleText}）</li>
+ *                             <li>{@code "duplicate"} — LLM 发现想建议的等价 rule/skill 已存在 →
+ *                                 标记 duplicate，FE 折叠或不显示</li>
+ *                           </ul>
+ *                           Optional：旧报告 / LLM 没区分时为 null，BE / FE 默认按
+ *                           {@code "new"} 处理（向后兼容）。
+ * @param targetRuleText     V1.5+: 当 {@link #actionType} = {@code "modify"} / {@code "duplicate"} 时，
+ *                           引用现有配置的 snippet（rule.text 全文 / skill.description / prompt 段原文），
+ *                           让 operator 知道 "改的是哪一条" 而不是 "凭空加新的"。LLM 应该 verbatim 引用，
+ *                           不要改写。Optional：{@code actionType=new} 时为 null。
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record OptReportIssueDto(
@@ -61,7 +75,9 @@ public record OptReportIssueDto(
         String fixSurface,
         double confidence,
         String suggestion,
-        String expectedImpact
+        String expectedImpact,
+        String actionType,
+        String targetRuleText
 ) {
     /**
      * V1.3+ accessor: returns {@link #fixSurface} when set, else falls back
@@ -87,4 +103,11 @@ public record OptReportIssueDto(
      */
     public static final java.util.Set<String> CONVERTIBLE_SURFACES =
             java.util.Set.of("skill", "prompt", "behavior_rule");
+
+    /**
+     * V1.5+: allowed values for {@link #actionType}. {@code null} (legacy
+     * reports / LLM didn't emit) is treated as {@code "new"} downstream.
+     */
+    public static final java.util.Set<String> ACTION_TYPES =
+            java.util.Set.of("new", "modify", "duplicate");
 }

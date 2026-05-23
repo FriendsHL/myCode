@@ -256,6 +256,128 @@ class OptReportSummaryParserTest {
                 .hasMessageContaining("array");
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // V1.5+ actionType / targetRuleText (rule dedup)
+    // ─────────────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("V1.5+ actionType='new' without targetRuleText → ok")
+    void parse_actionTypeNew_ok() {
+        String json = """
+            { "topIssues": [
+                {
+                  "id": "issue-1", "title": "x", "severity": "high",
+                  "sessionCount": 1, "exampleSessionIds": ["a"],
+                  "suspectSurface": "skill", "confidence": 0.5,
+                  "suggestion": "y",
+                  "actionType": "new"
+                }
+            ]}
+            """;
+        OptReportIssueDto issue = parser.parse(json).topIssues().get(0);
+        assertThat(issue.actionType()).isEqualTo("new");
+        assertThat(issue.targetRuleText()).isNull();
+    }
+
+    @Test
+    @DisplayName("V1.5+ actionType='modify' but targetRuleText missing → IllegalArgumentException")
+    void parse_actionTypeModify_requiresTargetRuleText() {
+        String json = """
+            { "topIssues": [
+                {
+                  "id": "issue-1", "title": "x", "severity": "high",
+                  "sessionCount": 1, "exampleSessionIds": ["a"],
+                  "suspectSurface": "skill", "confidence": 0.5,
+                  "suggestion": "y",
+                  "actionType": "modify"
+                }
+            ]}
+            """;
+        assertThatThrownBy(() -> parser.parse(json))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("targetRuleText")
+                .hasMessageContaining("modify");
+    }
+
+    @Test
+    @DisplayName("V1.5+ actionType='duplicate' but targetRuleText blank → IllegalArgumentException")
+    void parse_actionTypeDuplicate_requiresTargetRuleText() {
+        String json = """
+            { "topIssues": [
+                {
+                  "id": "issue-1", "title": "x", "severity": "high",
+                  "sessionCount": 1, "exampleSessionIds": ["a"],
+                  "suspectSurface": "skill", "confidence": 0.5,
+                  "suggestion": "y",
+                  "actionType": "duplicate",
+                  "targetRuleText": "   "
+                }
+            ]}
+            """;
+        assertThatThrownBy(() -> parser.parse(json))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("targetRuleText")
+                .hasMessageContaining("duplicate");
+    }
+
+    @Test
+    @DisplayName("V1.5+ actionType='upgrade' (not in enum) → IllegalArgumentException")
+    void parse_actionTypeInvalid_throws() {
+        String json = """
+            { "topIssues": [
+                {
+                  "id": "issue-1", "title": "x", "severity": "high",
+                  "sessionCount": 1, "exampleSessionIds": ["a"],
+                  "suspectSurface": "skill", "confidence": 0.5,
+                  "suggestion": "y",
+                  "actionType": "upgrade"
+                }
+            ]}
+            """;
+        assertThatThrownBy(() -> parser.parse(json))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("actionType")
+                .hasMessageContaining("upgrade");
+    }
+
+    @Test
+    @DisplayName("V1.5+ actionType missing → null (backward-compat with V1.4 reports)")
+    void parse_actionTypeMissing_defaultsToNullForBackwardCompat() {
+        String json = """
+            { "topIssues": [
+                {
+                  "id": "issue-1", "title": "x", "severity": "high",
+                  "sessionCount": 1, "exampleSessionIds": ["a"],
+                  "suspectSurface": "skill", "confidence": 0.5,
+                  "suggestion": "y"
+                }
+            ]}
+            """;
+        OptReportIssueDto issue = parser.parse(json).topIssues().get(0);
+        assertThat(issue.actionType()).isNull();
+        assertThat(issue.targetRuleText()).isNull();
+    }
+
+    @Test
+    @DisplayName("V1.5+ actionType='modify' + targetRuleText present → ok")
+    void parse_actionTypeModify_withTargetRuleText_ok() {
+        String json = """
+            { "topIssues": [
+                {
+                  "id": "issue-1", "title": "x", "severity": "high",
+                  "sessionCount": 1, "exampleSessionIds": ["a"],
+                  "suspectSurface": "behavior_rule", "confidence": 0.7,
+                  "suggestion": "在现有 rule 上加 XYZ",
+                  "actionType": "modify",
+                  "targetRuleText": "git 操作前确认目录"
+                }
+            ]}
+            """;
+        OptReportIssueDto issue = parser.parse(json).topIssues().get(0);
+        assertThat(issue.actionType()).isEqualTo("modify");
+        assertThat(issue.targetRuleText()).isEqualTo("git 操作前确认目录");
+    }
+
     @Test
     @DisplayName("optional expectedImpact blank → coerced to null")
     void parse_blankExpectedImpact_coercedToNull() {

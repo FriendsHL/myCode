@@ -360,6 +360,76 @@ class OptReportToEventBridgeTest {
     }
 
     @Test
+    @DisplayName("V1.5+ enrichTopIssues includes actionType + targetRuleText")
+    void enrichTopIssues_includesActionTypeAndTargetRuleText() {
+        String reportId = "rep-1";
+        String summaryJson = """
+                { "topIssues": [
+                    {
+                      "id": "issue-1", "title": "重复建议",
+                      "severity": "medium", "sessionCount": 2,
+                      "exampleSessionIds": ["sess-a", "sess-b"],
+                      "suspectSurface": "behavior_rule", "confidence": 0.6,
+                      "suggestion": "现有 rule 似未生效,建议提升 severity",
+                      "actionType": "duplicate",
+                      "targetRuleText": "git 操作前确认目录"
+                    },
+                    {
+                      "id": "issue-2", "title": "纯新加",
+                      "severity": "low", "sessionCount": 1,
+                      "exampleSessionIds": ["sess-c"],
+                      "suspectSurface": "skill", "confidence": 0.5,
+                      "suggestion": "写新 skill",
+                      "actionType": "new"
+                    }
+                ]}
+                """;
+        when(eventRepository.findBySourceReportId(reportId))
+                .thenReturn(java.util.Collections.emptyList());
+
+        java.util.List<java.util.Map<String, Object>> enriched =
+                bridge.enrichTopIssues(reportId, summaryJson);
+
+        assertThat(enriched).hasSize(2);
+        // issue-1: actionType=duplicate + targetRuleText 引用原文
+        assertThat(enriched.get(0)).containsEntry("actionType", "duplicate");
+        assertThat(enriched.get(0)).containsEntry("targetRuleText", "git 操作前确认目录");
+        // issue-2: actionType=new + targetRuleText 省略 → null
+        assertThat(enriched.get(1)).containsEntry("actionType", "new");
+        assertThat(enriched.get(1)).containsEntry("targetRuleText", null);
+        // Key 必须真出现 (containsEntry value=null 也算 contains)
+        assertThat(enriched.get(1)).containsKey("targetRuleText");
+    }
+
+    @Test
+    @DisplayName("V1.5+ enrichTopIssues legacy report (no actionType) → fields present as null")
+    void enrichTopIssues_legacyReportNoActionType_fieldsAreNull() {
+        String reportId = "rep-legacy";
+        String summaryJson = """
+                { "topIssues": [
+                    {
+                      "id": "issue-1", "title": "legacy",
+                      "severity": "high", "sessionCount": 1,
+                      "exampleSessionIds": ["a"],
+                      "suspectSurface": "skill", "confidence": 0.5,
+                      "suggestion": "y"
+                    }
+                ]}
+                """;
+        when(eventRepository.findBySourceReportId(reportId))
+                .thenReturn(java.util.Collections.emptyList());
+
+        java.util.List<java.util.Map<String, Object>> enriched =
+                bridge.enrichTopIssues(reportId, summaryJson);
+
+        assertThat(enriched).hasSize(1);
+        assertThat(enriched.get(0)).containsKey("actionType");
+        assertThat(enriched.get(0).get("actionType")).isNull();
+        assertThat(enriched.get(0)).containsKey("targetRuleText");
+        assertThat(enriched.get(0).get("targetRuleText")).isNull();
+    }
+
+    @Test
     @DisplayName("null/blank reportId → IllegalArgumentException")
     void convertIssueToEvent_blankReportId_throws() {
         assertThatThrownBy(() -> bridge.convertIssueToEvent(null, "issue-1"))

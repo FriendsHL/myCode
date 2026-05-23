@@ -108,6 +108,21 @@ export interface OptReportIssue {
   confidence: number; // 0.0 - 1.0
   suggestion: string;
   expectedImpact?: string;
+  /**
+   * V1.5+: BE 算出来的 "新加" vs "改现有" vs "重复" 分类，
+   * 让 IssueCard 能加 chip 提醒 operator。
+   * - "new": 真新加（无现有 rule/skill 等价）
+   * - "modify": 改现有 customRule / skill 描述 / prompt 段（targetRuleText 必填引用原文）
+   * - "duplicate": LLM 发现想建议的等价 rule/skill 已存在 → FE 可折叠/不显示
+   * - null: 旧报告 / LLM 没区分时 → FE 按 "new" 处理保持向后兼容
+   */
+  actionType?: 'new' | 'modify' | 'duplicate' | null;
+  /**
+   * V1.5+: 当 actionType=modify/duplicate 时引用现有配置原文。
+   * FE 把这段 verbatim 显示出来，operator 一眼看出 "改的是哪条 rule"。
+   * actionType=new 或缺省时为 null。
+   */
+  targetRuleText?: string | null;
   alreadyConverted: boolean;
   convertedEventId?: number;
   /**
@@ -195,7 +210,7 @@ export interface GenerateOptReportResponse {
  *
  * V1.1: default raised from 7 → 14 to exercise SubAgent fan-out (batchSize=5).
  */
-export const generateOptReport = (agentId: number, windowDays: number = 14) =>
+export const generateOptReport = (agentId: number, windowDays: number = 20) =>
   api.post<GenerateOptReportResponse>(
     `/flywheel/agents/${agentId}/generate-report`,
     null,

@@ -300,6 +300,12 @@ public class OptReportToEventBridge {
             m.put("confidence", issue.confidence());
             m.put("suggestion", issue.suggestion());
             m.put("expectedImpact", issue.expectedImpact());
+            // V1.5+: 强制对照现有 customRules / skills / prompt 段，区分
+            // "new" / "modify" / "duplicate"。null OK (legacy reports / LLM
+            // 没区分 → FE 按 "new" 处理保持向后兼容)。targetRuleText 仅在
+            // actionType ∈ {modify, duplicate} 时 LLM 引用原文。
+            m.put("actionType", issue.actionType());
+            m.put("targetRuleText", issue.targetRuleText());
             Long evtId = issueIdToEventId.get(issue.id());
             m.put("alreadyConverted", evtId != null);
             // V1.2 r2 fix (BLOCKER-2): renamed eventId → convertedEventId to
