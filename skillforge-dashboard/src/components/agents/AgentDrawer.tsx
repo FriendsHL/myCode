@@ -49,6 +49,11 @@ const COPY_ICON = (
 const PLAY_ICON = (
   <svg width={11} height={11} viewBox="0 0 16 16" fill="currentColor"><path d="M4 3l10 5-10 5z" /></svg>
 );
+const DELETE_ICON = (
+  <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+    <path d="M3 4h10M6 4V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1M5 4v8a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V4" />
+  </svg>
+);
 
 function parseArr(raw: unknown): string[] {
   if (!raw) return [];
@@ -725,7 +730,7 @@ const AgentDrawer: React.FC<AgentDrawerProps> = ({ agent, onClose }) => {
                   title=""  /* tooltip handled by parent <Tooltip>, suppress native */
                   style={{ color: isSystemAgent ? 'var(--fg-4)' : 'var(--danger-1, #dc2626)' }}
                 >
-                  Delete
+                  {DELETE_ICON}
                 </button>
               </Tooltip>
               <button className="agent-drawer-close" onClick={onClose} title="Close (Esc)">{CLOSE_ICON}</button>
