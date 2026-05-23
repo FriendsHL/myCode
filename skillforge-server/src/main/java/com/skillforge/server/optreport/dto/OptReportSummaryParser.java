@@ -1,0 +1,205 @@
+package com.skillforge.server.optreport.dto;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
+/**
+ * OPT-REPORT-V1.2 (2026-05-23): validating parser for
+ * {@code t_opt_report.summary_json}.
+ *
+ * <p>The LLM authoring the report follows the V102 prompt that pins
+ * down the {@link OptReportIssueDto} schema. Reality: LLMs miss fields,
+ * use the wrong enum value, drift confidence outside [0, 1]. This
+ * parser is the validation gate before any FE rendering / OptEvent
+ * conversion — every "schema invalid" failure surfaces as a clear
+ * {@link IllegalArgumentException} so callers can decide whether to
+ * 400 the operator (convert path) or just hide the structured panel
+ * (read path).
+ *
+ * <p>Why not Bean Validation / @Valid: the input is a free-form String
+ * stored in JSONB, not a request DTO. Doing the checks here keeps the
+ * Jackson roundtrip simple (record default constructor) and avoids
+ * pulling in {@code jakarta.validation} just for a one-off parser.
+ *
+ * <p>Empty/null input is treated as "no topIssues" — returns
+ * {@code OptReportSummaryJson(List.of())}, not throws. Callers like
+ * {@code OptReportController.getReport} want the FE to render the
+ * markdown body even when summary_json is absent (V1.0/V1.1 reports
+ * don't carry the V1.2 schema).
+ */
+@Component
+public final class OptReportSummaryParser {
+
+    private final ObjectMapper objectMapper;
+
+    public OptReportSummaryParser(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+    }
+
+    /**
+     * Parse + validate {@code summary_json}. Returns an empty issue list
+     * (not throws) when {@code summaryJson} is null / blank — see class
+     * javadoc.
+     *
+     * @throws IllegalArgumentException if the JSON is malformed or any
+     *         {@code topIssues[i]} violates the V1.2 schema.
+     */
+    public OptReportSummaryJson parse(String summaryJson) {
+        if (summaryJson == null || summaryJson.isBlank()) {
+            return new OptReportSummaryJson(List.of());
+        }
+        JsonNode root;
+        try {
+            root = objectMapper.readTree(summaryJson);
+        } catch (JsonProcessingException e) {
+            throw new IllegalArgumentException(
+                    "summary_json is not valid JSON: " + e.getOriginalMessage(), e);
+        }
+        if (root == null || !root.isObject()) {
+            throw new IllegalArgumentException(
+                    "summary_json must be a JSON object; got: "
+                            + (root == null ? "null" : root.getNodeType().toString()));
+        }
+        JsonNode arr = root.get("topIssues");
+        if (arr == null || arr.isNull()) {
+            // Older V1.0/V1.1 reports may not carry topIssues at all —
+            // treat as "no convertible issues" rather than schema error.
+            return new OptReportSummaryJson(List.of());
+        }
+        if (!arr.isArray()) {
+            throw new IllegalArgumentException(
+                    "summary_json.topIssues must be an array; got: " + arr.getNodeType());
+        }
+        List<OptReportIssueDto> issues = new ArrayList<>(arr.size());
+        Set<String> seenIds = new HashSet<>();
+        for (int i = 0; i < arr.size(); i++) {
+            issues.add(parseIssue(arr.get(i), i, seenIds));
+        }
+        return new OptReportSummaryJson(List.copyOf(issues));
+    }
+
+    private OptReportIssueDto parseIssue(JsonNode node, int idx, Set<String> seenIds) {
+        if (node == null || !node.isObject()) {
+            throw new IllegalArgumentException(
+                    "topIssues[" + idx + "] must be a JSON object");
+        }
+
+        String id = requireText(node, "id", idx);
+        if (!seenIds.add(id)) {
+            throw new IllegalArgumentException(
+                    "topIssues[" + idx + "].id is duplicated: '" + id + "'");
+        }
+        String title = requireText(node, "title", idx);
+        String severity = requireText(node, "severity", idx);
+        if (!OptReportIssueDto.SEVERITIES.contains(severity)) {
+            throw new IllegalArgumentException(
+                    "topIssues[" + idx + "].severity must be one of "
+                            + OptReportIssueDto.SEVERITIES + "; got: '" + severity + "'");
+        }
+
+        JsonNode countNode = node.get("sessionCount");
+        if (countNode == null || !countNode.isIntegralNumber()) {
+            throw new IllegalArgumentException(
+                    "topIssues[" + idx + "].sessionCount is required and must be an integer");
+        }
+        int sessionCount = countNode.asInt();
+        if (sessionCount < 1) {
+            throw new IllegalArgumentException(
+                    "topIssues[" + idx + "].sessionCount must be ≥ 1; got: " + sessionCount);
+        }
+
+        JsonNode idsNode = node.get("exampleSessionIds");
+        if (idsNode == null || !idsNode.isArray() || idsNode.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "topIssues[" + idx + "].exampleSessionIds is required and must be a non-empty array");
+        }
+        List<String> exampleSessionIds = new ArrayList<>(idsNode.size());
+        for (int j = 0; j < idsNode.size(); j++) {
+            JsonNode sid = idsNode.get(j);
+            if (sid == null || !sid.isTextual() || sid.asText().isBlank()) {
+                throw new IllegalArgumentException(
+                        "topIssues[" + idx + "].exampleSessionIds[" + j + "] must be a non-blank string");
+            }
+            exampleSessionIds.add(sid.asText());
+        }
+        // V1.2 prompt requires sessionCount ≥ exampleSessionIds.length
+        // (the LLM may identify N sessions but only quote 2 examples; the
+        // converse — "count < examples" — is contradictory and likely a
+        // hallucination).
+        if (sessionCount < exampleSessionIds.size()) {
+            throw new IllegalArgumentException(
+                    "topIssues[" + idx + "].sessionCount (" + sessionCount
+                            + ") must be ≥ exampleSessionIds.length ("
+                            + exampleSessionIds.size() + ")");
+        }
+
+        String suspectSurface = requireText(node, "suspectSurface", idx);
+        if (!OptReportIssueDto.SURFACES.contains(suspectSurface)) {
+            throw new IllegalArgumentException(
+                    "topIssues[" + idx + "].suspectSurface must be one of "
+                            + OptReportIssueDto.SURFACES + "; got: '" + suspectSurface + "'");
+        }
+
+        // V1.3+: fixSurface is optional. If provided, validate against SURFACES.
+        // null / missing / blank → null (downstream effectiveSurface() falls
+        // back to suspectSurface for legacy reports / LLM that doesn't split).
+        JsonNode fixSurfaceNode = node.get("fixSurface");
+        String fixSurface = null;
+        if (fixSurfaceNode != null && fixSurfaceNode.isTextual() && !fixSurfaceNode.asText().isBlank()) {
+            fixSurface = fixSurfaceNode.asText();
+            if (!OptReportIssueDto.SURFACES.contains(fixSurface)) {
+                throw new IllegalArgumentException(
+                        "topIssues[" + idx + "].fixSurface must be one of "
+                                + OptReportIssueDto.SURFACES + " or omitted; got: '" + fixSurface + "'");
+            }
+        }
+
+        JsonNode confNode = node.get("confidence");
+        if (confNode == null || !confNode.isNumber()) {
+            throw new IllegalArgumentException(
+                    "topIssues[" + idx + "].confidence is required and must be a number");
+        }
+        double confidence = confNode.asDouble();
+        if (confidence < 0.0 || confidence > 1.0) {
+            throw new IllegalArgumentException(
+                    "topIssues[" + idx + "].confidence must be in [0.0, 1.0]; got: " + confidence);
+        }
+
+        String suggestion = requireText(node, "suggestion", idx);
+
+        // expectedImpact is optional — accept null/missing/blank → store null.
+        JsonNode impactNode = node.get("expectedImpact");
+        String expectedImpact = null;
+        if (impactNode != null && impactNode.isTextual() && !impactNode.asText().isBlank()) {
+            expectedImpact = impactNode.asText();
+        }
+
+        return new OptReportIssueDto(
+                id,
+                title,
+                severity,
+                sessionCount,
+                List.copyOf(exampleSessionIds),
+                suspectSurface,
+                fixSurface,
+                confidence,
+                suggestion,
+                expectedImpact);
+    }
+
+    private static String requireText(JsonNode node, String field, int idx) {
+        JsonNode v = node.get(field);
+        if (v == null || !v.isTextual() || v.asText().isBlank()) {
+            throw new IllegalArgumentException(
+                    "topIssues[" + idx + "]." + field + " is required and must be a non-blank string");
+        }
+        return v.asText();
+    }
+}

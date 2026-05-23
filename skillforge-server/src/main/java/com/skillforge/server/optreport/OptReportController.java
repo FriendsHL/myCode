@@ -2,6 +2,7 @@ package com.skillforge.server.optreport;
 
 import com.skillforge.server.entity.AgentEntity;
 import com.skillforge.server.entity.OptReportEntity;
+import com.skillforge.server.entity.OptimizationEventEntity;
 import com.skillforge.server.repository.AgentRepository;
 import com.skillforge.server.repository.OptReportRepository;
 import org.slf4j.Logger;
@@ -22,6 +23,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 
 /**
  * OPT-REPORT-V1 — REST surface for the "Generate Report" flywheel route.
@@ -57,13 +59,16 @@ public class OptReportController {
     private final OptReportService reportService;
     private final OptReportRepository reportRepository;
     private final AgentRepository agentRepository;
+    private final OptReportToEventBridge bridge;
 
     public OptReportController(OptReportService reportService,
                                OptReportRepository reportRepository,
-                               AgentRepository agentRepository) {
+                               AgentRepository agentRepository,
+                               OptReportToEventBridge bridge) {
         this.reportService = reportService;
         this.reportRepository = reportRepository;
         this.agentRepository = agentRepository;
+        this.bridge = bridge;
     }
 
     /**
@@ -155,10 +160,72 @@ public class OptReportController {
     private Map<String, Object> toFullDto(OptReportEntity r) {
         Map<String, Object> m = toSummaryDto(r);
         m.put("contentMd", r.getContentMd());
+        // Raw JSONB string is retained for backward-compat (FE V1.0/V1.1
+        // codepaths still read this) — V1.2 dashboards prefer
+        // summary.topIssues below.
         m.put("summaryJson", r.getSummaryJson());
         m.put("errorReason", r.getErrorReason());
         m.put("generatorSessionId", r.getGeneratorSessionId());
+        // V1.2 r2 fix (BLOCKER-1): wrap topIssues in a "summary" envelope
+        // matching FE OptReportSummaryStructured type:
+        //   { summary: { topIssues: [...] } | null }
+        // Parser failure / legacy reports → summary: null so FE falls back
+        // to markdown-only view.
+        List<Map<String, Object>> enriched = bridge.enrichTopIssues(r.getId(), r.getSummaryJson());
+        if (enriched.isEmpty()) {
+            m.put("summary", null);
+        } else {
+            Map<String, Object> summary = new LinkedHashMap<>();
+            summary.put("topIssues", enriched);
+            m.put("summary", summary);
+        }
         return m;
+    }
+
+
+    /**
+     * OPT-REPORT-V1.2 — operator clicks "Convert to Event" on a structured
+     * issue in the report detail panel. Returns 200 with {@code eventId} +
+     * {@code alreadyConverted} flag so the FE can update the button state
+     * and link to the freshly-created OptEvent row.
+     *
+     * <p>Idempotent: calling again with the same {@code (reportId, issueId)}
+     * returns the existing event row with {@code alreadyConverted=true}.
+     */
+    @PostMapping("/reports/{reportId}/issues/{issueId}/convert-to-event")
+    public ResponseEntity<?> convertIssueToEvent(
+            @PathVariable("reportId") String reportId,
+            @PathVariable("issueId") String issueId) {
+        if (reportId == null || reportId.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "reportId is required");
+        }
+        if (issueId == null || issueId.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "issueId is required");
+        }
+
+        OptReportToEventBridge.ConvertResult result;
+        try {
+            result = bridge.convertIssueToEvent(reportId, issueId);
+        } catch (NoSuchElementException nse) {
+            // "Report not found" or "Issue not found" — both 404.
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, nse.getMessage(), nse);
+        } catch (IllegalStateException ise) {
+            // Report not completed — 400 (operator action is invalid
+            // against current report state).
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, ise.getMessage(), ise);
+        } catch (IllegalArgumentException iae) {
+            // Bad surface ({other,unclear}) / schema invalid — 400.
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, iae.getMessage(), iae);
+        }
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("eventId", result.event().getId());
+        body.put("alreadyConverted", result.alreadyConverted());
+        body.put("stage", result.event().getStage());
+        body.put("surface", result.event().getSurfaceType());
+        body.put("reportId", reportId);
+        body.put("issueId", issueId);
+        return ResponseEntity.ok(body);
     }
 
     private static String toIso(Instant i) {

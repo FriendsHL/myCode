@@ -106,7 +106,18 @@ public class OptimizationEventEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "pattern_id", nullable = false)
+    /**
+     * V1.2 OPT-REPORT-V1 (V101, 2026-05-23): nullable to support events
+     * derived from the new "report → convert-to-event" bridge path. Legacy
+     * attribution-curator events always carry a non-null patternId (V80
+     * NOT NULL constraint preserved at the application level via
+     * {@code ProposeOptimizationTool}); report-derived events skip the
+     * pattern concept entirely and instead point back via
+     * {@link #sourceReportId} / {@link #sourceIssueId}. V101 ALTER drops
+     * the DB NOT NULL constraint; the column type was already
+     * {@code Long} (boxed) so no Java-side change was needed.
+     */
+    @Column(name = "pattern_id")
     private Long patternId;
 
     @Column(name = "agent_id", nullable = false)
@@ -187,6 +198,33 @@ public class OptimizationEventEntity {
 
     @Column(name = "cooldown_expires_at")
     private Instant cooldownExpiresAt;
+
+    /**
+     * V1.2 OPT-REPORT-V1 (V101, 2026-05-23): non-null on events derived
+     * from the "Convert to Event" bridge action — points back to the
+     * {@code t_opt_report} row that contained the originating issue.
+     * NULL for every legacy attribution-curator-derived event.
+     *
+     * <p>FK {@code REFERENCES t_opt_report(id) ON DELETE SET NULL} — if
+     * the operator deletes the report, derived events keep their
+     * stage/pattern/etc. but lose the back-pointer (the proposal can
+     * still be reviewed on its own merits).
+     *
+     * <p>Idempotency: paired with {@link #sourceIssueId} this is the
+     * dedupe key used by {@code OptReportToEventBridge.convertIssueToEvent}
+     * to make re-clicks no-op.
+     */
+    @Column(name = "source_report_id", length = 36)
+    private String sourceReportId;
+
+    /**
+     * V1.2 OPT-REPORT-V1 (V101, 2026-05-23): the stable {@code id} from
+     * {@code summary_json.topIssues[i].id} (e.g. {@code "issue-1"}). Paired
+     * with {@link #sourceReportId} for the idempotency check; nullable
+     * because the legacy attribution-curator path never sets it.
+     */
+    @Column(name = "source_issue_id", length = 64)
+    private String sourceIssueId;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
@@ -296,6 +334,12 @@ public class OptimizationEventEntity {
     public void setCooldownExpiresAt(Instant cooldownExpiresAt) {
         this.cooldownExpiresAt = cooldownExpiresAt;
     }
+
+    public String getSourceReportId() { return sourceReportId; }
+    public void setSourceReportId(String sourceReportId) { this.sourceReportId = sourceReportId; }
+
+    public String getSourceIssueId() { return sourceIssueId; }
+    public void setSourceIssueId(String sourceIssueId) { this.sourceIssueId = sourceIssueId; }
 
     public Instant getCreatedAt() { return createdAt; }
     public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }

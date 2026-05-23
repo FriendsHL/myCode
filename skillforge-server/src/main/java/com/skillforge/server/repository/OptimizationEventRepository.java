@@ -329,4 +329,40 @@ public interface OptimizationEventRepository extends JpaRepository<OptimizationE
             @Param("surfaceType") String surfaceType,
             @Param("agentIds") Collection<Long> agentIds,
             Pageable pageable);
+
+    /**
+     * OPT-REPORT-V1.2 (V101, 2026-05-23): idempotency lookup for
+     * {@code OptReportToEventBridge.convertIssueToEvent}. Returns the
+     * (at most one) prior event derived from the same {@code (reportId,
+     * issueId)} pair, so re-clicks of the dashboard "Convert to Event"
+     * button return the existing row instead of inserting a duplicate.
+     *
+     * <p>Backed by the partial composite index
+     * {@code idx_opt_event_source_report_issue (source_report_id,
+     * source_issue_id) WHERE source_report_id IS NOT NULL} — single
+     * index hit per call.
+     *
+     * <p>Returns {@link java.util.Optional} because the spec guarantees
+     * at most one row by construction. If a future race ever produces
+     * two, the caller (bridge service) currently picks the first; that
+     * would only happen if {@code OptReportToEventBridge} were called
+     * concurrently from two threads without an upper-level dedup
+     * (currently not the case — operator clicks are serialized through
+     * HTTP).
+     */
+    java.util.Optional<OptimizationEventEntity> findFirstBySourceReportIdAndSourceIssueId(
+            String sourceReportId, String sourceIssueId);
+
+    /**
+     * OPT-REPORT-V1.2 (V101, 2026-05-23): "find all events derived from
+     * this report" used by the {@code GET /reports/{id}} enriched view
+     * to set {@code alreadyConverted: true} on each topIssue. Returns
+     * every row regardless of stage so a {@code proposal_rejected}
+     * conversion still shows as "already converted" in the FE (operator
+     * should not re-convert).
+     *
+     * <p>Backed by {@code idx_opt_event_source_report
+     * (source_report_id) WHERE source_report_id IS NOT NULL}.
+     */
+    List<OptimizationEventEntity> findBySourceReportId(String sourceReportId);
 }

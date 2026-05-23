@@ -16,15 +16,20 @@
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { Spin, Collapse, Tag, Alert, Empty } from 'antd';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Spin, Collapse, Tag, Alert, Empty, Button, Tooltip, notification } from 'antd';
+import axios from 'axios';
 import { getAgents, extractList } from '../api';
 import {
+  convertIssueToEvent,
   getOptReport,
   listOptReports,
   type OptReport,
+  type OptReportIssue,
+  type OptReportIssueSeverity,
   type OptReportStatus,
   type OptReportSummary,
+  type OptReportSuspectSurface,
 } from '../api/optReport';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import Dropdown from '../components/ui/Dropdown';
@@ -88,6 +93,407 @@ function prettyJson(raw: string | null): string | null {
     return null;
   }
 }
+
+/**
+ * OPT-REPORT-V1.2 — severity → background/border color tokens. Tuned to
+ * sit on `var(--bg-elevated)` and stay readable in the dashboard's dark
+ * theme. Aligned with the brief's color spec (high=red / medium=orange /
+ * low=blue) so it matches the OptimizationEvents stage chips at a glance.
+ */
+const SEVERITY_COLORS: Record<OptReportIssueSeverity, { bg: string; fg: string; border: string }> = {
+  high:   { bg: 'rgba(239, 68, 68, 0.12)', fg: '#fca5a5', border: 'rgba(239, 68, 68, 0.45)' },
+  medium: { bg: 'rgba(245, 158, 11, 0.12)', fg: '#fcd34d', border: 'rgba(245, 158, 11, 0.45)' },
+  low:    { bg: 'rgba(59, 130, 246, 0.12)', fg: '#93c5fd', border: 'rgba(59, 130, 246, 0.45)' },
+};
+
+const SURFACE_LABELS: Record<OptReportSuspectSurface, string> = {
+  skill: 'skill',
+  prompt: 'prompt',
+  behavior_rule: 'behavior_rule',
+  other: 'other',
+  unclear: 'unclear',
+};
+
+/**
+ * Surfaces that cannot be auto-dispatched to the existing flywheel curator
+ * (BE `convertIssueToEvent` will 400). We pre-disable the button + show a
+ * tooltip rather than relying on a round-trip error.
+ */
+function isConvertibleSurface(surface: OptReportSuspectSurface): boolean {
+  return surface === 'skill' || surface === 'prompt' || surface === 'behavior_rule';
+}
+
+interface IssueCardProps {
+  reportId: string;
+  issue: OptReportIssue;
+}
+
+/**
+ * OPT-REPORT-V1.2 — one structured issue card rendered below the markdown
+ * body. Click the "Convert to OptEvent" button to mutate-and-link into the
+ * existing OptimizationEvents flow (proposal_pending stage). Disabled with
+ * a tooltip when already converted or when `suspectSurface ∈ {other,
+ * unclear}` (BE refuses to dispatch unspecified surfaces).
+ */
+const IssueCard: React.FC<IssueCardProps> = ({ reportId, issue }) => {
+  const queryClient = useQueryClient();
+  const sev = SEVERITY_COLORS[issue.severity];
+  // V1.3+: convertibility tracks the *fix* location (effectiveSurface),
+  // not the root-cause (suspectSurface). BE pre-computes the `convertible`
+  // flag — fall back to a client-side derivation against effectiveSurface
+  // (or legacy suspectSurface) for older detail responses.
+  const effectiveSurface = issue.effectiveSurface ?? issue.suspectSurface;
+  const convertible =
+    issue.convertible !== undefined ? issue.convertible : isConvertibleSurface(effectiveSurface);
+  const examples = issue.exampleSessionIds.slice(0, 3);
+  // V1.3+: surface 二元拆分 — 当 fixSurface 跟 suspectSurface 不同时同时显示两个 chip,
+  // 否则只显示根因 chip（避免冗余）。
+  const showFixSurface =
+    issue.fixSurface != null && issue.fixSurface !== issue.suspectSurface;
+
+  const mutation = useMutation({
+    mutationFn: () => convertIssueToEvent(reportId, issue.id).then((r) => r.data),
+    onSuccess: (data) => {
+      notification.success({
+        message: data.alreadyConverted
+          ? `Already converted — Event #${data.eventId}`
+          : `OptEvent #${data.eventId} created`,
+        description: (
+          <a
+            href={`/insights/patterns?tab=optimization&eventId=${data.eventId}`}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Open in Optimization Events →
+          </a>
+        ),
+        duration: 6,
+      });
+      // Refresh the detail query so `alreadyConverted` / `convertedEventId`
+      // flip and the button locks itself.
+      queryClient.invalidateQueries({ queryKey: ['opt-reports', 'detail', reportId] });
+    },
+    onError: (err: unknown) => {
+      // V1.2 r2 fix (ts-reviewer W): use axios.isAxiosError for proper type
+      // narrowing instead of `as` cast.
+      let status: number | undefined;
+      let beMsg = 'Unknown error';
+      if (axios.isAxiosError(err)) {
+        status = err.response?.status;
+        const data = err.response?.data as { error?: string; message?: string } | undefined;
+        beMsg = data?.error || data?.message || err.message || 'Unknown error';
+      } else if (err instanceof Error) {
+        beMsg = err.message;
+      }
+      notification.error({
+        message: status ? `Convert failed (HTTP ${status})` : 'Convert failed',
+        description: beMsg,
+        duration: 6,
+      });
+    },
+  });
+
+  // Button state ------------------------------------------------------------
+  let buttonNode: React.ReactNode;
+  if (issue.alreadyConverted && issue.convertedEventId != null) {
+    buttonNode = (
+      <a
+        href={`/insights/patterns?tab=optimization&eventId=${issue.convertedEventId}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        style={{ textDecoration: 'none' }}
+        data-testid={`issue-converted-link-${issue.id}`}
+      >
+        <Button size="small" disabled>
+          ✓ Converted to Event #{issue.convertedEventId}
+        </Button>
+      </a>
+    );
+  } else if (!convertible) {
+    buttonNode = (
+      <Tooltip title="此类 surface 不能转 OptEvent（only skill / prompt / behavior_rule 可派发）">
+        <Button size="small" disabled data-testid={`issue-convert-disabled-${issue.id}`}>
+          Convert to OptEvent
+        </Button>
+      </Tooltip>
+    );
+  } else {
+    buttonNode = (
+      <Button
+        size="small"
+        type="primary"
+        loading={mutation.isPending}
+        onClick={() => mutation.mutate()}
+        data-testid={`issue-convert-${issue.id}`}
+        style={{
+          background: 'var(--accent, #6366f1)',
+          borderColor: 'var(--accent, #6366f1)',
+        }}
+      >
+        Convert to OptEvent
+      </Button>
+    );
+  }
+
+  const confidencePct = Math.round(Math.max(0, Math.min(1, issue.confidence)) * 100);
+
+  return (
+    <div
+      data-testid={`issue-card-${issue.id}`}
+      style={{
+        background: 'var(--bg-elevated, #16161a)',
+        border: '1px solid var(--border-subtle, #2a2a31)',
+        borderRadius: 8,
+        padding: 16,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 12,
+      }}
+    >
+      {/* Header row: severity + title */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <span
+          style={{
+            display: 'inline-block',
+            padding: '2px 10px',
+            borderRadius: 4,
+            fontSize: 11,
+            fontWeight: 600,
+            textTransform: 'uppercase',
+            letterSpacing: '0.05em',
+            background: sev.bg,
+            color: sev.fg,
+            border: `1px solid ${sev.border}`,
+          }}
+        >
+          {issue.severity}
+        </span>
+        <h4
+          style={{
+            margin: 0,
+            fontSize: 15,
+            fontWeight: 500,
+            color: 'var(--fg-1)',
+            flex: 1,
+            minWidth: 0,
+          }}
+        >
+          {issue.title}
+        </h4>
+      </div>
+
+      {/* Meta row: session count + examples + surface chip */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          flexWrap: 'wrap',
+          fontSize: 12,
+          color: 'var(--fg-3)',
+        }}
+      >
+        <span>
+          <strong style={{ color: 'var(--fg-2)' }}>{issue.sessionCount}</strong> session
+          {issue.sessionCount === 1 ? '' : 's'} affected
+        </span>
+        {examples.length > 0 && (
+          <>
+            <span style={{ color: 'var(--fg-4)' }}>·</span>
+            <span style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap' }}>
+              {examples.map((sid) => (
+                <a
+                  key={sid}
+                  href={`/sessions/${sid}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    fontFamily: 'var(--font-mono, ui-monospace, Menlo, monospace)',
+                    fontSize: 11,
+                    color: 'var(--fg-3)',
+                    background: 'var(--bg-primary, #0f0f10)',
+                    padding: '1px 6px',
+                    borderRadius: 3,
+                    border: '1px solid var(--border-subtle, #2a2a31)',
+                    textDecoration: 'none',
+                  }}
+                >
+                  {sid.slice(0, 8)}
+                </a>
+              ))}
+            </span>
+          </>
+        )}
+        <span style={{ color: 'var(--fg-4)' }}>·</span>
+        {/* V1.3+: 根因 surface chip — always shown. */}
+        <Tooltip title="根因 surface（agent 出错时在做啥）">
+          <Tag
+            style={{ marginInlineEnd: 0, fontSize: 11 }}
+            color="default"
+          >
+            根因: {SURFACE_LABELS[issue.suspectSurface]}
+          </Tag>
+        </Tooltip>
+        {showFixSurface && issue.fixSurface != null && (
+          <>
+            <span style={{ color: 'var(--fg-4)' }}>→</span>
+            <Tooltip title="修复落点 surface（要改哪个 surface 才能修这个 issue）">
+              <Tag
+                style={{ marginInlineEnd: 0, fontSize: 11 }}
+                color={convertible ? 'purple' : 'default'}
+              >
+                修复: {SURFACE_LABELS[issue.fixSurface]}
+              </Tag>
+            </Tooltip>
+          </>
+        )}
+      </div>
+
+      {/* Suggestion body */}
+      <div
+        style={{
+          fontSize: 13,
+          lineHeight: 1.55,
+          color: 'var(--fg-2)',
+          whiteSpace: 'pre-wrap',
+        }}
+      >
+        {issue.suggestion}
+      </div>
+
+      {/* Expected impact — collapsed */}
+      {issue.expectedImpact && (
+        <Collapse
+          ghost
+          size="small"
+          items={[
+            {
+              key: 'impact',
+              label: <span style={{ fontSize: 12, color: 'var(--fg-3)' }}>Expected impact</span>,
+              children: (
+                <div
+                  style={{
+                    fontSize: 12,
+                    lineHeight: 1.55,
+                    color: 'var(--fg-2)',
+                    whiteSpace: 'pre-wrap',
+                  }}
+                >
+                  {issue.expectedImpact}
+                </div>
+              ),
+            },
+          ]}
+        />
+      )}
+
+      {/* Footer: confidence bar + action button */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          paddingTop: 8,
+          borderTop: '1px solid var(--border-subtle, #2a2a31)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 160 }}>
+          <span style={{ fontSize: 11, color: 'var(--fg-3)' }}>Confidence</span>
+          <div
+            style={{
+              flex: 1,
+              maxWidth: 140,
+              height: 6,
+              background: 'var(--bg-primary, #0f0f10)',
+              borderRadius: 3,
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                width: `${confidencePct}%`,
+                height: '100%',
+                background: 'var(--accent, #6366f1)',
+                transition: 'width 200ms ease',
+              }}
+            />
+          </div>
+          <span
+            style={{
+              fontFamily: 'var(--font-mono, ui-monospace, Menlo, monospace)',
+              fontSize: 11,
+              color: 'var(--fg-2)',
+              minWidth: 32,
+              textAlign: 'right',
+            }}
+          >
+            {confidencePct}%
+          </span>
+        </div>
+        {buttonNode}
+      </div>
+    </div>
+  );
+};
+
+interface IssuesPanelProps {
+  reportId: string;
+  issues: OptReportIssue[];
+}
+
+const IssuesPanel: React.FC<IssuesPanelProps> = ({ reportId, issues }) => {
+  // V1.2 r2 fix (ts-reviewer W): empty topIssues array (V1.2 schema parsed
+  // OK but agent found no issues) → show explicit empty state instead of
+  // null gap. Differentiates from "legacy V1.1 report" path where summary
+  // is null and legacy summaryJson Collapse shows.
+  if (issues.length === 0) {
+    return (
+      <div
+        style={{
+          paddingTop: 12,
+          borderTop: '1px solid var(--border-subtle, #2a2a31)',
+        }}
+        data-testid="opt-report-issues-panel-empty"
+      >
+        <Empty description="本报告未发现可转换的 issue" />
+      </div>
+    );
+  }
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 12,
+        paddingTop: 12,
+        borderTop: '1px solid var(--border-subtle, #2a2a31)',
+      }}
+      data-testid="opt-report-issues-panel"
+    >
+      <h3
+        style={{
+          margin: 0,
+          fontFamily: 'var(--font-serif)',
+          fontSize: 16,
+          fontWeight: 500,
+          color: 'var(--fg-1)',
+        }}
+      >
+        Top issues ({issues.length})
+      </h3>
+      <p style={{ margin: 0, fontSize: 12, color: 'var(--fg-3)' }}>
+        Structured findings from the report-generator agent. Click <em>Convert to OptEvent</em>{' '}
+        to dispatch an issue into the existing flywheel curator (creates an OptimizationEvent at
+        stage <code>proposal_pending</code>).
+      </p>
+      {issues.map((issue) => (
+        <IssueCard key={issue.id} reportId={reportId} issue={issue} />
+      ))}
+    </div>
+  );
+};
 
 interface ReportListPanelProps {
   agentId: number | null;
@@ -253,7 +659,14 @@ const ReportDetailPanel: React.FC<ReportDetailPanelProps> = ({ reportId, agentNa
   }
 
   const r = data;
-  const prettySummary = prettyJson(r.summaryJson);
+  // OPT-REPORT-V1.2 — prefer the structured `summary.topIssues` array
+  // (rendered as IssueCards below markdown). Fallback to the legacy raw
+  // `summaryJson` string display only when the structured shape is
+  // missing (V1.1 reports that pre-date the schema change, or V1.2
+  // reports where the agent failed to emit the structured payload).
+  const structuredIssues = r.summary?.topIssues ?? null;
+  const showLegacySummary = structuredIssues === null;
+  const prettySummary = showLegacySummary ? prettyJson(r.summaryJson) : null;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, padding: 20 }}>
@@ -342,7 +755,15 @@ const ReportDetailPanel: React.FC<ReportDetailPanelProps> = ({ reportId, agentNa
         )
       )}
 
-      {/* Summary JSON (collapsed by default) */}
+      {/* OPT-REPORT-V1.2 — Structured issues with Convert-to-OptEvent buttons.
+          Renders below markdown when the BE emits the new structured
+          `summary.topIssues` payload. Older V1.1 reports keep the legacy
+          summaryJson raw-string fallback below instead. */}
+      {structuredIssues !== null && (
+        <IssuesPanel reportId={r.reportId} issues={structuredIssues} />
+      )}
+
+      {/* Summary JSON (collapsed by default) — V1.1 legacy fallback only */}
       {prettySummary && (
         <Collapse
           ghost
@@ -373,7 +794,7 @@ const ReportDetailPanel: React.FC<ReportDetailPanelProps> = ({ reportId, agentNa
           ]}
         />
       )}
-      {r.summaryJson && !prettySummary && (
+      {showLegacySummary && r.summaryJson && !prettySummary && (
         <Alert
           type="warning"
           showIcon

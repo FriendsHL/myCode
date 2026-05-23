@@ -137,9 +137,126 @@ V1.0：
 ## 已知 follow-up
 
 - V1.1：SubAgent fan-out 并行（≥20 session 时单线性太慢）
-- V1.2：报告 schema 固化 + 优化建议结构化（不只 markdown，让 FE 能挑出"建议项"）
+- V1.2 ✅：报告 schema 固化 + 优化建议结构化（不只 markdown，让 FE 能挑出"建议项"）+ "Convert to Event" 桥接
 - V2：合并入口——把报告里"高置信度+skill/prompt surface 明确"的建议自动进 curator
 - 反思项（独立讨论）：agent 各能力开发是不是都该 MVP-first，不直接到终态
+
+---
+
+## V1.2 — 桥接报告 issue 到 OptimizationEvent（2026-05-23）
+
+V1.0/V1.1 完成"读"层（生成可观察报告）后，痛点：**报告生成完了 issue 全是 markdown 散文，operator 看完没有 1-click 入路径到旧 A/B 流水线**。
+
+V1.2 范围：固化 `summary_json.topIssues` schema → 让 FE 能渲染每条 issue 的"Convert to Event" 按钮 → operator 手动 convert 后走原有 attribution → A/B 流水线。
+
+**不动**旧 attribution-curator / dispatcher（V2 长期方案再合并入口）。
+
+### 1. `summary_json.topIssues` schema 固化
+
+报告生成器 LLM 输出 summary_json 时**必须严格按下面 schema**：
+
+```json
+{
+  "topIssues": [
+    {
+      "id": "issue-1",                            // 稳定 ID，建议 "issue-1" / "issue-2" 风格
+      "title": "...",                              // 必填
+      "severity": "high" | "medium" | "low",       // 必填
+      "sessionCount": 3,                           // 必填，≥1
+      "exampleSessionIds": ["sess-abc", "sess-def"], // 必填，≥1 个
+      "suspectSurface": "skill" | "prompt" | "behavior_rule" | "other" | "unclear",
+      "confidence": 0.85,                          // 必填，0.0 - 1.0
+      "suggestion": "...",                         // 必填
+      "expectedImpact": "..."                      // 选填
+    }
+  ]
+}
+```
+
+V1.0/V1.1 的"自由结构 + 建议"语气改成"严格 schema"约束（prompt update via V102 migration）。
+
+**Java 侧**：
+- `OptReportIssueDto` record（package `com.skillforge.server.optreport.dto`）
+- `OptReportSummaryJson` record 包含 `List<OptReportIssueDto> topIssues`
+- `OptReportSummaryParser`：`parse(String summaryJson)` 返 `OptReportSummaryJson` 或抛 `IllegalArgumentException`（enum / 必填 / 范围 / 一致性校验）
+
+### 2. V101 migration
+
+```sql
+ALTER TABLE t_optimization_event
+  ADD COLUMN source_report_id VARCHAR(36) REFERENCES t_opt_report(id) ON DELETE SET NULL,
+  ADD COLUMN source_issue_id  VARCHAR(64);  -- issue.id e.g. "issue-1"
+```
+
+加 partial index 反向查找：
+
+```sql
+CREATE INDEX idx_opt_event_source_report ON t_optimization_event(source_report_id)
+  WHERE source_report_id IS NOT NULL;
+```
+
+**同时**`ALTER COLUMN pattern_id DROP NOT NULL` —— 报告衍生的 OptEvent 没有 pattern（pattern 是旧链路 cluster 概念），patternId nullable 反向兼容（已有行全有值）。entity field 同时从 `long` 改 `Long`（实际已经是 `Long` —— 见 OptimizationEventEntity.java line 110）。
+
+**已知限制**：报告衍生 OptEvent 当 operator 在 dashboard 上点"approve"时，`AttributionApprovalService` 调 `SkillDraftService.createDraftFromAttribution(... patternId, ...)` 会因为 patternId=null 抛 `IllegalArgumentException`。V1.2 接受这个限制 — V2 合并入口时一并解决（候选方案：建 "virtual report-pattern" 行或扩展 createDraftFromAttribution 接受 null patternId）。
+
+### 3. New service + endpoint
+
+**`OptReportToEventBridge`**（同 package `com.skillforge.server.optreport`）：
+
+```java
+@Transactional
+public OptimizationEventEntity convertIssueToEvent(String reportId, String issueId)
+```
+
+逻辑：
+1. load report → `IllegalStateException` 若 status != completed
+2. parse summary_json → `NoSuchElementException` 若 issue 找不到
+3. 检查幂等：query `WHERE source_report_id=? AND source_issue_id=?` → 若已存在直接返已有 entity
+4. issue.suspectSurface ∈ {other, unclear} → `IllegalArgumentException` "operator 不能自动转 / 自己写 OptEvent"
+5. INSERT 新 OptimizationEventEntity：
+   - `agentId` ← report.agentId
+   - `patternId` ← null
+   - `surfaceType` ← issue.suspectSurface
+   - `changeType` ← "from_opt_report"（identify 来源）
+   - `stage` ← "proposal_pending"
+   - `description` ← title + "\n\n" + suggestion + 若 expectedImpact 加 "\n\nExpected: " + expectedImpact
+   - `expectedImpact` ← issue.expectedImpact（独立列；可空）
+   - `confidence` ← issue.confidence（BigDecimal 转 scale 2）
+   - `risk` ← derive from severity: high→high, medium→medium, low→low
+   - `sourceReportId` ← reportId
+   - `sourceIssueId` ← issueId
+   - `cooldownExpiresAt` ← now + 24h
+6. return entity
+
+**Endpoint**: `POST /api/flywheel/reports/{reportId}/issues/{issueId}/convert-to-event`
+
+- 200 + `{eventId, alreadyConverted: false}` 新建
+- 200 + `{eventId, alreadyConverted: true}` 已存在
+- 400 若 issue.suspectSurface ∈ {other, unclear} 或 summary_json schema 不合法
+- 400 若 report 状态非 completed
+- 404 若 report 或 issue id 不存在
+
+### 4. `GET /api/flywheel/reports/{reportId}` 加 alreadyConverted
+
+不再原样回 `summaryJson` raw string —— 解析 topIssues 后每个 issue 加 `alreadyConverted: boolean`（基于 `findBySourceReportIdAndSourceIssueId`）让 FE disable 已转按钮。
+
+向后兼容：raw `summaryJson` 字段保留（FE 旧版本仍可读），只是新加 `topIssuesEnriched: [...]` array 单独承载这个 enriched 视图。
+
+### 5. 测试
+
+- `OptReportSummaryParserTest`（5+ case：合法 / 缺字段 / enum 错 / confidence 越界 / 空 array / 多 issue）
+- `OptReportToEventBridgeTest`（happy / 'other' surface 拒掉 / idempotent re-convert / report not completed / issue not found / non-completed report）
+- `OptReportControllerTest` 加 convert endpoint case（200 新建 / 200 already / 400 invalid surface / 404 report / 404 issue）
+
+### 验收
+
+V1.2：
+- POST `/api/flywheel/reports/{id}/issues/{iid}/convert-to-event` → 200 + 新 OptEvent 行
+- Repeat 同样 call → 200 + alreadyConverted=true
+- `GET /reports/{id}` 含 topIssuesEnriched + 每个 issue 的 alreadyConverted 标志
+- 报告 prompt V102 update 后 LLM 输出严格 schema
+- mvn test BUILD SUCCESS
+
 
 ## 渐进式开发反思
 
