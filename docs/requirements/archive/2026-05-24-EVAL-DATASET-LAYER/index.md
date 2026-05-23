@@ -13,6 +13,15 @@
 - [tech-design.md](tech-design.md) — 技术方案（V109 migration / EvalDataset entity / Service / FE）
 - [benchmark-selection.md](benchmark-selection.md) — 30 个 benchmark scenarios 挑选清单（待 implement 时填）
 
+## r4-r2 scope 扩展（2026-05-24 ratify）
+
+Phase 3 Reviewer 升级 SkillAb 路径 silent-failure 为 blocker，team-lead ratify "本轮补完不能 backlog"。V1 实际范围扩展到 **skill surface BE 全 ready + FE UI V2**：
+
+- ✅ V113 migration (t_skill_ab_run.dataset_version_id) + SkillAbRunEntity 字段 + SkillController body 接受 + Service 6-arg overload + toAbRunMap emit
+- ✅ FE 类型 forward-compat 字段保留（V1 BE 不 emit/接 → undefined no-op）
+- ❌ FE SkillAbPanel UI **不暴露 user 入口**（仅 scope 注释，等 V2）
+- 详见 [prd.md "r4-r2 scope 扩展"段](prd.md#r4-r2-scope-扩展-2026-05-24-ratify)
+
 ## 核心决策（已锁，r2 wiki research 之后更新）
 
 1. **EvalScenario 名字保留**（统一 entity 名，跟业界 example/case 对应 — wiki 业界 example/case/sample/DatasetItem 没统一名字，"scenario" 跟 OpenClaw QA Eval 同义）

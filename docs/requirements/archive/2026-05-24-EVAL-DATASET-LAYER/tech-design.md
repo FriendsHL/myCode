@@ -1,5 +1,33 @@
 # Tech Design — EVAL-DATASET-LAYER
 
+## 0.5 r4-r2 scope 扩展 — Skill Surface BE Forward-prep (2026-05-24)
+
+Phase 3 Reviewer 升级 SkillAb silent-failure 为 blocker → team-lead ratify "本轮补完" → r4-r2 round 实际扩展 V1 包括 **skill surface 完整 BE chain**（FE UI 留 V2）。
+
+### V1 实际范围（vs PRD 原写）
+
+| 组件 | PRD 原写 | r4-r2 实际 V1 |
+|---|---|---|
+| V109-V112 (prompt surface schema + seed) | V1 ✅ | V1 ✅ |
+| EvalDataset/Version/Scenario entity + Service + REST | V1 ✅ | V1 ✅ |
+| EvalScenarios FE + Datasets FE page + ImprovePromptButton lazy label | V1 ✅ | V1 ✅ |
+| **V113 (t_skill_ab_run.dataset_version_id)** | V2 backlog | **V1 ✅ 扩展** |
+| **SkillAbRunEntity.datasetVersionId field** | V2 backlog | **V1 ✅ 扩展** |
+| **SkillController.startAbTest body.datasetVersionId 接受** | V2 backlog | **V1 ✅ 扩展** |
+| **SkillAbEvalService.createAndTrigger 6-arg overload** | V2 backlog | **V1 ✅ 扩展** |
+| **SkillController.toAbRunMap emit datasetVersionId** | V2 backlog | **V1 ✅ 扩展** |
+| **FE SkillAbPanel dataset selector UI** | V2 backlog | **V2 保持** (SkillAbPanel.tsx 仅 scope 注释，未暴露 user 入口) |
+| **FE `SkillAbRun.datasetVersionId/Label` + `StartAbTestRequest.datasetVersionId` 类型** | V2 backlog | **V1 ✅ forward-compat optional** (BE 不 emit/接 → undefined no-op) |
+| BehaviorRuleAbRun 全链路 | V2 backlog | V2 保持 |
+
+### V1 行为影响
+
+零影响。V1 caller 不传 datasetVersionId → service 走 null path → legacy 行为完全不变。V2 加 FE UI 时无需重做 schema + service。
+
+### 跟 PRD 同步
+
+[prd.md "r4-r2 scope 扩展"段](prd.md#r4-r2-scope-扩展-2026-05-24-ratify) + [index.md "r4-r2 scope 扩展"段](index.md#r4-r2-scope-扩展2026-05-24-ratify) 已同步更新。
+
 ## 0. 已知 reviewer findings 处置（r3 + r4）
 
 ### r4 (2026-05-24) — Full plan-stage adversarial review，3 reviewer 跑完，2 BLOCKER + 7 mandatory warning + 4 discretionary 全融入：
