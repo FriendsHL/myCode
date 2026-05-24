@@ -44,16 +44,32 @@ public interface EvalScenarioDraftRepository extends JpaRepository<EvalScenarioE
     // used by BehaviorRuleAbEvalService to split a dataset version into
     // (target subset, regression subset).
     //
-    // Native PostgreSQL queries — rely on JSONB `?|` (any-overlap) operator
-    // that JPQL cannot express. Existing prior art (EVAL-DATASET-LAYER) is
-    // PostgreSQL-only at runtime; H2 tests should mock these methods.
+    // **HOT-FIX (commit 700ac29 follow-up)**: The original `s.rule_trigger_hints
+    // ?| CAST(:tags AS text[])` syntax fails BE startup because Spring Data
+    // JPA's StringQuery parser treats `?` as a positional placeholder and
+    // rejects native queries that mix `?` with `:name` form ("Mixing of ?
+    // parameters and other forms like ?1 is not supported"). The standard
+    // `??` escape (`??|`) is also rejected by Spring Data JPA 3.2.4. The
+    // robust portable fix is to use PostgreSQL's built-in `jsonb_exists_any
+    // (jsonb, text[])` function — it is the **documented function-form
+    // equivalent of `?|`** (PG 9.4+, stable API), produces an identical
+    // query plan, and uses the same GIN index (idx_eval_scenario_rule_
+    // trigger_hints_gin from V114). Function-form keeps native query
+    // PostgreSQL-only at runtime (same constraint as prior EVAL-DATASET-LAYER
+    // queries) but free of the `?`-character escaping hazard. H2 unit tests
+    // should mock these methods.
+    //
+    // Phase Final caught what 5 Mockito-mocked unit tests + 395 H2 regression
+    // tests silently passed — Spring Data only parses native @Query at
+    // `Repository.afterPropertiesSet()` during Spring context init, never
+    // during mock-based test runs.
     // ─────────────────────────────────────────────────────────────────────
 
     @Query(value = """
             SELECT s.* FROM t_eval_scenario s
             JOIN t_eval_dataset_version_scenario b ON b.scenario_id = s.id
             WHERE b.dataset_version_id = :datasetVersionId
-              AND s.rule_trigger_hints ?| CAST(:tags AS text[])
+              AND jsonb_exists_any(s.rule_trigger_hints, CAST(:tags AS text[]))
             """, nativeQuery = true)
     List<EvalScenarioEntity> findTargetSubsetByDatasetVersionAndTags(
             @Param("datasetVersionId") String datasetVersionId,
@@ -63,7 +79,7 @@ public interface EvalScenarioDraftRepository extends JpaRepository<EvalScenarioE
             SELECT s.* FROM t_eval_scenario s
             JOIN t_eval_dataset_version_scenario b ON b.scenario_id = s.id
             WHERE b.dataset_version_id = :datasetVersionId
-              AND NOT (s.rule_trigger_hints ?| CAST(:tags AS text[]))
+              AND NOT jsonb_exists_any(s.rule_trigger_hints, CAST(:tags AS text[]))
             """, nativeQuery = true)
     List<EvalScenarioEntity> findRegressionSubsetByDatasetVersionAndTags(
             @Param("datasetVersionId") String datasetVersionId,
