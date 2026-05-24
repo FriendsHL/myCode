@@ -34,6 +34,9 @@ import {
 } from '../api/attribution';
 import EventDetailDrawer from '../components/attribution/EventDetailDrawer';
 import { stageColor, surfaceColor, riskColor } from '../components/attribution/stageStyle';
+import BehaviorRuleAbRowActions from '../components/optimization/BehaviorRuleAbRowActions';
+import BehaviorRuleAbDetailDrawer from '../components/optimization/BehaviorRuleAbDetailDrawer';
+import type { BehaviorRuleAbRunUpdatedMessage } from '../api/behaviorRule';
 
 dayjs.extend(relativeTime);
 
@@ -143,6 +146,21 @@ const OptimizationEvents: React.FC<OptimizationEventsProps> = ({
   const [drawerEvent, setDrawerEvent] = useState<OptimizationEventDto | null>(null);
   const [drawerOpen, setDrawerOpen] = useState<boolean>(false);
 
+  // BEHAVIOR-RULE-AB-EVAL V1 — separate drawer for the per-row A/B detail
+  // surface. Holds the candidate version id (not the event id) because the
+  // drawer queries latestAbRun(versionId).
+  const [behaviorRuleDrawerVersionId, setBehaviorRuleDrawerVersionId] =
+    useState<string | null>(null);
+  const [behaviorRuleDrawerOpen, setBehaviorRuleDrawerOpen] = useState<boolean>(false);
+
+  const openBehaviorRuleDrawer = useCallback((versionId: string) => {
+    setBehaviorRuleDrawerVersionId(versionId);
+    setBehaviorRuleDrawerOpen(true);
+  }, []);
+  const closeBehaviorRuleDrawer = useCallback(() => {
+    setBehaviorRuleDrawerOpen(false);
+  }, []);
+
   const [rejectTarget, setRejectTarget] = useState<OptimizationEventDto | null>(null);
   const [rejectSubmitting, setRejectSubmitting] = useState<boolean>(false);
   const [rejectForm] = Form.useForm<RejectFormValues>();
@@ -224,9 +242,30 @@ const OptimizationEvents: React.FC<OptimizationEventsProps> = ({
 
     ws.onmessage = (ev) => {
       try {
-        const msg = JSON.parse(ev.data) as Partial<AttributionEventUpdatedMessage> & {
-          type?: string;
-        };
+        const msg = JSON.parse(ev.data) as Partial<AttributionEventUpdatedMessage> &
+          Partial<BehaviorRuleAbRunUpdatedMessage> & {
+            type?: string;
+          };
+
+        // BEHAVIOR-RULE-AB-EVAL V1 — separate WS event from
+        // attribution_event_updated. Carries (candidateVersionId, status, event)
+        // so we can invalidate the per-row latestAbRun query without touching
+        // attribution-events caches.
+        if (
+          msg.type === 'behavior_rule_ab_run_updated' &&
+          typeof msg.candidateVersionId === 'string'
+        ) {
+          const candidateVersionId = msg.candidateVersionId;
+          queryClient.invalidateQueries({
+            queryKey: ['behavior-rule-ab', candidateVersionId],
+          });
+          // The stage on the related attribution event may have shifted too
+          // (ab_running / ab_passed / ab_failed) — refresh the attribution
+          // timeline so the chip flips without waiting for the cron tick.
+          queryClient.invalidateQueries({ queryKey: ['attribution-events'] });
+          return;
+        }
+
         if (msg.type !== 'attribution_event_updated' || typeof msg.eventId !== 'number') {
           return;
         }
@@ -568,9 +607,24 @@ const OptimizationEvents: React.FC<OptimizationEventsProps> = ({
       {
         title: 'Actions',
         key: 'actions',
-        width: 120,
-        render: (_: unknown, record) =>
-          record.stage === 'candidate_failed' ? (
+        width: 320,
+        render: (_: unknown, record) => {
+          // BEHAVIOR-RULE-AB-EVAL V1 — behavior_rule + candidate_ready rows
+          // get a dual-criteria badge + Promote/Retry buttons (PRD UC-1/2/3).
+          // Falls through to legacy candidate_failed retry for other surfaces.
+          if (
+            record.surfaceType === 'behavior_rule' &&
+            record.stage === 'candidate_ready' &&
+            record.candidateBehaviorRuleVersionId
+          ) {
+            return (
+              <BehaviorRuleAbRowActions
+                versionId={record.candidateBehaviorRuleVersionId}
+                onOpenDetail={openBehaviorRuleDrawer}
+              />
+            );
+          }
+          return record.stage === 'candidate_failed' ? (
             <Button
               size="small"
               loading={actionLoadingId === record.id}
@@ -581,10 +635,11 @@ const OptimizationEvents: React.FC<OptimizationEventsProps> = ({
             >
               Retry
             </Button>
-          ) : null,
+          ) : null;
+        },
       },
     ],
-    [actionLoadingId, onRetry],
+    [actionLoadingId, onRetry, openBehaviorRuleDrawer],
   );
 
   // ───────────────────────── render ─────────────────────────
@@ -832,6 +887,12 @@ const OptimizationEvents: React.FC<OptimizationEventsProps> = ({
         open={drawerOpen}
         onClose={closeDrawer}
         currentUserId={userId}
+      />
+
+      <BehaviorRuleAbDetailDrawer
+        versionId={behaviorRuleDrawerVersionId}
+        open={behaviorRuleDrawerOpen}
+        onClose={closeBehaviorRuleDrawer}
       />
     </div>
   );

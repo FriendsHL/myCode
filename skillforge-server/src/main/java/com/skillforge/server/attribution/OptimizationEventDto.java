@@ -33,6 +33,12 @@ public record OptimizationEventDto(
         String stage,
         Long candidateSkillId,
         Long candidatePromptVersionId,
+        // BEHAVIOR-RULE-AB-EVAL V1: VARCHAR(36) UUID sibling to the Long
+        // candidateSkill/Prompt fields above. AttributionApprovalService.
+        // dispatchBehaviorRuleSurface sets it on the entity; this DTO field
+        // exposes it so the FE timeline row can dispatch BehaviorRuleAbRowActions.
+        // Without it, the entire behavior_rule UI path is unreachable.
+        String candidateBehaviorRuleVersionId,
         Long abRunId,
         Long canaryId,
         String attributionSessionId,
@@ -55,6 +61,7 @@ public record OptimizationEventDto(
                 e.getStage(),
                 e.getCandidateSkillId(),
                 e.getCandidatePromptVersionId(),
+                e.getCandidateBehaviorRuleVersionId(),
                 e.getAbRunId(),
                 e.getCanaryId(),
                 e.getAttributionSessionId(),

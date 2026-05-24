@@ -5,10 +5,14 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.EntityListeners;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 
 @Entity
@@ -139,6 +143,17 @@ public class EvalScenarioEntity {
      */
     @Column(name = "purpose", nullable = false, length = 32)
     private String purpose;
+
+    /**
+     * BEHAVIOR-RULE-AB-EVAL V1 (V114): JSONB array of hint tags used by
+     * {@code BehaviorRuleAbEvalService} to split a dataset into "target"
+     * (scenarios whose hints overlap the rule's target_trigger_tags) vs
+     * "regression" subsets. Empty list (default) = scenario is regression-
+     * only. Non-null at the DB layer with default {@code '[]'::jsonb}.
+     */
+    @Column(name = "rule_trigger_hints", columnDefinition = "jsonb")
+    @JdbcTypeCode(SqlTypes.JSON)
+    private List<String> ruleTriggerHints = new ArrayList<>();
 
     @CreatedDate
     private Instant createdAt;
@@ -358,5 +373,15 @@ public class EvalScenarioEntity {
 
     public void setPurpose(String purpose) {
         this.purpose = purpose;
+    }
+
+    // BEHAVIOR-RULE-AB-EVAL V1 (V114) getter/setter for rule_trigger_hints.
+
+    public List<String> getRuleTriggerHints() {
+        return ruleTriggerHints;
+    }
+
+    public void setRuleTriggerHints(List<String> ruleTriggerHints) {
+        this.ruleTriggerHints = ruleTriggerHints == null ? new ArrayList<>() : ruleTriggerHints;
     }
 }

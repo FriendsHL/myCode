@@ -22,10 +22,15 @@ import java.time.Instant;
 @Table(name = "t_behavior_rule_ab_run")
 public class BehaviorRuleAbRunEntity {
 
-    public static final String STATUS_PENDING   = "PENDING";
-    public static final String STATUS_RUNNING   = "RUNNING";
-    public static final String STATUS_COMPLETED = "COMPLETED";
-    public static final String STATUS_FAILED    = "FAILED";
+    public static final String STATUS_PENDING    = "PENDING";
+    public static final String STATUS_RUNNING    = "RUNNING";
+    public static final String STATUS_COMPLETED  = "COMPLETED";
+    public static final String STATUS_FAILED     = "FAILED";
+    public static final String STATUS_SUPERSEDED = "SUPERSEDED";
+
+    /** BEHAVIOR-RULE-AB-EVAL V1: A/B kind discriminator (DB CHECK chk_brar_ab_run_kind). */
+    public static final String KIND_WITH_VS_WITHOUT = "with_vs_without";
+    public static final String KIND_VARIANT_A_VS_B  = "variant_a_vs_b";
 
     @Id
     @Column(length = 36)
@@ -72,6 +77,29 @@ public class BehaviorRuleAbRunEntity {
 
     @Column(name = "completed_at")
     private Instant completedAt;
+
+    // BEHAVIOR-RULE-AB-EVAL V1 (V115): dual-criteria + dataset linkage.
+
+    @Column(name = "target_delta_pp")
+    private Double targetDeltaPp;
+
+    @Column(name = "regression_delta_pp")
+    private Double regressionDeltaPp;
+
+    @Column(name = "target_count")
+    private Integer targetCount;
+
+    @Column(name = "regression_count")
+    private Integer regressionCount;
+
+    @Column(name = "dataset_version_id", length = 36)
+    private String datasetVersionId;
+
+    @Column(name = "candidate_eval_run_id", length = 36)
+    private String candidateEvalRunId;
+
+    @Column(name = "ab_run_kind", length = 16, nullable = false)
+    private String abRunKind = KIND_WITH_VS_WITHOUT;
 
     public BehaviorRuleAbRunEntity() {}
 
@@ -126,4 +154,37 @@ public class BehaviorRuleAbRunEntity {
 
     public Instant getCompletedAt() { return completedAt; }
     public void setCompletedAt(Instant completedAt) { this.completedAt = completedAt; }
+
+    // BEHAVIOR-RULE-AB-EVAL V1 getters/setters.
+
+    public Double getTargetDeltaPp() { return targetDeltaPp; }
+    public void setTargetDeltaPp(Double targetDeltaPp) { this.targetDeltaPp = targetDeltaPp; }
+
+    public Double getRegressionDeltaPp() { return regressionDeltaPp; }
+    public void setRegressionDeltaPp(Double regressionDeltaPp) {
+        this.regressionDeltaPp = regressionDeltaPp;
+    }
+
+    public Integer getTargetCount() { return targetCount; }
+    public void setTargetCount(Integer targetCount) { this.targetCount = targetCount; }
+
+    public Integer getRegressionCount() { return regressionCount; }
+    public void setRegressionCount(Integer regressionCount) {
+        this.regressionCount = regressionCount;
+    }
+
+    public String getDatasetVersionId() { return datasetVersionId; }
+    public void setDatasetVersionId(String datasetVersionId) {
+        this.datasetVersionId = datasetVersionId;
+    }
+
+    public String getCandidateEvalRunId() { return candidateEvalRunId; }
+    public void setCandidateEvalRunId(String candidateEvalRunId) {
+        this.candidateEvalRunId = candidateEvalRunId;
+    }
+
+    public String getAbRunKind() { return abRunKind; }
+    public void setAbRunKind(String abRunKind) {
+        this.abRunKind = abRunKind == null ? KIND_WITH_VS_WITHOUT : abRunKind;
+    }
 }

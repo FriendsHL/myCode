@@ -1,7 +1,10 @@
 package com.skillforge.server.improve;
 
+import com.skillforge.server.entity.BehaviorRuleAbRunEntity;
 import com.skillforge.server.entity.BehaviorRuleVersionEntity;
+import com.skillforge.server.improve.behavior.BehaviorRuleAbEvalService;
 import com.skillforge.server.improve.event.BehaviorRulePromotedEvent;
+import com.skillforge.server.repository.BehaviorRuleAbRunRepository;
 import com.skillforge.server.repository.BehaviorRuleVersionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,12 +40,98 @@ public class BehaviorRulePromotionService {
     private static final Logger log = LoggerFactory.getLogger(BehaviorRulePromotionService.class);
 
     private final BehaviorRuleVersionRepository versionRepository;
+    private final BehaviorRuleAbRunRepository abRunRepository;
     private final ApplicationEventPublisher eventPublisher;
 
     public BehaviorRulePromotionService(BehaviorRuleVersionRepository versionRepository,
+                                         BehaviorRuleAbRunRepository abRunRepository,
                                          ApplicationEventPublisher eventPublisher) {
         this.versionRepository = versionRepository;
+        this.abRunRepository = abRunRepository;
         this.eventPublisher = eventPublisher;
+    }
+
+    /**
+     * BEHAVIOR-RULE-AB-EVAL V1: manual-promote result. {@code "promoted"}
+     * means the candidate transitioned to active; {@code "noop"} means the
+     * candidate was already active (INV-6 idempotency).
+     */
+    public record PromoteResult(String status, String reason) {
+        public static PromoteResult noop(String reason)        { return new PromoteResult("noop", reason); }
+        public static PromoteResult promoted(String versionId) { return new PromoteResult("promoted", versionId); }
+    }
+
+    /**
+     * BEHAVIOR-RULE-AB-EVAL V1: manual-promote entry. Verifies dual-criteria
+     * over the latest COMPLETED A/B run before delegating to {@link #promote}
+     * for the atomic state transition. Distinct from {@link #promote} so
+     * non-manual callers (auto-promote in V2, attribution-derived flows) can
+     * bypass the dual-criteria gate.
+     *
+     * <p>INV-6 (idempotency): re-calling on an already-active version is a
+     * no-op (returns {@link PromoteResult#noop}); doesn't throw.
+     *
+     * @throws IllegalArgumentException version not found
+     * @throws IllegalStateException    candidate not in {@code candidate}
+     *                                  status, no completed A/B run, or
+     *                                  dual-criteria not satisfied
+     */
+    @Transactional
+    public PromoteResult promoteManual(String versionId, Long triggeredByUserId) {
+        BehaviorRuleVersionEntity v = versionRepository.findById(versionId)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "BehaviorRuleVersion not found: " + versionId));
+        if (BehaviorRuleVersionEntity.STATUS_ACTIVE.equals(v.getStatus())) {
+            // INV-6: idempotent — caller may safely retry.
+            return PromoteResult.noop("already active");
+        }
+        if (!BehaviorRuleVersionEntity.STATUS_CANDIDATE.equals(v.getStatus())) {
+            throw new IllegalStateException(
+                    "Cannot promote non-candidate version: id=" + versionId + " state=" + v.getStatus());
+        }
+        BehaviorRuleAbRunEntity latestRun = abRunRepository
+                .findFirstByCandidateVersionIdAndStatusOrderByCompletedAtDesc(
+                        versionId, BehaviorRuleAbRunEntity.STATUS_COMPLETED)
+                .orElseThrow(() -> new IllegalStateException(
+                        "No completed A/B run for version " + versionId
+                                + " — run A/B first"));
+        if (!isDualCriteriaSatisfied(latestRun)) {
+            throw new IllegalStateException(String.format(
+                    "Dual-criteria not satisfied: target_delta=%s (need >= %.1f or null), "
+                            + "regression_delta=%s (need >= %.1f)",
+                    latestRun.getTargetDeltaPp(),
+                    BehaviorRuleAbEvalService.TARGET_DELTA_THRESHOLD_PP,
+                    latestRun.getRegressionDeltaPp(),
+                    BehaviorRuleAbEvalService.REGRESSION_DELTA_FLOOR_PP));
+        }
+        promote(v);
+        latestRun.setPromoted(true);
+        if (triggeredByUserId != null) {
+            latestRun.setTriggeredByUserId(triggeredByUserId);
+        }
+        abRunRepository.save(latestRun);
+        return PromoteResult.promoted(v.getId());
+    }
+
+    /**
+     * INV-5 dual-criteria gate. Returns true iff:
+     * <ul>
+     *   <li>regression_delta_pp is non-null AND &gt;= {@code REGRESSION_DELTA_FLOOR_PP}, AND</li>
+     *   <li>target_delta_pp is null (fallback / regression-only mode), OR</li>
+     *   <li>target_delta_pp is non-null AND &gt;= {@code TARGET_DELTA_THRESHOLD_PP}.</li>
+     * </ul>
+     *
+     * <p>Both thresholds sourced from {@link BehaviorRuleAbEvalService} so
+     * changing them takes a single edit.
+     */
+    public static boolean isDualCriteriaSatisfied(BehaviorRuleAbRunEntity r) {
+        if (r == null) return false;
+        Double targetDelta = r.getTargetDeltaPp();
+        Double regressionDelta = r.getRegressionDeltaPp();
+        if (regressionDelta == null) return false;
+        if (regressionDelta < BehaviorRuleAbEvalService.REGRESSION_DELTA_FLOOR_PP) return false;
+        if (targetDelta == null) return true;   // fallback mode passes on regression alone
+        return targetDelta >= BehaviorRuleAbEvalService.TARGET_DELTA_THRESHOLD_PP;
     }
 
     /**

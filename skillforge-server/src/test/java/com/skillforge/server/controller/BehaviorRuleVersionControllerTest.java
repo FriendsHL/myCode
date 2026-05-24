@@ -4,6 +4,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.skillforge.server.entity.BehaviorRuleVersionEntity;
+import com.skillforge.server.improve.BehaviorRulePromotionService;
+import com.skillforge.server.improve.behavior.BehaviorRuleAbEvalService;
+import com.skillforge.server.repository.BehaviorRuleAbRunRepository;
 import com.skillforge.server.repository.BehaviorRuleVersionRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -35,11 +38,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class BehaviorRuleVersionControllerTest {
 
     private BehaviorRuleVersionRepository versionRepository;
+    private BehaviorRuleAbRunRepository abRunRepository;
     private MockMvc mvc;
 
     @BeforeEach
     void setUp() {
         versionRepository = mock(BehaviorRuleVersionRepository.class);
+        abRunRepository = mock(BehaviorRuleAbRunRepository.class);
         // java.md footgun #1: register JavaTimeModule so Instant fields
         // serialize as ISO-8601 strings instead of epoch arrays.
         ObjectMapper objectMapper = new ObjectMapper()
@@ -47,7 +52,12 @@ class BehaviorRuleVersionControllerTest {
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
         BehaviorRuleVersionController controller =
-                new BehaviorRuleVersionController(versionRepository);
+                new BehaviorRuleVersionController(
+                        versionRepository,
+                        abRunRepository,
+                        mock(BehaviorRuleAbEvalService.class),
+                        mock(BehaviorRulePromotionService.class),
+                        objectMapper);
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setMessageConverters(new MappingJackson2HttpMessageConverter(objectMapper))
                 .build();
@@ -153,5 +163,143 @@ class BehaviorRuleVersionControllerTest {
 
         mvc.perform(get("/api/behavior-rules/versions/{id}", "ghost-uuid"))
                 .andExpect(status().isNotFound());
+    }
+
+    // ───────────────────────── GET latest-ab-run (C4) ──────────────
+
+    @Test
+    @DisplayName("GET /api/behavior-rules/versions/{id}/latest-ab-run returns 200+null when no run yet "
+            + "(FE-BE contract C4 — NOT 404 so FE doesn't need try/catch on the initial state)")
+    void latestAbRun_noRun_returns200WithNullBody() throws Exception {
+        when(abRunRepository.findByCandidateVersionIdOrderByStartedAtDesc("br-v2-uuid"))
+                .thenReturn(List.of());
+
+        mvc.perform(get("/api/behavior-rules/versions/{id}/latest-ab-run", "br-v2-uuid"))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .content().string("")); // Spring serializes null body as empty
+    }
+
+    @Test
+    @DisplayName("GET /api/behavior-rules/versions/{id}/latest-ab-run returns most recent by startedAt (r2-BE-4: repo-side ordering)")
+    void latestAbRun_returnsLatestByStartedAt() throws Exception {
+        com.skillforge.server.entity.BehaviorRuleAbRunEntity newer =
+                new com.skillforge.server.entity.BehaviorRuleAbRunEntity();
+        newer.setId("ab-new");
+        newer.setAgentId("42");
+        newer.setCandidateVersionId("br-v2-uuid");
+        newer.setBaselineVersionId("");
+        newer.setStatus("RUNNING");
+        newer.setAbRunKind("with_vs_without");
+        newer.setStartedAt(Instant.parse("2026-05-24T10:00:00Z"));
+
+        // r2-BE-4: controller now delegates ordering to repo finder.
+        when(abRunRepository.findFirstByCandidateVersionIdOrderByStartedAtDesc("br-v2-uuid"))
+                .thenReturn(Optional.of(newer));
+
+        mvc.perform(get("/api/behavior-rules/versions/{id}/latest-ab-run", "br-v2-uuid"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value("ab-new"))
+                .andExpect(jsonPath("$.status").value("RUNNING"))
+                .andExpect(jsonPath("$.candidateVersionId").value("br-v2-uuid"))
+                // dualCriteriaSatisfied is the derived flag — non-null on wire.
+                .andExpect(jsonPath("$.dualCriteriaSatisfied").exists());
+    }
+
+    // ───────────────────────── POST run-ab / promote error mapping (r2-BE-1) ─────────────
+
+    @Test
+    @DisplayName("r2-BE-1: POST /promote dual-criteria-fail → 400 + body.reason contains 'Dual-criteria'")
+    void promote_dualCriteriaFail_returns400WithReason() throws Exception {
+        BehaviorRulePromotionService promotionService = retrievePromotionMock();
+        when(promotionService.promoteManual(eqStr("v1"), org.mockito.ArgumentMatchers.isNull()))
+                .thenThrow(new IllegalStateException("Dual-criteria not satisfied: target_delta=5.0 ..."));
+
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .post("/api/behavior-rules/versions/{id}/promote", "v1"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.reason").value(
+                        org.hamcrest.Matchers.containsString("Dual-criteria")));
+    }
+
+    @Test
+    @DisplayName("r2-BE-1: POST /promote no completed run → 400 + body.reason contains 'No completed'")
+    void promote_noCompletedRun_returns400() throws Exception {
+        BehaviorRulePromotionService promotionService = retrievePromotionMock();
+        when(promotionService.promoteManual(eqStr("v1"), org.mockito.ArgumentMatchers.isNull()))
+                .thenThrow(new IllegalStateException("No completed A/B run for version v1 — run A/B first"));
+
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .post("/api/behavior-rules/versions/{id}/promote", "v1"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.reason").value(
+                        org.hamcrest.Matchers.containsString("No completed")));
+    }
+
+    @Test
+    @DisplayName("r2-BE-1: POST /promote version not found → 404 + body.reason")
+    void promote_versionNotFound_returns404() throws Exception {
+        BehaviorRulePromotionService promotionService = retrievePromotionMock();
+        when(promotionService.promoteManual(eqStr("ghost"), org.mockito.ArgumentMatchers.isNull()))
+                .thenThrow(new IllegalArgumentException("BehaviorRuleVersion not found: ghost"));
+
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .post("/api/behavior-rules/versions/{id}/promote", "ghost"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.reason").value(
+                        org.hamcrest.Matchers.containsString("not found")));
+    }
+
+    @Test
+    @DisplayName("r2-BE-1: POST /run-ab non-candidate → 400 + body.reason contains 'Only candidate'")
+    void runAb_nonCandidate_returns400() throws Exception {
+        BehaviorRuleAbEvalService abEvalService = retrieveAbEvalMock();
+        when(abEvalService.startAbForVersion(eqStr("v1"), org.mockito.ArgumentMatchers.any()))
+                .thenThrow(new IllegalStateException("Only candidate versions can start A/B: id=v1 state=active"));
+
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .post("/api/behavior-rules/versions/{id}/run-ab", "v1")
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.reason").value(
+                        org.hamcrest.Matchers.containsString("Only candidate")));
+    }
+
+    // ───────── helpers to introspect controller's mock dependencies ─────────
+
+    private static String eqStr(String s) { return org.mockito.ArgumentMatchers.eq(s); }
+
+    /** Helper to retrieve the mock plumbed into setUp()'s controller ctor.
+     *  We re-spin a fresh controller for these tests so we can stub the mock,
+     *  since the @BeforeEach setUp() created throwaway mocks. */
+    private BehaviorRulePromotionService retrievePromotionMock() {
+        return rebuildControllerWithStubbableMocks().promotionMock;
+    }
+
+    private BehaviorRuleAbEvalService retrieveAbEvalMock() {
+        return rebuildControllerWithStubbableMocks().abEvalMock;
+    }
+
+    private static class Wired {
+        BehaviorRulePromotionService promotionMock;
+        BehaviorRuleAbEvalService abEvalMock;
+    }
+
+    private Wired rebuildControllerWithStubbableMocks() {
+        Wired w = new Wired();
+        w.promotionMock = mock(BehaviorRulePromotionService.class);
+        w.abEvalMock = mock(BehaviorRuleAbEvalService.class);
+        ObjectMapper om = new ObjectMapper()
+                .registerModule(new JavaTimeModule())
+                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        BehaviorRuleVersionController controller =
+                new BehaviorRuleVersionController(
+                        versionRepository, abRunRepository,
+                        w.abEvalMock, w.promotionMock, om);
+        mvc = MockMvcBuilders.standaloneSetup(controller)
+                .setMessageConverters(new MappingJackson2HttpMessageConverter(om))
+                .build();
+        return w;
     }
 }

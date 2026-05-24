@@ -117,7 +117,15 @@ public class AttributionApprovalService {
             Map.entry(OptimizationEventEntity.STAGE_CANDIDATE_FAILED, Set.of(
                     OptimizationEventEntity.STAGE_CANDIDATE_GENERATING)),
             Map.entry(OptimizationEventEntity.STAGE_CANDIDATE_READY, Set.of(
-                    OptimizationEventEntity.STAGE_AB_RUNNING)),
+                    OptimizationEventEntity.STAGE_AB_RUNNING,
+                    // ★ 2026-05-24 V1 r3.3 fix: behavior_rule surface 无 A/B 路径
+                    // (V5.1 backlog)，candidate_ready 在 V4 是 behavior_rule 的
+                    // 终态。允许 candidate_ready → candidate_generating 让 operator
+                    // 可点 Retry 重生 candidate (跟 candidate_failed → candidate_generating
+                    // 对称)。surface=skill/prompt 走 ab_running 是预期路径，但允许
+                    // 这条 transition 不破坏：retryCandidateGeneration 在 service
+                    // 层仍按 surface 防滥用。
+                    OptimizationEventEntity.STAGE_CANDIDATE_GENERATING)),
             Map.entry(OptimizationEventEntity.STAGE_AB_RUNNING, Set.of(
                     OptimizationEventEntity.STAGE_AB_PASSED,
                     OptimizationEventEntity.STAGE_AB_FAILED)),

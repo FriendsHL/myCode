@@ -75,6 +75,16 @@ export interface OptimizationEventDto {
   stage: string;
   candidateSkillId: number | null;
   candidatePromptVersionId: number | null;
+  /**
+   * BEHAVIOR-RULE-AB-EVAL V1 — id of the {@code t_behavior_rule_version} row
+   * created when a behavior_rule candidate is approved (UUID-style VARCHAR(36)
+   * on BE; sibling of {@code candidateSkillId} / {@code candidatePromptVersionId}
+   * but for the behavior_rule surface). Nullable for non-behavior_rule events
+   * or pre-candidate stages. FE row Actions for {@code surfaceType=='behavior_rule'
+   * && stage=='candidate_ready'} uses this to fetch latestAbRun + render the
+   * dual-criteria badge / Promote / Retry buttons.
+   */
+  candidateBehaviorRuleVersionId: string | null;
   abRunId: number | null;
   canaryId: number | null;
   attributionSessionId: string | null;

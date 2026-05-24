@@ -3,6 +3,7 @@ package com.skillforge.server.attribution;
 import com.skillforge.server.entity.OptimizationEventEntity;
 import com.skillforge.server.improve.PromptImproverService;
 import com.skillforge.server.improve.SkillDraftService;
+import com.skillforge.server.improve.behavior.BehaviorRuleAbEvalService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -76,6 +77,7 @@ class OptimizationEventAutoTriggerListenerTest {
 
     @Mock private PromptImproverService promptImproverService;
     @Mock private SkillDraftService skillDraftService;
+    @Mock private BehaviorRuleAbEvalService behaviorRuleAbEvalService;
     @Mock private AttributionEventBroadcaster broadcaster;
 
     private OptimizationEventAutoTriggerListener listener;
@@ -83,7 +85,8 @@ class OptimizationEventAutoTriggerListenerTest {
     @BeforeEach
     void setUp() {
         listener = new OptimizationEventAutoTriggerListener(
-                promptImproverService, skillDraftService, broadcaster);
+                promptImproverService, skillDraftService,
+                behaviorRuleAbEvalService, broadcaster);
     }
 
     private OptimizationEventStageChangeEvent candidateReadyEvent(String surface,
@@ -139,13 +142,31 @@ class OptimizationEventAutoTriggerListenerTest {
     }
 
     @Test
-    @DisplayName("behavior_rule surface → V5.1 backlog skip log; no broadcast")
-    void onCandidateReady_behaviorRuleSurface_skipsCleanly() {
+    @DisplayName("behavior_rule surface → real call to BehaviorRuleAbEvalService.startAbForVersion "
+            + "(versionId, override=null) — BEHAVIOR-RULE-AB-EVAL V1 dispatch")
+    void onCandidateReady_behaviorRuleSurface_callsStartAbForVersion() {
+        String brVersionId = "br-version-uuid-v1";
+        when(behaviorRuleAbEvalService.startAbForVersion(anyString(), isNull()))
+                .thenReturn("ab-run-id-behavior-rule-v1");
+
+        listener.onStageCandidateReady(candidateReadyEvent(
+                OptimizationEventEntity.SURFACE_BEHAVIOR_RULE, null, null, brVersionId));
+
+        verify(behaviorRuleAbEvalService).startAbForVersion(eq(brVersionId), isNull());
+        verify(promptImproverService, never()).runAbTestAgainst(
+                anyString(), any(), anyString(), any());
+        verify(skillDraftService, never()).startAbTestFromDraft(anyString(), any());
+        verifyNoInteractions(broadcaster);  // happy path: no ab_failed mirror
+    }
+
+    @Test
+    @DisplayName("behavior_rule surface with null versionId → safe skip (warn log; no broadcast)")
+    void onCandidateReady_behaviorRuleSurface_nullVersionId_safeSkip() {
         assertThatCode(() -> listener.onStageCandidateReady(candidateReadyEvent(
                 OptimizationEventEntity.SURFACE_BEHAVIOR_RULE,
-                null, null, "br-version-uuid-phase13")))
+                null, null, /*behaviorRuleVersionId*/ null)))
                 .doesNotThrowAnyException();
-
+        verify(behaviorRuleAbEvalService, never()).startAbForVersion(anyString(), any());
         verifyNoInteractions(broadcaster);
     }
 

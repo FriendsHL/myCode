@@ -453,6 +453,99 @@ public class AbEvalPipeline {
     }
 
     /**
+     * BEHAVIOR-RULE-AB-EVAL V1: explicit-defs overload. Runs every scenario
+     * twice (baseline def + candidate def) and returns merged per-scenario
+     * results. Reuses {@link #runSingleScenario} + {@link #sandboxFactory}.
+     *
+     * <p><b>Persistence contract</b> (r1-FIX, java-design WARN SRP):
+     * this overload is <b>pure compute</b> — it does NOT touch any
+     * {@code t_*_ab_run} row. The caller
+     * ({@code BehaviorRuleAbEvalService.runAsync}) owns ALL persistence —
+     * status transitions, delta calculation, JSON serialization. Existing
+     * {@link #run(PromptAbRunEntity, PromptVersionEntity, EvalTaskEntity, AgentEntity)} /
+     * {@link #run(PromptAbRunEntity, PromptVersionEntity, PromptVersionEntity, AgentEntity, String)}
+     * overloads DO persist via {@link #promptAbRunRepository}; divergent contract
+     * is intentional but cumulative SRP pressure on this class means V2
+     * should extract an {@code AbScenarioRunner} helper (TODO below).
+     *
+     * <p>r1-FIX (java-design WARN abstraction): returns plain
+     * {@code List<AbScenarioResult>} not a {@code DualDefResult} wrapper —
+     * the single-field record had no upside. V2 may upgrade to a record when
+     * token-usage fields land.
+     *
+     * @param abRunId       abRun id used as sandbox-naming prefix (suffixed
+     *                      with {@code ":b"} / {@code ":c"} for the two sides)
+     * @param scenarios     scenarios to run; runs both sides for each
+     * @param baselineDef   agent definition for the baseline side (without
+     *                      candidate rule injected)
+     * @param candidateDef  agent definition for the candidate side (with
+     *                      candidate rule injected)
+     * @return per-scenario results in original order; on per-scenario error
+     *         entry has status="ERROR" on both sides (does not abort batch)
+     */
+    public List<AbScenarioResult> runWithExplicitDefs(
+            String abRunId,
+            List<EvalScenarioEntity> scenarios,
+            AgentDefinition baselineDef,
+            AgentDefinition candidateDef) {
+        // TODO(V2): extract AbScenarioRunner to relieve SRP pressure on
+        //           AbEvalPipeline if a 5th eval orchestrator surface lands.
+        if (scenarios == null || scenarios.isEmpty()) {
+            return List.of();
+        }
+        // Apply same eval-overrides (force temperature=0.0, strip execution_mode)
+        // as production run() — keeps A/B comparison deterministic.
+        AgentDefinition bEval = copyWithoutEvalOverrides(baselineDef);
+        AgentDefinition cEval = copyWithoutEvalOverrides(candidateDef);
+
+        // Mirror the prompt-surface fan-out: cap=3 Semaphore + loopExecutor
+        // (4 core / 8 max). 3 outer × 2 inner = 6 ≤ 8 with 2 buffer.
+        final Semaphore concurrency = new Semaphore(3);
+        List<CompletableFuture<AbScenarioResult>> futures = new ArrayList<>(scenarios.size());
+
+        for (EvalScenarioEntity entity : scenarios) {
+            EvalScenario scenario = toEvalScenario(entity);
+            try {
+                concurrency.acquire();
+            } catch (InterruptedException ie) {
+                // Restore interrupt flag and abort: throwing a checked-into-runtime
+                // exception lets caller decide failure semantics (mark abRun FAILED).
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(
+                        "Interrupted while throttling A/B scenario submit (abRunId=" + abRunId + ")", ie);
+            }
+            CompletableFuture<AbScenarioResult> fut = CompletableFuture.supplyAsync(() -> {
+                try {
+                    ScenarioRunResult bRun = runSingleScenario(abRunId + ":b", scenario, bEval);
+                    EvalJudgeOutput bJudge = evalJudgeTool.judge(scenario, bRun);
+                    ScenarioRunResult cRun = runSingleScenario(abRunId + ":c", scenario, cEval);
+                    EvalJudgeOutput cJudge = evalJudgeTool.judge(scenario, cRun);
+                    return new AbScenarioResult(
+                            scenario.getId(), scenario.getName(),
+                            new AbScenarioResult.RunResult(bRun.getStatus(), bJudge.getCompositeScore()),
+                            new AbScenarioResult.RunResult(cRun.getStatus(), cJudge.getCompositeScore()));
+                } catch (Exception e) {
+                    log.error("BehaviorRule A/B scenario {} failed: {}",
+                            scenario.getId(), e.getMessage(), e);
+                    return new AbScenarioResult(
+                            scenario.getId(), scenario.getName(),
+                            new AbScenarioResult.RunResult("ERROR", 0.0),
+                            new AbScenarioResult.RunResult("ERROR", 0.0));
+                } finally {
+                    concurrency.release();
+                }
+            }, loopExecutor);
+            futures.add(fut);
+        }
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        List<AbScenarioResult> out = new ArrayList<>(futures.size());
+        for (CompletableFuture<AbScenarioResult> f : futures) {
+            out.add(f.join());
+        }
+        return out;
+    }
+
+    /**
      * Phase 1.4c helper — minimal {@link EvalScenarioEntity} → {@link EvalScenario}
      * adapter for the attribution path. Mirrors {@code ScenarioLoader.toEvalScenario}
      * (private) without coupling to its multi-turn JSON parsing (attribution

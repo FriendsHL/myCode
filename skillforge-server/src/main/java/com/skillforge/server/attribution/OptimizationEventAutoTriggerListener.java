@@ -3,6 +3,7 @@ package com.skillforge.server.attribution;
 import com.skillforge.server.entity.OptimizationEventEntity;
 import com.skillforge.server.improve.PromptImproverService;
 import com.skillforge.server.improve.SkillDraftService;
+import com.skillforge.server.improve.behavior.BehaviorRuleAbEvalService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -73,13 +74,16 @@ public class OptimizationEventAutoTriggerListener {
 
     private final PromptImproverService promptImproverService;
     private final SkillDraftService skillDraftService;
+    private final BehaviorRuleAbEvalService behaviorRuleAbEvalService;
     private final AttributionEventBroadcaster broadcaster;
 
     public OptimizationEventAutoTriggerListener(PromptImproverService promptImproverService,
                                                 SkillDraftService skillDraftService,
+                                                BehaviorRuleAbEvalService behaviorRuleAbEvalService,
                                                 AttributionEventBroadcaster broadcaster) {
         this.promptImproverService = promptImproverService;
         this.skillDraftService = skillDraftService;
+        this.behaviorRuleAbEvalService = behaviorRuleAbEvalService;
         this.broadcaster = broadcaster;
     }
 
@@ -179,16 +183,23 @@ public class OptimizationEventAutoTriggerListener {
     }
 
     /**
-     * V4 BehaviorRule promotes deterministically on creation — there is no
-     * runner to fire per-rule A/B against today. V5.1 backlog covers
-     * re-introducing the dynamic-candidate flow. Log at INFO so dogfood
-     * traces show the explicit skip rather than silent black-hole.
+     * BEHAVIOR-RULE-AB-EVAL V1: real dispatch — was a stub returning early
+     * with "V5.1 backlog skip" through 2026-05-23. Now calls
+     * {@link BehaviorRuleAbEvalService#startAbForVersion} with no dataset
+     * override (agent default applies).
      */
     void dispatchBehaviorRuleAutoAb(OptimizationEventStageChangeEvent event) {
-        log.info("[FlywheelAutoTrigger] behavior_rule auto-AB not supported "
-                        + "(V5.1 backlog — V4 BehaviorRule lacks dynamic candidate "
-                        + "flow); skip eventId={} candidateBehaviorRuleVersionId={}",
-                event.eventId(), event.candidateBehaviorRuleVersionId());
+        String versionId = event.candidateBehaviorRuleVersionId();
+        if (versionId == null || versionId.isBlank()) {
+            log.warn("[FlywheelAutoTrigger] candidate_ready behavior_rule event lacks "
+                            + "candidateBehaviorRuleVersionId; skip eventId={}",
+                    event.eventId());
+            return;
+        }
+        String abRunId = behaviorRuleAbEvalService.startAbForVersion(versionId, null);
+        log.info("[FlywheelAutoTrigger] auto-triggered behavior_rule A/B: eventId={} "
+                        + "agentId={} candidateBehaviorRuleVersionId={} abRunId={}",
+                event.eventId(), event.agentId(), versionId, abRunId);
     }
 
     /**

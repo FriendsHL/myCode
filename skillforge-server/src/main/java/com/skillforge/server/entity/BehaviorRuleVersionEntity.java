@@ -6,8 +6,12 @@ import jakarta.persistence.Id;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * MULTI-SURFACE-FLYWHEEL V4 Phase 1.1: versioned behavior_rule snapshot for an
@@ -94,6 +98,18 @@ public class BehaviorRuleVersionEntity {
     @Column(name = "promoted_at")
     private Instant promotedAt;
 
+    /**
+     * BEHAVIOR-RULE-AB-EVAL V1 (V115): JSONB array of trigger tags used by
+     * {@code BehaviorRuleAbEvalService} to compute the target subset of a
+     * dataset version (scenarios whose {@code rule_trigger_hints} overlaps
+     * any of these tags). Empty list (default) = no targeting; the A/B run
+     * degenerates to regression-only mode (target_delta = null,
+     * regression_delta = single delta across full dataset).
+     */
+    @Column(name = "target_trigger_tags", columnDefinition = "jsonb")
+    @JdbcTypeCode(SqlTypes.JSON)
+    private List<String> targetTriggerTags = new ArrayList<>();
+
     public BehaviorRuleVersionEntity() {}
 
     /**
@@ -148,4 +164,9 @@ public class BehaviorRuleVersionEntity {
 
     public Instant getPromotedAt() { return promotedAt; }
     public void setPromotedAt(Instant promotedAt) { this.promotedAt = promotedAt; }
+
+    public List<String> getTargetTriggerTags() { return targetTriggerTags; }
+    public void setTargetTriggerTags(List<String> targetTriggerTags) {
+        this.targetTriggerTags = targetTriggerTags == null ? new ArrayList<>() : targetTriggerTags;
+    }
 }
