@@ -34,9 +34,12 @@ function fmtAbsolute(iso: string | null | undefined): string {
   return dayjs(iso).format('YYYY-MM-DD HH:mm:ss');
 }
 
+/** Format pass-rate (BE returns 0..100 percent number, NOT 0..1 fraction)
+ *  as percent string. HOT-FIX commit cc7286b follow-up — first dogfood
+ *  rendered "8163.3%" instead of "81.6%" because FE double-multiplied. */
 function fmtPct(v: number | null | undefined): string {
   if (v === null || v === undefined || !Number.isFinite(v)) return '—';
-  return `${(v * 100).toFixed(1)}%`;
+  return `${v.toFixed(1)}%`;
 }
 
 function fmtDeltaPp(v: number | null | undefined): string {
@@ -323,15 +326,11 @@ export const BehaviorRuleAbDetailDrawer: React.FC<BehaviorRuleAbDetailDrawerProp
         <Descriptions.Item label="Overall delta">
           {/* r2-FE-1 fix: never use truthy `?` on numeric delta fields — 0 is
               a confirmed-zero-impact result, not "missing data". Always
-              compare `!= null` so a +0.0pp run still renders its Tag. */}
-          <Tag
-            color={deltaTagColor(
-              data.deltaPassRate != null ? data.deltaPassRate * 100 : null,
-            )}
-          >
-            {fmtDeltaPp(
-              data.deltaPassRate != null ? data.deltaPassRate * 100 : null,
-            )}
+              compare `!= null` so a +0.0pp run still renders its Tag.
+              HOT-FIX cc7286b follow-up: BE deltaPassRate IS the pp value
+              already (e.g. 2.04 means +2.04pp); NO `* 100` multiply. */}
+          <Tag color={deltaTagColor(data.deltaPassRate ?? null)}>
+            {fmtDeltaPp(data.deltaPassRate ?? null)}
           </Tag>
         </Descriptions.Item>
         <Descriptions.Item label="Dual-criteria">

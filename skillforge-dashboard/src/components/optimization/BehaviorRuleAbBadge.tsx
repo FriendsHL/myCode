@@ -35,10 +35,13 @@ export function deltaTagColor(deltaPp: number | null | undefined): string {
   return 'red';
 }
 
-/** Format pass-rate (0..1) as percent string, falling back to em-dash. */
+/** Format pass-rate (BE returns 0..100 percent number) as percent string,
+ *  falling back to em-dash. **Do NOT** multiply by 100 — BE
+ *  baseline_pass_rate / candidate_pass_rate are already percent values
+ *  (e.g. 81.6326530612). HOT-FIX commit cc7286b follow-up. */
 function fmtPct(v: number | null | undefined): string {
   if (v === null || v === undefined || !Number.isFinite(v)) return '—';
-  return `${(v * 100).toFixed(1)}%`;
+  return `${v.toFixed(1)}%`;
 }
 
 /** Format delta-pp value as signed percent-point string. */
