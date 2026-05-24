@@ -43,6 +43,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -341,8 +342,23 @@ public class AbEvalPipeline {
         AtomicInteger candidatePassedAtomic = new AtomicInteger(0);
         List<CompletableFuture<AbScenarioResult>> futures = new ArrayList<>(scenarios.size());
 
+        // ★ 2026-05-24 V1 r3.1 fix RejectedExecutionException:
+        // loopExecutor cap = core 4 / max 8 / queue 20 = total 28 capacity. 一次
+        // submit 49 scenarios 撑爆 + 内部 runSingleScenario.submit(engine.run) 跟
+        // 自己抢 pool → cascading reject (Event 122 第 6 次 retry 暴露)。
+        // Semaphore cap=3 限并发：3 outer + 3 inner = 6 ≤ 8 pool max，留 2 buffer。
+        final Semaphore concurrency = new Semaphore(3);
+
         for (EvalScenarioEntity entity : scenarios) {
             EvalScenario scenario = toEvalScenario(entity);
+            // acquire 在主线程 block — 控制 submit 进 loopExecutor 的 task 数永远
+            // ≤3 concurrent (其余 in-flight 完成 release semaphore 才放下一个 submit)
+            try {
+                concurrency.acquire();
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("Interrupted while throttling A/B scenario submit", ie);
+            }
             CompletableFuture<AbScenarioResult> fut = CompletableFuture.supplyAsync(() -> {
                 try {
                     // Distinct sandbox ids per side prevent SandboxFactory collision
@@ -369,6 +385,8 @@ public class AbEvalPipeline {
                             scenario.getId(), scenario.getName(),
                             new AbScenarioResult.RunResult("ERROR", 0.0),
                             new AbScenarioResult.RunResult("ERROR", 0.0));
+                } finally {
+                    concurrency.release();   // r3.1 fix: 释放并发槽
                 }
             }, loopExecutor);
             futures.add(fut);
@@ -463,11 +481,19 @@ public class AbEvalPipeline {
 
             String evalSessionId = UUID.randomUUID().toString();
             LoopContext ctx = new LoopContext();
-            ctx.setMaxLoops(scenario.getMaxLoops());
+            // ★ 2026-05-24 V1 r3 fix: eval 跟 production 同 budget — 优先用 agent
+            // config 的 max_loops (Main Assistant 配 50)，让 attribution-curator 改的
+            // prompt 在 eval 反映真实 production 表现。之前 hardcoded scenario.getMaxLoops()
+            // 默认 10 → research task 多步 LLM 调用撞顶 TIMEOUT (Event 122 dogfood
+            // 暴露：rule #6 "总结再分析" 让 4 个 web research scenarios 全 TIMEOUT
+            // 因 candidate 10 loops 不够，但 production 50 loops 完全能跑完)。
+            int agentMaxLoops = readAgentMaxLoops(candidateDef, scenario.getMaxLoops());
+            ctx.setMaxLoops(agentMaxLoops);
             ctx.setExecutionMode("auto");
             ctx.setMaxLlmStreamTimeoutMs(20_000L);
 
-            // Strip eval-sensitive config
+            // Strip eval-sensitive config (max_loops 现在保留，让 evalDef agent 的
+            // config 跟 ctx 一致；execution_mode 仍 strip 防 'ask' 卡住 eval)
             AgentDefinition evalDef = copyWithoutEvalOverrides(candidateDef);
 
             Path sandboxRoot = sandboxFactory.getSandboxRoot(abRunId, scenario.getId());
@@ -534,11 +560,36 @@ public class AbEvalPipeline {
         copy.setToolsPrompt(original.getToolsPrompt());
         if (original.getConfig() != null) {
             Map<String, Object> configCopy = new HashMap<>(original.getConfig());
-            configCopy.remove("max_loops");
-            configCopy.remove("execution_mode");
+            // ★ 2026-05-24 V1 r3 fix: 不再 remove max_loops — eval 跟 production 同
+            // budget，让 attribution-curator 改的 prompt 在 eval 反映真实表现。
+            // (历史: 删 max_loops 让 scenario.getMaxLoops()=10 接管，强行降级 budget
+            //  让 eval 评的是"严苛环境表现"而非 production 真实表现)
+            configCopy.remove("execution_mode");  // 仍 strip 防 'ask' 卡 eval
+            // ★ 2026-05-24 V1 r3.2 fix: eval 强制 temperature=0.0 让 A/B 可重复对比
+            // (Event 122 第 5 vs 7 次 retry 同 prompt 同 dataset，baseline 从 44.9%
+            // 变到 34.7% — 因 agent config temperature=0.7 + parallel batch 同时跑
+            // LLM 撞 randomness/rate limit，5 个 scenario PASS→FAIL drift)。
+            // eval 是 deterministic A/B 比较，random 是 noise；production 用户
+            // chat 仍按 agent.config 原 temperature。
+            configCopy.put("temperature", 0.0);
             copy.setConfig(configCopy);
         }
         return copy;
+    }
+
+    /**
+     * ★ 2026-05-24 V1 r3 fix: 读 agent.config.max_loops，回退到 scenario 默认。
+     * Priority: agent.config.max_loops &gt; scenarioFallback &gt; built-in 10.
+     */
+    private int readAgentMaxLoops(AgentDefinition agentDef, int scenarioFallback) {
+        if (agentDef.getConfig() != null) {
+            Object v = agentDef.getConfig().get("max_loops");
+            if (v instanceof Number n) return n.intValue();
+            if (v instanceof String s) {
+                try { return Integer.parseInt(s.trim()); } catch (NumberFormatException ignore) {}
+            }
+        }
+        return scenarioFallback > 0 ? scenarioFallback : 10;
     }
 
     private double computeHeldOutBaselineRate(EvalTaskEntity baselineRun, List<EvalScenario> heldOutScenarios) {
