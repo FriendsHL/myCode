@@ -150,23 +150,25 @@ function DatasetBrowser({ agents, userId }: DatasetBrowserProps) {
     return new Set(ids);
   }, [datasetIdFilter, selectedVersionDetailQ.data]);
 
-  // EVAL-V2 Q2: Base tab fetches classpath + home-dir scenarios via the new
-  // GET /eval/scenarios/base endpoint. Disabled when not on the Base tab so
-  // we don't burn a request on every render of the Agent tab.
+  // EVAL-V2 Q2: Base tab fetches classpath + home-dir scenarios via
+  // GET /eval/scenarios/base. EVAL-DATASET-LAYER V1 r2 fix: removed
+  // `enabled: tab === 'base'` lazy gate — segment count needs both tabs'
+  // data simultaneously for sourceTypeTab filter to reflect accurately.
+  // Cost: 1 extra fetch on agent-tab entry (small classpath read, cached).
   const { data: baseRaw = [], isLoading: baseLoading, isError: baseError } = useQuery({
     queryKey: ['eval-base-scenarios'],
     queryFn: () => getBaseScenarios().then(r => r.data ?? []),
-    enabled: tab === 'base',
   });
 
   // EVAL-DATASET-LAYER V1 §5.1: pass sourceType to the BE for server-side
   // filter. The BE accepts the param; falsy / 'all' → no filter.
+  // r2 fix: removed `enabled: tab === 'agent'` lazy gate — same reason as above.
   const beSourceType = sourceTypeTab === 'all' ? undefined : sourceTypeTab;
   const { data: agentScenarios = [], isLoading: agentLoading, isError: agentError } = useQuery({
     queryKey: ['eval-dataset-scenarios', agentId, beSourceType],
     queryFn: () =>
       getEvalDatasetScenarios(agentId, beSourceType ? { sourceType: beSourceType } : {}).then(r => r.data ?? []),
-    enabled: tab === 'agent' && !!agentId,
+    enabled: !!agentId,
   });
 
   // For rendering, we project both into EvalDatasetScenario shape; the
@@ -257,7 +259,9 @@ function DatasetBrowser({ agents, userId }: DatasetBrowserProps) {
       </div>
 
       <div className="dataset-toolbar">
-        {/* Segmented Control for Base/Agent */}
+        {/* Segmented Control for Base/Agent — r2 fix: count 走 sourceTypeTab filter 后的真实可见数。
+            base scenarios 走 classpath/home-dir (无 sourceType 字段) → 当 sourceTypeTab≠'all' 时
+            base 全 filter 掉显示 0 (用户期望); agent scenarios BE 已按 sourceType filter 直接 .length 即可 */}
         <div className="dataset-segmented-control">
           {(['base', 'agent'] as DatasetTab[]).map(t => (
             <button
@@ -267,7 +271,9 @@ function DatasetBrowser({ agents, userId }: DatasetBrowserProps) {
             >
               {t === 'base' ? 'Base' : 'Agent'}
               <span className="dataset-segment-count">
-                {t === 'base' ? baseRaw.length : agentScenarios.length}
+                {t === 'base'
+                  ? (sourceTypeTab === 'all' ? baseRaw.length : 0)
+                  : agentScenarios.length}
               </span>
             </button>
           ))}

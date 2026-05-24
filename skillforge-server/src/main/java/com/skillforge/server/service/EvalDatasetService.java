@@ -328,4 +328,68 @@ public class EvalDatasetService {
      * {@code warnings} is empty when {@code isHealthy} is true.
      */
     public record DatasetHealthAssessment(boolean isHealthy, List<String> warnings) {}
+
+    /**
+     * V1 r2 UX fix (2026-05-24): pick a sensible default dataset version for an
+     * attribution-triggered A/B run that didn't specify one explicitly.
+     *
+     * <p>Preference order (first non-empty wins):
+     * <ol>
+     *   <li>Agent-specific mixed dataset (name pattern contains "mixed"),
+     *       {@code agent_id = agentId}</li>
+     *   <li>Global mixed dataset ({@code agent_id IS NULL} + name contains "mixed")</li>
+     *   <li>Agent-specific baseline dataset (name pattern contains "baseline")</li>
+     *   <li>Global baseline dataset</li>
+     * </ol>
+     *
+     * <p>Returns the latest version_id of the chosen dataset, or {@code null}
+     * if no candidate found (caller falls back to legacy ephemeral path).
+     *
+     * <p>Why "mixed" preferred over "baseline": mixed contains benchmark
+     * (baseline_anchor purpose, gives ≥30% baseline pass rate) + session_derived
+     * (regression purpose, catches "candidate broke historical-failure case"),
+     * so it's the best default for attribution-derived A/B.
+     */
+    @Transactional(readOnly = true)
+    public String findDefaultVersionIdForAgent(String agentId) {
+        if (agentId == null || agentId.isBlank()) return null;
+
+        // Preference 1+2: any dataset matching agent (specific or global) with "mixed" in name
+        String mixedId = pickLatestVersionByPattern(agentId, "mixed");
+        if (mixedId != null) return mixedId;
+
+        // Preference 3+4: fallback to "baseline" pattern
+        String baselineId = pickLatestVersionByPattern(agentId, "baseline");
+        if (baselineId != null) return baselineId;
+
+        log.debug("findDefaultVersionIdForAgent: no default dataset matched for agentId={}, returning null",
+                agentId);
+        return null;
+    }
+
+    private String pickLatestVersionByPattern(String agentId, String namePattern) {
+        // Prefer agent-specific; fallback to global (agent_id NULL).
+        List<EvalDatasetEntity> candidates = datasetRepository.findAll().stream()
+                .filter(d -> d.getName() != null
+                        && d.getName().toLowerCase().contains(namePattern.toLowerCase()))
+                .filter(d -> agentId.equals(d.getAgentId()) || d.getAgentId() == null)
+                .sorted((a, b) -> {
+                    // Agent-specific wins over global
+                    boolean aSpecific = agentId.equals(a.getAgentId());
+                    boolean bSpecific = agentId.equals(b.getAgentId());
+                    if (aSpecific != bSpecific) return aSpecific ? -1 : 1;
+                    return 0;
+                })
+                .toList();
+        for (EvalDatasetEntity d : candidates) {
+            Integer maxVersion = versionRepository.findMaxVersionNumber(d.getId()).orElse(null);
+            if (maxVersion == null) continue;
+            String versionId = versionRepository
+                    .findByDatasetIdAndVersionNumber(d.getId(), maxVersion)
+                    .map(EvalDatasetVersionEntity::getId)
+                    .orElse(null);
+            if (versionId != null) return versionId;
+        }
+        return null;
+    }
 }

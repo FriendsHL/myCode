@@ -536,14 +536,35 @@ public class PromptImproverService extends AbstractAbEvalRunner<PromptVersionEnt
         //       pattern-derived ephemerals.
         // (1)/(2) are mutually exclusive at the AbEvalRunRequest record level;
         // here we just branch on which one is non-null.
+        //
+        // ★ V1 r2 UX fix (2026-05-24): attribution-triggered A/B run that
+        // didn't specify datasetVersionId/scenarioIds explicitly auto-resolves
+        // a default dataset via EvalDatasetService.findDefaultVersionIdForAgent
+        // (prefers "mixed" → "baseline" pattern, agent-specific → global).
+        // Without this, attribution path always ran ephemeral session_derived
+        // → baseline_pass_rate=0% (see Event 122 first 3 retries before this fix).
+        String resolvedDatasetVersionId = datasetVersionId;
+        if ((resolvedDatasetVersionId == null || resolvedDatasetVersionId.isBlank())
+                && (evalScenarioIds == null || evalScenarioIds.isEmpty())
+                && evalDatasetService != null) {
+            String autoPicked = evalDatasetService.findDefaultVersionIdForAgent(agentId);
+            if (autoPicked != null) {
+                log.info("Attribution A/B run for agentId={} auto-resolved default datasetVersionId={} "
+                        + "(no caller-specified dataset/scenarios; legacy ephemeral fallback would "
+                        + "have produced 0% baseline_pass_rate)", agentId, autoPicked);
+                resolvedDatasetVersionId = autoPicked;
+            }
+        }
+        final String effectiveDatasetVersionId = resolvedDatasetVersionId;
+
         List<EvalScenarioEntity> scenarios;
         List<String> ephemeralIds = null;
-        if (datasetVersionId != null && !datasetVersionId.isBlank()) {
+        if (effectiveDatasetVersionId != null && !effectiveDatasetVersionId.isBlank()) {
             if (evalDatasetService == null) {
                 throw new IllegalStateException(
                         "datasetVersionId path requested but EvalDatasetService not wired");
             }
-            scenarios = evalDatasetService.getScenariosForVersion(datasetVersionId);
+            scenarios = evalDatasetService.getScenariosForVersion(effectiveDatasetVersionId);
         } else if (evalScenarioIds != null && !evalScenarioIds.isEmpty()) {
             scenarios = evalScenarioRepository.findAllById(evalScenarioIds);
         } else {
@@ -577,7 +598,7 @@ public class PromptImproverService extends AbstractAbEvalRunner<PromptVersionEnt
         // EVAL-DATASET-LAYER V1 (V111): pin the run to its dataset version
         // snapshot for cross-run comparability. Set unconditionally — null on
         // the legacy/ephemeral path is intentional (acceptance #6 of MRD).
-        abRun.setDatasetVersionId(datasetVersionId);
+        abRun.setDatasetVersionId(effectiveDatasetVersionId);
         // No EvalTaskEntity for the baseline anchor — attribution path doesn't
         // have a prior eval run. Leave baselineEvalRunId null; downstream
         // Phase 1.4b AbEvalPipeline attribution overload will populate
@@ -587,7 +608,7 @@ public class PromptImproverService extends AbstractAbEvalRunner<PromptVersionEnt
 
         final String abRunId = abRun.getId();
         final List<String> capturedEphemeralIds = ephemeralIds;
-        final String capturedDatasetVersionId = datasetVersionId;
+        final String capturedDatasetVersionId = effectiveDatasetVersionId;
         // F4 fix (Phase 2 r2, code reviewer HIGH-2): pass IDs, NOT entity
         // references. This @Transactional method commits after return; if the
         // async runnable were to hold direct entity refs from the outer tx,
