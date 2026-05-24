@@ -10,7 +10,7 @@
 
 | 顺序  | ID        | 标题                                | 模式   | 状态        | 优先级 | 风险   | 文档                                                        | 下一步                                   |
 | --- | --------- | --------------------------------- | ---- | --------- | --- | ---- | --------------------------------------------------------- | ------------------------------------- |
-| _(队列空闲)_ | — | — | — | — | — | — | — | — |
+| 1 | **FLYWHEEL-AB-AGENT-AWARE-DATASET** | A/B 跑 dataset 按 agent role 过滤（修 BEHAVIOR-RULE-AB-EVAL V1 dogfood 暴露的 wrong-agent noise）+ benchmark 通用 vs agent-specific 分类 | Full 候选 | 占位记录 (待开工) | high | mid-high (schema 改 + dual-criteria 算法改 + 跨栈) | [index.md](requirements/active/FLYWHEEL-AB-AGENT-AWARE-DATASET/index.md) | 5 ratify 决策已初步同意 (D1 applicable_agent_roles JSONB / D2 5 role / D3 target+regression 合并 / D4 V117 backfill / D5 V1 MVP)；开工时补完 mrd/prd/tech-design 跑 Plan reviewer |
 
 ## 暂缓 / Backlog
 
