@@ -364,19 +364,6 @@ const SkillList: React.FC = () => {
             }}
           >
             Skills
-            {pendingDrafts.length > 0 && (
-              <span style={{
-                marginLeft: 6,
-                background: 'var(--accent-primary, #6366f1)',
-                color: '#fff',
-                borderRadius: 10,
-                padding: '1px 7px',
-                fontSize: 11,
-                fontWeight: 600,
-              }}>
-                {pendingDrafts.length}
-              </span>
-            )}
           </button>
           <button
             style={{

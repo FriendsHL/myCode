@@ -906,9 +906,12 @@ const Chat: React.FC = () => {
         activeSessionId={activeSessionId}
         loading={sessionsLoading}
         onSelectAgent={(id) => {
+          if (id !== selectedAgent) {
+            // Switching to a different agent — clear the current session
+            setActiveSessionId(undefined);
+            setRawMessages([]);
+          }
           setSelectedAgent(id);
-          setActiveSessionId(undefined);
-          setRawMessages([]);
         }}
         onNewChat={handleNewSession}
         onSelectSession={setActiveSessionId}
