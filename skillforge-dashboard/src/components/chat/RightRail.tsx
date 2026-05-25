@@ -1303,37 +1303,109 @@ function SegmentList({
               >
                 {s.children.map((c) => {
                   const cPct = total > 0 ? (c.tokens / total) * 100 : 0;
+                  const cHasChildren = Array.isArray(c.children) && c.children.length > 0;
+                  const cIsOpen = expanded.has(c.key);
+                  const cPanelId = `${idPrefix}-${c.key}`;
                   return (
-                    <div
-                      key={c.key}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 8,
-                        fontSize: 11,
-                        color: 'var(--fg-3)',
-                      }}
-                    >
-                      <span style={{ flex: 1, minWidth: 0 }}>{c.label}</span>
-                      <span
+                    <div key={c.key}>
+                      <button
+                        type="button"
+                        onClick={() => cHasChildren && onToggle(c.key)}
+                        disabled={!cHasChildren}
+                        aria-expanded={cHasChildren ? cIsOpen : undefined}
+                        aria-controls={cHasChildren ? cPanelId : undefined}
                         style={{
-                          fontFamily: 'var(--font-mono)',
-                          color: 'var(--fg-3)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          width: '100%',
+                          background: 'transparent',
+                          border: 0,
+                          padding: 0,
+                          color: 'inherit',
+                          textAlign: 'left',
+                          font: 'inherit',
+                          fontSize: 11,
+                          cursor: cHasChildren ? 'pointer' : 'default',
+                          outlineOffset: 2,
                         }}
                       >
-                        {fmtTokens(c.tokens)}
-                      </span>
-                      <span
-                        style={{
-                          fontFamily: 'var(--font-mono)',
-                          color: 'var(--fg-4)',
-                          fontSize: 10,
-                          minWidth: 36,
-                          textAlign: 'right',
-                        }}
-                      >
-                        {cPct.toFixed(1)}%
-                      </span>
+                        {cHasChildren && (
+                          <span
+                            style={{
+                              fontFamily: 'var(--font-mono)',
+                              fontSize: 9,
+                              color: 'var(--fg-4)',
+                              marginRight: 2,
+                              width: 8,
+                              display: 'inline-block',
+                            }}
+                          >
+                            {cIsOpen ? '▾' : '▸'}
+                          </span>
+                        )}
+                        <span style={{ flex: 1, minWidth: 0, color: 'var(--fg-3)' }}>{c.label}</span>
+                        <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--fg-3)' }}>
+                          {fmtTokens(c.tokens)}
+                        </span>
+                        <span
+                          style={{
+                            fontFamily: 'var(--font-mono)',
+                            color: 'var(--fg-4)',
+                            fontSize: 10,
+                            minWidth: 36,
+                            textAlign: 'right',
+                          }}
+                        >
+                          {cPct.toFixed(1)}%
+                        </span>
+                      </button>
+                      {cHasChildren && cIsOpen && c.children && (
+                        <div
+                          id={cPanelId}
+                          style={{
+                            marginTop: 4,
+                            marginLeft: 14,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 3,
+                            borderLeft: '1px solid var(--border-1, rgba(255,255,255,0.08))',
+                            paddingLeft: 8,
+                          }}
+                        >
+                          {c.children.map((g) => {
+                            const gPct = total > 0 ? (g.tokens / total) * 100 : 0;
+                            return (
+                              <div
+                                key={g.key}
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 8,
+                                  fontSize: 11,
+                                  color: 'var(--fg-4)',
+                                }}
+                              >
+                                <span style={{ flex: 1, minWidth: 0 }}>{g.label}</span>
+                                <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--fg-3)' }}>
+                                  {fmtTokens(g.tokens)}
+                                </span>
+                                <span
+                                  style={{
+                                    fontFamily: 'var(--font-mono)',
+                                    color: 'var(--fg-4)',
+                                    fontSize: 10,
+                                    minWidth: 36,
+                                    textAlign: 'right',
+                                  }}
+                                >
+                                  {gPct.toFixed(1)}%
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
