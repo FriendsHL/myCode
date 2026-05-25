@@ -136,7 +136,7 @@ const ScenarioCard: React.FC<ScenarioCardProps> = React.memo(
   ({ draft, onApprove, onDiscard, onEdit, approving, discarding }) => {
     const isDiscarded = draft.status === 'discarded';
     const isDraft = draft.status === 'draft';
-    const statusCfg = STATUS_TAG[draft.status];
+    const statusCfg = STATUS_TAG[draft.status] ?? { color: 'default', label: draft.status };
 
     return (
       <div

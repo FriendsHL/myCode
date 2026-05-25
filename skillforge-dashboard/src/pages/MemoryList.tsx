@@ -59,13 +59,18 @@ function guessScope(type: string): string {
 
 function fmtTime(iso: string): string {
   if (!iso) return '—';
-  const d = new Date(iso);
-  const now = Date.now();
-  const diff = now - d.getTime();
-  if (diff < 60000) return 'just now';
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  let d: Date;
+  if (/T\d{2}:\d{2}/.test(iso) && !/[Zz]$/.test(iso) && !/[+-]\d{2}:\d{2}$/.test(iso)) {
+    const offsetMin = new Date().getTimezoneOffset();
+    const sign = offsetMin <= 0 ? '+' : '-';
+    const h = String(Math.floor(Math.abs(offsetMin) / 60)).padStart(2, '0');
+    const m = String(Math.abs(offsetMin) % 60).padStart(2, '0');
+    d = new Date(iso + sign + h + ':' + m);
+  } else {
+    d = new Date(iso);
+  }
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('en-CA');
 }
 
 function normalizeMemory(raw: Record<string, unknown>): MemoryRow {
