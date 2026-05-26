@@ -87,6 +87,11 @@ public class AgentService {
         if (updated.getExecutionMode() != null) existing.setExecutionMode(updated.getExecutionMode());
         if (updated.getThinkingMode() != null) existing.setThinkingMode(updated.getThinkingMode());
         if (updated.getReasoningEffort() != null) existing.setReasoningEffort(updated.getReasoningEffort());
+        if (updated.getThinkingVisible() != null) existing.setThinkingVisible(updated.getThinkingVisible());
+        // NOTE: partial-update pattern means PUT cannot restore thinkingVisible to null
+        // once it's set to true/false. FE Switch UI only produces true/false so this
+        // limitation is currently invisible; backlog item if "follow global default"
+        // reset becomes a real user request.
         if (updated.isPublic() != null) existing.setPublic(updated.isPublic());
         // P11 MCP-CLIENT: agent's MCP server enable list (comma-separated names).
         // Treat any non-null value as "user explicitly set this", including empty string

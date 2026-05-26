@@ -285,9 +285,15 @@ const AgentDrawer: React.FC<AgentDrawerProps> = ({ agent, onClose }) => {
   // narrows these to the enum unions, so no type assertion is needed.
   const initialThinkingMode: ThinkingMode = agent.thinkingMode ?? 'auto';
   const initialReasoningEffort: ReasoningEffort | null = agent.reasoningEffort ?? null;
+  // CHAT-REASONING-PANEL: per-agent visibility preference. null = follow
+  // global default (collapsed). Mirrors `thinkingModeDraft` pattern below.
+  const initialThinkingVisible: boolean | null = agent.thinkingVisible ?? null;
   const [thinkingModeDraft, setThinkingModeDraft] = useState<ThinkingMode>(initialThinkingMode);
   const [reasoningEffortDraft, setReasoningEffortDraft] = useState<ReasoningEffort | null>(
     initialReasoningEffort,
+  );
+  const [thinkingVisibleDraft, setThinkingVisibleDraft] = useState<boolean | null>(
+    initialThinkingVisible,
   );
   useEffect(() => {
     setModelIdDraft(agent.modelId || '');
@@ -296,6 +302,7 @@ const AgentDrawer: React.FC<AgentDrawerProps> = ({ agent, onClose }) => {
     setMaxLoopsDraft(typeof agentWithExtras.maxLoops === 'number' ? agentWithExtras.maxLoops : null);
     setThinkingModeDraft(agent.thinkingMode ?? 'auto');
     setReasoningEffortDraft(agent.reasoningEffort ?? null);
+    setThinkingVisibleDraft(agent.thinkingVisible ?? null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent.id]);
 
@@ -319,7 +326,8 @@ const AgentDrawer: React.FC<AgentDrawerProps> = ({ agent, onClose }) => {
     ((agent.role || '') !== roleDraft) ||
     (maxLoopsDraft !== null && initialMaxLoops !== maxLoopsDraft) ||
     initialThinkingMode !== thinkingModeDraft ||
-    initialReasoningEffort !== reasoningEffortDraft;
+    initialReasoningEffort !== reasoningEffortDraft ||
+    initialThinkingVisible !== thinkingVisibleDraft;
 
   const { data: skillsCatalog = [] } = useQuery({
     queryKey: ['skills'],
@@ -627,6 +635,11 @@ const AgentDrawer: React.FC<AgentDrawerProps> = ({ agent, onClose }) => {
     if (reasoningEffortDraft !== null) {
       partial.reasoningEffort = reasoningEffortDraft;
     }
+    // CHAT-REASONING-PANEL — always include thinkingVisible (true / false /
+    // null) so toggling from Visible → Collapsed (or back to "follow default"
+    // via null) round-trips deterministically. BE Jackson + Boolean nullable
+    // round-trips null correctly; FE consumer uses `?? false` to resolve.
+    partial.thinkingVisible = thinkingVisibleDraft;
     updateMutation.mutate({ id: agent.id, payload: partial });
   };
 
@@ -852,6 +865,40 @@ const AgentDrawer: React.FC<AgentDrawerProps> = ({ agent, onClose }) => {
                     }
                     data-testid="reasoning-effort-select"
                   />
+                </div>
+                {/* CHAT-REASONING-PANEL: per-agent default visibility for
+                    the reasoning panel rendered above assistant bubbles.
+                    Unlike `thinkingMode` / `reasoningEffort`, this is a
+                    pure display preference and is NOT gated on model
+                    capability — it controls whether *historical*
+                    `reasoning_content` rows start expanded for sessions
+                    using this agent. System agents are still locked. */}
+                <div className="overview-card">
+                  <div className="overview-k">Reasoning panel</div>
+                  <div
+                    style={{
+                      marginTop: 4,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                    }}
+                  >
+                    <Switch
+                      size="small"
+                      checked={thinkingVisibleDraft === true}
+                      onChange={(checked) => setThinkingVisibleDraft(checked)}
+                      checkedChildren="Visible"
+                      unCheckedChildren="Collapsed"
+                      disabled={isSystemAgent}
+                      data-testid="thinking-visible-switch"
+                    />
+                    <Tooltip
+                      title="Whether the reasoning panel (Thought for N.Ns ▾) starts expanded for new and historical messages in sessions using this agent."
+                      mouseEnterDelay={0.3}
+                    >
+                      <span style={{ color: 'var(--fg-3)', fontSize: 11, cursor: 'help' }}>?</span>
+                    </Tooltip>
+                  </div>
                 </div>
                 <div className="overview-card"><div className="overview-k">Mode</div><div className="overview-v mono">{mode}</div></div>
                 <div className="overview-card">

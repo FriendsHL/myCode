@@ -1035,12 +1035,15 @@ public class OpenAiProvider implements LlmProvider {
                     handler.onText(text);
                 }
                 // reasoning_content delta (Qwen 3.5+ / DeepSeek thinking mode)
-                // Stream to frontend and accumulate for round-trip back to the API.
+                // Stream to frontend via the dedicated onReasoning channel and accumulate
+                // for round-trip back to the API. Previously routed through onText which
+                // mixed reasoning into the assistant text bubble; CHAT-REASONING-PANEL
+                // splits them so FE can render an independent Thinking… panel.
                 if (delta.has("reasoning_content") && !delta.path("reasoning_content").isNull()) {
                     String reasoning = delta.path("reasoning_content").asText();
                     if (reasoning != null && !reasoning.isEmpty()) {
                         fullReasoning.append(reasoning);
-                        handler.onText(reasoning);
+                        handler.onReasoning(reasoning);
                     }
                 }
 

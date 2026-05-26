@@ -69,6 +69,15 @@ public interface ChatEventBroadcaster {
         // no-op default
     }
 
+    /**
+     * CHAT-REASONING-PANEL: reasoning/thinking content delta.
+     * Parallel to {@link #textDelta(String, String)} — separate channel keeps reasoning
+     * from polluting the assistant text bubble. FE renders an independent Thinking… panel.
+     */
+    default void reasoningDelta(String sessionId, String delta) {
+        // no-op default
+    }
+
     /** tool_use 的 input JSON 分片。前端据此在 inflight 卡片里实时展示正在组装的参数。 */
     default void toolUseDelta(String sessionId, String toolUseId, String toolName, String jsonFragment) {
         // no-op default

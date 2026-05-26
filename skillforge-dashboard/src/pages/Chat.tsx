@@ -118,6 +118,13 @@ const Chat: React.FC = () => {
   const [runtimeStep, setRuntimeStep] = useState<string>('');
   const [runtimeError, setRuntimeError] = useState<string>('');
   const [executionMode, setExecutionModeState] = useState<ExecutionMode>('ask');
+  // CHAT-REASONING-PANEL — live SSE reasoning accumulator + wall-clock
+  // duration of the reasoning phase. Both cleared on session_status
+  // idle/error and message_appended (see useChatWsEventHandler). Owned
+  // at the page level so RightRail / future analytics can subscribe
+  // without re-plumbing through ChatWindow.
+  const [streamingReasoningText, setStreamingReasoningText] = useState<string>('');
+  const [reasoningDurationMs, setReasoningDurationMs] = useState<number | null>(null);
   const [pendingAsk, setPendingAsk] = useState<PendingAsk | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<ConfirmationPromptPayload | null>(null);
   const [confirmSubmitting, setConfirmSubmitting] = useState<ConfirmationDecision | null>(null);
@@ -305,6 +312,8 @@ const Chat: React.FC = () => {
     setCompactionNotice,
     setLoopSpans,
     llmModelName,
+    setStreamingReasoningText,
+    setReasoningDurationMs,
   });
 
   useChatWebSocket(activeSessionId, handleWsEvent);
@@ -1074,6 +1083,16 @@ const Chat: React.FC = () => {
                   multimodalEnabled={multimodalEnabled}
                   onOpenAgentConfig={handleOpenAgentConfig}
                   sessionResetKey={activeSessionId ?? ''}
+                  /* CHAT-REASONING-PANEL — streaming reasoning text +
+                     wall-clock duration drive the live `Thinking…` /
+                     `Thought for N.Ns ▾` panel above the streaming
+                     assistant bubble. agentThinkingVisible drives
+                     default expand state on completed reasoning panels
+                     in the messages list. Null = collapsed (the
+                     conservative default). */
+                  streamingReasoningText={streamingReasoningText}
+                  reasoningDurationMs={reasoningDurationMs}
+                  agentThinkingVisible={activeAgent?.thinkingVisible ?? null}
                 />
               </>
             ) : (

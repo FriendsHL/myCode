@@ -48,6 +48,20 @@ export interface WsEventHandlerDeps {
   setLoopSpans: Dispatch<SetStateAction<LoopSpan[]>>;
   /** Short model display name for LLM_CALL span labels (e.g. "claude-sonnet-4"). */
   llmModelName?: string;
+  /**
+   * CHAT-REASONING-PANEL: accumulator for `reasoning_delta` SSE events.
+   * Cleared on `message_appended` (handing off to the persisted
+   * `ChatMessage.reasoningContent` for completed display) and on
+   * `session_status` idle/error.
+   */
+  setStreamingReasoningText: Dispatch<SetStateAction<string>>;
+  /**
+   * CHAT-REASONING-PANEL: wall-clock duration of the reasoning phase
+   * (first `reasoning_delta` → first `text_delta`) in milliseconds.
+   * Set on first `text_delta`. Cleared on `message_appended` and on
+   * `session_status` idle/error.
+   */
+  setReasoningDurationMs: Dispatch<SetStateAction<number | null>>;
 }
 
 export function useChatWsEventHandler(deps: WsEventHandlerDeps) {
@@ -68,10 +82,21 @@ export function useChatWsEventHandler(deps: WsEventHandlerDeps) {
     setCompactionNotice,
     setLoopSpans,
     llmModelName,
+    setStreamingReasoningText,
+    setReasoningDurationMs,
   } = deps;
 
   const lastSnapshotVersionRef = useRef<number>(-1);
   const activeLlmSpanIdRef = useRef<string | null>(null);
+  /**
+   * CHAT-REASONING-PANEL — wall-clock timer for reasoning phase. Set to
+   * `Date.now()` on the first `reasoning_delta` of a turn. Cleared (set
+   * to null) either when the first `text_delta` arrives (we compute
+   * durationMs at that point) or when the session resets via
+   * session_status idle/error (turn aborted before text). Ref, not state,
+   * because purely a timestamp scratchpad — no UI render depends on it.
+   */
+  const reasoningStartTsRef = useRef<number | null>(null);
 
   return useCallback(
     (evtRaw: unknown) => {
@@ -100,6 +125,12 @@ export function useChatWsEventHandler(deps: WsEventHandlerDeps) {
           setStreamingToolInputs({});
           setCancelling(false);
           activeLlmSpanIdRef.current = null;
+          // CHAT-REASONING-PANEL: session-level cleanup. Cancelled / errored
+          // turns may abort mid-reasoning before any text_delta lands —
+          // ensure we don't leak the streaming panel into the next turn.
+          setStreamingReasoningText('');
+          setReasoningDurationMs(null);
+          reasoningStartTsRef.current = null;
         }
       } else if (evt.type === 'message_appended') {
         if (
@@ -111,6 +142,14 @@ export function useChatWsEventHandler(deps: WsEventHandlerDeps) {
         const msg = evt.message as RawMessage | undefined;
         if (msg?.role === 'assistant') {
           setStreamingText('');
+          // CHAT-REASONING-PANEL: hand off from streaming panel to the
+          // persisted ChatMessage.reasoningContent. The final assistant
+          // bubble renders its own ReasoningPanel(reasoningContent=...)
+          // via normalizeMessages, so the streaming-panel state must
+          // clear here to avoid double-rendering.
+          setStreamingReasoningText('');
+          setReasoningDurationMs(null);
+          reasoningStartTsRef.current = null;
           // Close active LLM_CALL span
           if (activeLlmSpanIdRef.current) {
             const llmId = activeLlmSpanIdRef.current;
@@ -280,6 +319,15 @@ export function useChatWsEventHandler(deps: WsEventHandlerDeps) {
       } else if (evt.type === 'text_delta') {
         const chunk = (evt.delta as string) ?? '';
         if (chunk) {
+          // CHAT-REASONING-PANEL: first text_delta of a turn marks the end
+          // of the reasoning phase. Capture wall-clock duration from the
+          // earlier reasoning_delta timestamp (if any). Subsequent
+          // text_deltas leave the timer alone (already null).
+          if (reasoningStartTsRef.current !== null) {
+            const durationMs = Date.now() - reasoningStartTsRef.current;
+            setReasoningDurationMs(durationMs >= 0 ? durationMs : 0);
+            reasoningStartTsRef.current = null;
+          }
           setStreamingText((prev) => prev + chunk);
           // Start LLM_CALL span on first text delta of this turn
           if (!activeLlmSpanIdRef.current) {
@@ -290,6 +338,25 @@ export function useChatWsEventHandler(deps: WsEventHandlerDeps) {
               { id: llmId, type: 'LLM_CALL', name: llmModelName || 'LLM', startTs: Date.now() },
             ]);
           }
+        }
+      } else if (evt.type === 'reasoning_delta') {
+        // CHAT-REASONING-PANEL: streaming reasoning content from
+        // OpenAI-compatible providers (DeepSeek / Qwen / mimo) routed
+        // through OpenAiProvider's `onReasoning` callback →
+        // ChatEventBroadcaster.reasoningDelta → ChatWebSocketHandler.
+        // Payload shape mirrors text_delta:
+        //   { type: 'reasoning_delta', sessionId, delta }
+        // (matched against BE ChatWebSocketHandler.reasoningDelta which
+        // emits payload.put("delta", delta); see java.md footgun #6).
+        // We accumulate into streamingReasoningText (each delta = one
+        // setState; React batches, and ReasoningPanel → ThrottledMarkdown
+        // commits DOM at most 5×/s per frontend.md footgun #3).
+        const chunk = (evt.delta as string) ?? '';
+        if (chunk) {
+          if (reasoningStartTsRef.current === null) {
+            reasoningStartTsRef.current = Date.now();
+          }
+          setStreamingReasoningText((prev) => prev + chunk);
         }
       } else if (evt.type === 'tool_use_delta') {
         const toolUseId = evt.toolUseId as string;
@@ -352,6 +419,8 @@ export function useChatWsEventHandler(deps: WsEventHandlerDeps) {
       setCompactionNotice,
       setLoopSpans,
       llmModelName,
+      setStreamingReasoningText,
+      setReasoningDurationMs,
     ],
   );
 }

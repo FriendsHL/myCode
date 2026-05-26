@@ -339,6 +339,18 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements ChatEv
     }
 
     @Override
+    public void reasoningDelta(String sessionId, String delta) {
+        // CHAT-REASONING-PANEL: WS event parallel to text_delta. Payload shape mirrors
+        // text_delta exactly ({type, sessionId, delta}) so FE handler stays symmetric.
+        // Older FE clients without a reasoning_delta case silently ignore unknown types.
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "reasoning_delta");
+        payload.put("sessionId", sessionId);
+        payload.put("delta", delta);
+        broadcast(sessionId, payload);
+    }
+
+    @Override
     public void toolUseDelta(String sessionId, String toolUseId, String toolName, String jsonFragment) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("type", "tool_use_delta");

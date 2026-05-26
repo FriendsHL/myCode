@@ -33,6 +33,13 @@ export const AgentSchema = z.object({
   // persist these columns round-trips without schema strip.
   thinkingMode: z.enum(['auto', 'enabled', 'disabled']).optional().nullable(),
   reasoningEffort: z.enum(['low', 'medium', 'high', 'max']).optional().nullable(),
+  // CHAT-REASONING-PANEL — per-agent default visibility for the reasoning
+  // panel rendered above assistant bubbles. `null` = follow global default
+  // (collapsed). `true` = expanded. `false` = collapsed. Mirrors BE
+  // `AgentEntity.thinkingVisible` (Boolean nullable, V119 migration).
+  // Declared here so zod doesn't silently strip the BE-returned value (same
+  // footgun pattern as `maxLoops` / `agentType` above).
+  thinkingVisible: z.boolean().optional().nullable(),
   // Agent-level loop budget (BE: AgentEntity.maxLoops Long). Pre-existing FE schema gap
   // discovered 2026-05-17 during FLYWHEEL-LOOP-CLOSURE Phase 1.6 dogfood — without this
   // field zod silently strips the BE-returned value, AgentDrawer's `agent as ... & { maxLoops? }`

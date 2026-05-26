@@ -802,6 +802,12 @@ public class ClaudeProvider implements LlmProvider {
         }
         @Override public void onToolUse(ToolUseBlock block) { inner.onToolUse(block); }
         @Override public void onWarning(String key, Object value) { inner.onWarning(key, value); }
+        // REG-3 (CHAT-REASONING-PANEL): forward reasoning deltas. ObservedStreamHandler
+        // wraps the engine's inner handler; without an explicit override the LlmStreamHandler
+        // default no-op would shadow inner.onReasoning(), silently dropping reasoning_content
+        // even though Claude itself doesn't emit reasoning_content (this wrapper is used by
+        // the unified observability path that any provider could route through).
+        @Override public void onReasoning(String reasoning) { inner.onReasoning(reasoning); }
 
         @Override
         public void onComplete(LlmResponse fullResponse) {

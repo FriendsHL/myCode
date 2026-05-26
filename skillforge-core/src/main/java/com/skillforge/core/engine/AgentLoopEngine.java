@@ -932,6 +932,12 @@ public class AgentLoopEngine {
                             broadcaster.textDelta(broadcastSid, text);
                         }
                     }
+                    // CHAT-REASONING-PANEL: route reasoning_content delta on dedicated channel.
+                    @Override public void onReasoning(String reasoning) {
+                        if (broadcaster != null && broadcastSid != null && reasoning != null && !reasoning.isEmpty()) {
+                            broadcaster.reasoningDelta(broadcastSid, reasoning);
+                        }
+                    }
                     @Override public void onToolUseStart(String toolUseId, String name) {
                         if (toolUseId != null) {
                             streamToolNames.put(toolUseId, name != null ? name : "");
@@ -1540,6 +1546,12 @@ public class AgentLoopEngine {
                     if (broadcaster != null && broadcastSid != null && text != null && !text.isEmpty()) {
                         broadcaster.assistantDelta(broadcastSid, text);
                         broadcaster.textDelta(broadcastSid, text);
+                    }
+                }
+                // CHAT-REASONING-PANEL: continuation path also forwards reasoning deltas.
+                @Override public void onReasoning(String reasoning) {
+                    if (broadcaster != null && broadcastSid != null && reasoning != null && !reasoning.isEmpty()) {
+                        broadcaster.reasoningDelta(broadcastSid, reasoning);
                     }
                 }
                 @Override public void onToolUse(com.skillforge.core.model.ToolUseBlock block) {

@@ -88,4 +88,23 @@ public interface LlmStreamHandler {
     default void onWarning(String key, Object value) {
         // no-op
     }
+
+    /**
+     * CHAT-REASONING-PANEL: reasoning/thinking content delta.
+     *
+     * <p>Currently emitted by OpenAI-compatible providers (DeepSeek / Qwen / mimo)
+     * when SSE {@code delta.reasoning_content} arrives. Default no-op so existing
+     * provider implementations and test doubles compile without change. Engine /
+     * broadcaster overrides forward to FE via {@code reasoning_delta} WS event.
+     *
+     * <p>Important (REG-3): wrapper handlers like
+     * {@code ClaudeProvider.ObservedStreamHandler} MUST explicitly override and
+     * delegate to {@code inner.onReasoning(reasoning)}; otherwise the default
+     * no-op here will shadow the inner handler's real implementation.
+     *
+     * @param reasoning partial reasoning text fragment (never null)
+     */
+    default void onReasoning(String reasoning) {
+        // no-op
+    }
 }

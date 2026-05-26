@@ -249,7 +249,14 @@ export function normalizeMessages(list: RawMessage[]): ChatMessage[] {
         name: b.name,
         input: b.input,
       }));
-      if (!text.trim() && toolCalls.length === 0) continue;
+      // CHAT-REASONING-PANEL: keep the row even when it has *only*
+      // reasoningContent (no visible text + no toolCalls). The
+      // ReasoningPanel above the (empty) text bubble is the user-visible
+      // surface for "the model thought but produced no spoken reply" —
+      // dropping the row here would silently swallow that signal.
+      const hasReasoning =
+        typeof m.reasoningContent === 'string' && m.reasoningContent.trim().length > 0;
+      if (!text.trim() && toolCalls.length === 0 && !hasReasoning) continue;
       result.push({
         role: 'assistant',
         content: text,
@@ -258,6 +265,11 @@ export function normalizeMessages(list: RawMessage[]): ChatMessage[] {
         // 不在 RawMessage 严格类型里的原因：fallback 路径形态不固定，类型贸然窄化反而 ripple 大。
         toolCalls: toolCalls.length > 0 ? toolCalls : (m.toolCalls as ChatMessage['toolCalls']),
         timestamp,
+        // CHAT-REASONING-PANEL: pass through reasoning text from BE
+        // persisted `t_session_message.reasoning_content` so the
+        // assistant bubble's ReasoningPanel can render `Thought ▾`
+        // for historical messages.
+        reasoningContent: typeof m.reasoningContent === 'string' ? m.reasoningContent : undefined,
       });
     }
   }

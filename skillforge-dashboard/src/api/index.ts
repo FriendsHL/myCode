@@ -89,6 +89,14 @@ export interface CreateAgentRequest {
   thinkingMode?: 'auto' | 'enabled' | 'disabled';
   /** Only honoured by models whose protocolFamily exposes reasoning effort (see ModelOption). */
   reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
+  /**
+   * CHAT-REASONING-PANEL — per-agent default visibility for the reasoning
+   * panel rendered above assistant bubbles. `null` (or omitted) = follow
+   * global default (collapsed). `true` = panel starts expanded for sessions
+   * using this agent. `false` = panel starts collapsed. Stored on
+   * `t_agent.thinking_visible` (nullable BOOLEAN, V119 migration).
+   */
+  thinkingVisible?: boolean | null;
   /** P1 Skill Control Plane: JSON-array string of system-skill names this agent has opted out of. */
   disabledSystemSkills?: string;
   /**

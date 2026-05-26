@@ -99,6 +99,15 @@ public class AgentEntity {
     @Column(name = "reasoning_effort", length = 16)
     private String reasoningEffort;
 
+    /**
+     * CHAT-REASONING-PANEL: per-agent default visibility for the reasoning panel in
+     * the chat UI. {@code null} (default) / {@code false} = collapsed; {@code true}
+     * = expanded by default. Used only as a display preference — does not affect
+     * whether reasoning_content is requested or persisted. V119 migration.
+     */
+    @Column(name = "thinking_visible")
+    private Boolean thinkingVisible;
+
     @Column(length = 36)
     private String activePromptVersionId;
 
@@ -311,6 +320,14 @@ public class AgentEntity {
 
     public void setReasoningEffort(String reasoningEffort) {
         this.reasoningEffort = reasoningEffort;
+    }
+
+    public Boolean getThinkingVisible() {
+        return thinkingVisible;
+    }
+
+    public void setThinkingVisible(Boolean thinkingVisible) {
+        this.thinkingVisible = thinkingVisible;
     }
 
     public LocalDateTime getCreatedAt() {

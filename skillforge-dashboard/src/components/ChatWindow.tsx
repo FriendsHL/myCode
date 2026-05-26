@@ -5,6 +5,8 @@ import MarkdownRenderer from './MarkdownRenderer';
 import AttachmentThumbnail from './AttachmentThumbnail';
 import PendingAskCard from './PendingAskCard';
 import InstallConfirmationCard from './InstallConfirmationCard';
+import ReasoningPanel from './ReasoningPanel';
+import { ThrottledMarkdown } from './ThrottledMarkdown';
 import type { ConfirmationDecision, ConfirmationPromptPayload } from '../api';
 import { executeCommand } from '../api/commands';
 import {
@@ -40,23 +42,6 @@ const formatTime = (date: Date): string => {
     second: '2-digit',
     hour12: false,
   });
-};
-
-const ThrottledMarkdown: React.FC<{ content: string }> = ({ content }) => {
-  const [rendered, setRendered] = useState(content);
-  const latestRef = useRef(content);
-  latestRef.current = content;
-
-  useEffect(() => {
-    const interval = setInterval(() => setRendered(latestRef.current), 200);
-    return () => clearInterval(interval);
-  }, []);
-
-  useEffect(() => {
-    if (content && !rendered) setRendered(content);
-  }, [content, rendered]);
-
-  return <MarkdownRenderer content={rendered} />;
 };
 
 /**
@@ -598,6 +583,14 @@ export interface ChatMessage {
   /** Inline attachment refs (image_ref / pdf_ref). Renderer shows thumbnails
    *  above the message body. Phase 2. */
   attachments?: ChatAttachmentRef[];
+  /**
+   * CHAT-REASONING-PANEL: assistant-only reasoning / thinking text persisted on
+   * `t_session_message.reasoning_content` (OpenAI-compatible providers:
+   * DeepSeek / Qwen / mimo). Rendered by `ReasoningPanel` above the assistant
+   * bubble. Empty / undefined → panel renders null. Sourced from
+   * `RawMessage.reasoningContent` via `normalizeMessages` assistant push site.
+   */
+  reasoningContent?: string;
 }
 
 interface InflightTool {
@@ -641,6 +634,25 @@ interface ChatWindowProps {
   onOpenAgentConfig?: () => void;
   /** Bumped by parent on session switch to flush in-flight file picks. */
   sessionResetKey?: string;
+  /**
+   * CHAT-REASONING-PANEL: live `reasoning_content` text accumulated from SSE
+   * `reasoning_delta` events. Drives the streaming-mode `ReasoningPanel`
+   * rendered above the streaming text bubble. Cleared on `message_appended`.
+   */
+  streamingReasoningText?: string;
+  /**
+   * CHAT-REASONING-PANEL: wall-clock duration of the reasoning phase
+   * (first `reasoning_delta` → first `text_delta`) in milliseconds. Drives
+   * the `Thought for N.Ns ▾` label. `null` = no duration computed yet
+   * (still in reasoning phase) or historical message (no streaming data).
+   */
+  reasoningDurationMs?: number | null;
+  /**
+   * CHAT-REASONING-PANEL: agent-level preference for whether completed
+   * reasoning panels start expanded. `null`/`undefined`/`false` = collapsed.
+   * Sourced from `agent.thinkingVisible`.
+   */
+  agentThinkingVisible?: boolean | null;
 }
 
 interface ToolCallRowProps {
@@ -755,6 +767,9 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   multimodalEnabled,
   onOpenAgentConfig,
   sessionResetKey,
+  streamingReasoningText,
+  reasoningDurationMs,
+  agentThinkingVisible,
 }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -949,6 +964,20 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                       ))}
                     </div>
                   )}
+                  {/* CHAT-REASONING-PANEL: completed-message reasoning panel.
+                      Renders above the bubble text. ReasoningPanel returns
+                      null when reasoningContent is empty/whitespace, so this
+                      is safe to mount unconditionally — keeps the JSX flat
+                      for assistant messages without reasoning. Historical
+                      messages have no `durationMs` available, so we pass
+                      null → label shows just `Thought ▾`. */}
+                  {!isUser && (
+                    <ReasoningPanel
+                      reasoningContent={msg.reasoningContent}
+                      durationMs={null}
+                      defaultExpanded={agentThinkingVisible ?? false}
+                    />
+                  )}
                   {isUser ? msg.content : <MarkdownRenderer content={msg.content} />}
                   {!isUser && msg.toolCalls && msg.toolCalls.length > 0 && (
                     <div className="tool-calls">
@@ -961,6 +990,30 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
               </div>
             );
           })}
+          {/* CHAT-REASONING-PANEL streaming flow (C1 in plan-notes-for-dev.md):
+              - reasoning_delta arrives → streamingReasoningText accumulates →
+                panel renders in streaming mode (spinner + live text).
+              - First text_delta arrives → handler clears reasoningStartTsRef
+                and sets reasoningDurationMs; streamingReasoningText STAYS
+                populated so the panel transitions to completed mode
+                (Thought for N.Ns ▾) sitting above the assistant text bubble.
+              - message_appended → handler clears both streamingReasoningText
+                and streamingText; final ReasoningPanel for the assistant
+                message is rendered by the messages.map above. */}
+          {(streamingReasoningText && streamingReasoningText.length > 0) && (
+            <div className="msg assistant streaming-reasoning-wrap">
+              <ReasoningPanel
+                streamingText={streamingReasoningText}
+                reasoningContent={streamingReasoningText}
+                durationMs={reasoningDurationMs ?? null}
+                defaultExpanded={agentThinkingVisible ?? false}
+                /* While the timer has not fired yet (text_delta hasn't started),
+                   force streaming mode. Once durationMs is set, the panel
+                   falls back to completed mode (text + collapsed header). */
+                forceStreaming={(reasoningDurationMs ?? null) === null}
+              />
+            </div>
+          )}
           {streamingText && streamingText.length > 0 && (
             <div className="msg assistant">
               <div className="msg-head">
