@@ -1,6 +1,6 @@
 # SkillForge 文档
 
-> 更新于：2026-05-25
+> 更新于：2026-05-26
 > Agent 规则：先读这里，再只打开当前任务链接到的文档。
 
 编辑 docs 前，先读 [DOCS-GOVERNANCE.md](DOCS-GOVERNANCE.md)。
@@ -19,7 +19,8 @@
 
 | ID | 标题 | 状态 | 需求包 | MRD | PRD | 技术方案 | 交付 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| _(暂无 active 主线需求；最近交付 FLYWHEEL-AB-AGENT-AWARE-DATASET V1 commit `5cf5b61` 2026-05-25)_ | — | — | — | — | — | — | — |
+| **DREAMING-MEMORY-EXTENSION** V1 | 借鉴 Anthropic Managed Agents Dreaming `POST /v1/dreams` 协议设计 — `LlmMemorySynthesizer` 从 memory→memory 升 memory+sessions[]→memory 挖未观测 pattern；触红灯 `MemoryClusterer` 子系统 + 2 Flyway migration + immutable input invariant；**V2 留** rollback REST API + executor 隔离 + stream meta-observability。姊妹包 Outcomes 拆到 [backlog](requirements/backlog/OUTCOMES-RUBRIC-FOUNDATION/index.md) | prd-draft | [需求包](requirements/active/2026-05-26-DREAMING-MEMORY-EXTENSION/index.md) | [MRD](requirements/active/2026-05-26-DREAMING-MEMORY-EXTENSION/mrd.md) | [PRD](requirements/active/2026-05-26-DREAMING-MEMORY-EXTENSION/prd.md) | [tech-design](requirements/active/2026-05-26-DREAMING-MEMORY-EXTENSION/tech-design.md) | — |
+| **WEB-TOOLS-HARDENING** V1 | WebSearch / WebFetch 稳定性 + 信息保留升级 — WebSearch 使用 `application.yml` 有序 priority list（Tavily > Exa > DuckDuckGo HTML），Tavily/Exa key 通过 `${TAVILY_API_KEY}` / `${EXA_API_KEY}` 注入；支持 `output_format=json`、backend override、domain/date/topic/provider 原生参数；SearXNG 移 backlog。WebFetch html→markdown (`flexmark-html2md-converter`) + Caffeine 15min 缓存 + robots.txt hard block + hostAllowlist + JSON 输出。Bash 不动。| implementing | [需求包](requirements/active/2026-05-26-WEB-TOOLS-HARDENING/index.md) | [MRD](requirements/active/2026-05-26-WEB-TOOLS-HARDENING/mrd.md) | [PRD](requirements/active/2026-05-26-WEB-TOOLS-HARDENING/prd.md) | [tech-design](requirements/active/2026-05-26-WEB-TOOLS-HARDENING/tech-design.md) | — |
 
 > 整体方案：[plans/PROD-OPTIMIZATION-FLYWHEEL/plan.md](plans/PROD-OPTIMIZATION-FLYWHEEL/plan.md) —— 数据飞轮 / 优化闭环 6 版本拆分（**V1-V6 全部已交付**，⑤ A/B 自动 trigger 真闭环 prompt+skill 双 surface 通）
 
@@ -29,6 +30,8 @@
 
 | ID | 标题 | 状态 | 文档 |
 | --- | --- | --- | --- |
+| **OUTCOMES-RUBRIC-FOUNDATION** | 借鉴 Managed Agents Outcomes (`t_rubric` entity + grader 隔离 audit + V2 `AgentLoopEngine` 第 5 轴 exit) — 跟 active DREAMING-MEMORY-EXTENSION 同次研究产出，用户拆开独立 ship | backlog | [需求包](requirements/backlog/OUTCOMES-RUBRIC-FOUNDATION/index.md) |
+| **WEBSEARCH-SEARXNG-BACKEND** | WebSearch SearXNG 自部署 backend。重要不紧急；当每周搜索调用量/费用明显升高，或隐私/内网搜索诉求出现时再启动 | backlog | 见 [todo.md](todo.md) |
 | SEC-1 | Channel 配置加密 | deferred | [需求包](requirements/backlog/SEC-1-channel-config-encryption/index.md) |
 | BUG-G | 防御性 follow-up | deferred | [需求包](requirements/deferred/BUG-G-defensive-hardening/index.md) |
 | P9-4 | Partial compact（按位置切） | deferred | [需求包](requirements/deferred/P9-4-partial-compact/index.md) |

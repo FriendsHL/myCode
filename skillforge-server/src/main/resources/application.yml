@@ -45,6 +45,27 @@ spring:
 
 # SkillForge configuration
 skillforge:
+  websearch:
+    # WEB-TOOLS-HARDENING V1: provider priority chain.
+    # Ordered fallback list: try Tavily first, then Exa, then DuckDuckGo HTML.
+    # API providers whose api-key is blank are skipped automatically.
+    backend-priority:
+      - tavily
+      - exa
+      - duckduckgo
+    tavily:
+      api-key: ${TAVILY_API_KEY:}
+    exa:
+      api-key: ${EXA_API_KEY:}
+
+  webfetch:
+    robots:
+      # Operator-managed robots bypass for trusted local/internal hosts.
+      # Do not expose bypass_robots to agents by default.
+      host-allowlist:
+        - localhost
+        - 127.0.0.1
+
   # P11 MCP-CLIENT: feature flag for the MCP client subsystem.
   # true (default) → McpServerLifecycle starts enabled servers from t_mcp_server on boot,
   # listens to CRUD events, exposes mcp_<server>_<tool> tools per agent.mcp_server_ids.

@@ -1,6 +1,6 @@
 # SkillForge ToDo
 
-> 更新于：2026-05-25（**FLYWHEEL-AB-AGENT-AWARE-DATASET V1 交付 commit `5cf5b61`**：A/B agent-role-aware filter + benchmark 通用 vs agent-specific 分类，闭合 BEHAVIOR-RULE-AB-EVAL V1 dogfood Event #123 暴露的 wrong-agent A/B noise。V117 加 `t_eval_scenario.applicable_agent_roles JSONB` + 5 ILIKE backfill + AC-1 RAISE EXCEPTION enforce + 5 role taxonomy + Full pipeline 双 phase r1+r2 fix。整包详情见"最近完成"区第一行 / [delivery-index.md](delivery-index.md) 同日行 / archive `2026-05-25-FLYWHEEL-AB-AGENT-AWARE-DATASET/`。当前队列空闲，backlog 优先级见下方暂缓表。）
+> 更新于：2026-05-27（WEB-TOOLS-HARDENING V1 进入实现：WebSearch 改为 `application.yml` priority list Tavily > Exa > DuckDuckGo HTML，Tavily/Exa key 从 env placeholder 注入，支持 JSON 输出和 provider 原生时间/域名/类别参数；SearXNG 移 backlog，重要不紧急。历史：2026-05-25 FLYWHEEL-AB-AGENT-AWARE-DATASET V1 交付 commit `5cf5b61` 详情见"最近完成"。）
 
 > 规则：这里只放当前执行状态；需求和方案细节放在链接的需求包 / archive 中。
 > 旧版：重整前长版 ToDo 已保留在 [references/legacy-todo-2026-04-28.md](references/legacy-todo-2026-04-28.md)。
@@ -9,12 +9,15 @@
 
 | 顺序  | ID        | 标题                                | 模式   | 状态        | 优先级 | 风险   | 文档                                                        | 下一步                                   |
 | --- | --------- | --------------------------------- | ---- | --------- | --- | ---- | --------------------------------------------------------- | ------------------------------------- |
-| _(队列空闲)_ | — | — | — | — | — | — | — | — |
+| 1 | **DREAMING-MEMORY-EXTENSION** V1 | 借鉴 Anthropic Managed Agents Dreaming (`POST /v1/dreams` 协议设计) — `LlmMemorySynthesizer` 从 memory→memory 升 memory+sessions[]→memory 挖未观测 pattern；触红灯 `MemoryClusterer` 子系统 + 2 Flyway migration + immutable input invariant；**V2 留** rollback REST API + executor 隔离 + stream meta-observability | Full | prd-draft | P1 | Full | [需求包](requirements/active/2026-05-26-DREAMING-MEMORY-EXTENSION/index.md) / [MRD](requirements/active/2026-05-26-DREAMING-MEMORY-EXTENSION/mrd.md) / [PRD](requirements/active/2026-05-26-DREAMING-MEMORY-EXTENSION/prd.md) / [tech-design](requirements/active/2026-05-26-DREAMING-MEMORY-EXTENSION/tech-design.md) | 用户 ratify D1-D6 决策 + Q1-Q5 澄清 → 开 Plan pipeline |
+| 2 | **WEB-TOOLS-HARDENING** V1 | WebSearch/WebFetch 稳定性 + 信息保留升级 — WebSearch priority list **Tavily > Exa > DuckDuckGo HTML**（`application.yml` 有序 list；Tavily/Exa key 走 `${TAVILY_API_KEY}` / `${EXA_API_KEY}`；DDG HTML @Deprecated last-resort；Brave 否决；SearXNG 移 backlog）+ JSON 输出 + provider 原生时间/域名/类别参数；WebFetch html→markdown (flexmark-html2md-converter) + Caffeine in-memory 15min 缓存 + robots.txt hard block + hostAllowlist + JSON 输出。Bash 不动。 | Mid | implementing | P1 | Mid | [需求包](requirements/active/2026-05-26-WEB-TOOLS-HARDENING/index.md) / [MRD](requirements/active/2026-05-26-WEB-TOOLS-HARDENING/mrd.md) / [PRD](requirements/active/2026-05-26-WEB-TOOLS-HARDENING/prd.md) / [tech-design](requirements/active/2026-05-26-WEB-TOOLS-HARDENING/tech-design.md) | 本地验证通过后用户 review |
 
 ## 暂缓 / Backlog
 
 | ID | 标题 | 模式 | 触发 | 阶段 |
 | --- | --- | --- | --- | --- |
+| **OUTCOMES-RUBRIC-FOUNDATION** | 借鉴 Anthropic Managed Agents Outcomes — `t_rubric` 独立 entity + grader context isolation audit & 真隔离 (V1) / `AgentLoopEngine` 第 5 轴 exit `OUTCOME_SATISFIED` 触红灯 (V2)。跟 [`active/DREAMING-MEMORY-EXTENSION`](requirements/active/2026-05-26-DREAMING-MEMORY-EXTENSION/index.md) 同次研究产出，**用户明确拆开独立 ship 降风险**。详见 [需求包](requirements/backlog/OUTCOMES-RUBRIC-FOUNDATION/index.md) | Full 候选 | 用户 5-26 "尽量把 Dreaming 和 Outcomes 这个需求分开"；wiki R-AMA-OUT-1~5 + AUDIT-1 共 6 条 | Dreaming V1 ship 后用户拍是否升 active |
+| **WEBSEARCH-SEARXNG-BACKEND** | WebSearch SearXNG 自部署 backend。V1 不做；重要不紧急。触发条件：每周搜索调用量/费用明显升高，或需要隐私/内网聚合搜索路线 | Mid 候选 | 用户 5-27 拍板：SearXNG 后续列 ToDo，如果每周用量太多再说 | WEB-TOOLS-HARDENING V1 ship 后按用量决定 |
 | **TRAJECTORY-DEBUG** | Agent 轨迹调试 / Live Pause + Intercept：拦 tool_use → 改 args / 改 result / 改 Tool description / 改 Skill description / 改 agent system_prompt 段 → resume，看效果。**路线 A (live pause)**，覆盖 5 种"现场可改"对象。Full 档（红灯：核心引擎 pause hook + prompt cache invalidation + 跨 surface） | Full | 用户原话 2026-05-24："轨迹测试 有什么好的想法吗？类似 在某次调用工具的时候 进行 debug 修改参数 修改结果 调整 description 然后 继续执行，看效果"。3 个澄清答：(1) 优先级 — 排 EVAL-DATASET-LAYER 之后 (2) scope — 5 种对象都做（含 skill 描述）(3) 路线 — A live pause | 排在 EVAL-DATASET-LAYER 完成后启动需求包起草 |
 
 ## 阻塞 / 待决策

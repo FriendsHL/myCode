@@ -35,6 +35,8 @@ import com.skillforge.tools.GlobTool;
 import com.skillforge.tools.GrepTool;
 import com.skillforge.tools.WebFetchTool;
 import com.skillforge.tools.WebSearchTool;
+import com.skillforge.tools.webfetch.WebFetchConfig;
+import com.skillforge.tools.websearch.WebSearchConfig;
 import com.skillforge.server.code.CompiledMethodService;
 import com.skillforge.server.code.RegisterCompiledMethodTool;
 import com.skillforge.server.code.RegisterScriptMethodTool;
@@ -118,7 +120,8 @@ import java.util.concurrent.TimeUnit;
         MemoryProperties.class,
         SkillImportProperties.class,
         SkillSecurityScanProperties.class,
-        EvalUserSimulatorProperties.class
+        EvalUserSimulatorProperties.class,
+        WebToolsProperties.class
 })
 public class SkillForgeConfig {
 
@@ -270,7 +273,8 @@ public class SkillForgeConfig {
 
     @Bean
     public SkillRegistry skillRegistry(MemoryService memoryService, EmbeddingService embeddingService,
-                                       FileStateCache fileStateCache) {
+                                       FileStateCache fileStateCache,
+                                       WebToolsProperties webToolsProperties) {
         SkillRegistry registry = new SkillRegistry();
         registry.registerTool(new BashTool());
         // P9-5: file tools share the FileStateCache so recovery payload knows recent files.
@@ -282,8 +286,12 @@ public class SkillForgeConfig {
         registry.registerTool(new MemoryTool(memoryService));
         registry.registerTool(new MemorySearchTool(memoryService, embeddingService));
         registry.registerTool(new MemoryDetailTool(memoryService));
-        registry.registerTool(new WebFetchTool());
-        registry.registerTool(new WebSearchTool());
+        registry.registerTool(new WebFetchTool(WebFetchConfig.fromHostAllowlist(
+                webToolsProperties.getWebfetch().getRobots().getHostAllowlist())));
+        registry.registerTool(new WebSearchTool(WebSearchConfig.fromBackendPriorityNames(
+                webToolsProperties.getWebsearch().getBackendPriority(),
+                webToolsProperties.getWebsearch().getTavily().getApiKey(),
+                webToolsProperties.getWebsearch().getExa().getApiKey())));
         return registry;
     }
 
