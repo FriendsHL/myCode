@@ -107,13 +107,18 @@ public class SkillPackageLoader {
                 } catch (Exception e) {
                     throw new IOException("Failed to parse skill.yaml: " + e.getMessage(), e);
                 }
+                promptContent = rawContent;
             } else {
-                // 都没有 -> 从 Markdown 内容自动提取
-                definition = new SkillDefinition();
-                definition.setName(extractNameFromMarkdown(rawContent));
-                definition.setDescription(extractDescriptionFromMarkdown(rawContent));
+                // Strict mode (SKILL-DATA-HYGIENE B1): markdown auto-extract fallback
+                // removed. A skill package without frontmatter and without
+                // skill.yaml fallback is malformed and would silently propagate
+                // garbage name/description into the registry — caller must fix
+                // the package, not let the loader guess.
+                throw new IOException("SKILL.md at " + skillMdPath
+                        + " has no YAML frontmatter and no skill.yaml fallback. "
+                        + "Expected frontmatter starting with '---' containing "
+                        + "'name' and 'description' fields.");
             }
-            promptContent = rawContent;
         }
 
         // 3. 兜底 name
@@ -250,35 +255,4 @@ public class SkillPackageLoader {
         }
     }
 
-    private String extractNameFromMarkdown(String content) {
-        for (String line : content.split("\n")) {
-            String trimmed = line.trim();
-            if (trimmed.startsWith("# ")) {
-                String title = trimmed.substring(2).trim();
-                return title.toLowerCase()
-                        .replaceAll("[^a-z0-9\\u4e00-\\u9fff\\s-]", "")
-                        .replaceAll("\\s+", "-")
-                        .replaceAll("-+", "-")
-                        .replaceAll("^-|-$", "");
-            }
-        }
-        return null;
-    }
-
-    private String extractDescriptionFromMarkdown(String content) {
-        boolean foundTitle = false;
-        StringBuilder desc = new StringBuilder();
-        for (String line : content.split("\n")) {
-            String trimmed = line.trim();
-            if (trimmed.startsWith("# ")) { foundTitle = true; continue; }
-            if (foundTitle && !trimmed.isEmpty() && !trimmed.startsWith("#")) {
-                desc.append(trimmed);
-                if (desc.length() > 200) break;
-            }
-            if (foundTitle && desc.length() > 0 && (trimmed.isEmpty() || trimmed.startsWith("#"))) {
-                break;
-            }
-        }
-        return desc.length() > 0 ? desc.toString() : null;
-    }
 }

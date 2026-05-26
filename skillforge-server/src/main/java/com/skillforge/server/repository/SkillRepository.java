@@ -75,6 +75,12 @@ public interface SkillRepository extends JpaRepository<SkillEntity, Long> {
      * unique index is partial; without it Postgres reports "no unique or
      * exclusion constraint matching the ON CONFLICT specification".
      *
+     * <p>Initial semver is hardcoded to literal {@code 'v1'} in the native
+     * SQL VALUES clause. Forks bump via
+     * {@link com.skillforge.server.service.SkillService#cloneToFork}
+     * (v1 → v2 → v3 ...). Without this default the FE renders
+     * {@code 'v0.0.0'} for imported skills; see V118 backfill migration.
+     *
      * @return rows actually inserted: {@code 1} if this caller won the race,
      *     {@code 0} if a concurrent caller's row already satisfies the unique
      *     constraint.
@@ -83,11 +89,11 @@ public interface SkillRepository extends JpaRepository<SkillEntity, Long> {
     @Query(value = """
             INSERT INTO t_skill
                 (owner_id, is_system, name, description, triggers, required_tools,
-                 skill_path, is_public, enabled, source, version,
+                 skill_path, is_public, enabled, source, version, semver,
                  usage_count, success_count, failure_count,
                  content_hash, artifact_status, last_scanned_at, created_at)
             VALUES (:ownerId, false, :name, :description, :triggers, :requiredTools,
-                    :skillPath, false, true, :source, :version,
+                    :skillPath, false, true, :source, :version, 'v1',
                     0, 0, 0,
                     :contentHash, 'active', :lastScannedAt, :createdAt)
             ON CONFLICT (COALESCE(owner_id, -1), name) WHERE enabled DO NOTHING

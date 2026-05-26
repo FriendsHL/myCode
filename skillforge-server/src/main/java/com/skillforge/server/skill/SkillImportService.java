@@ -551,6 +551,14 @@ public class SkillImportService {
         row.setLastScannedAt(Instant.now());
         row.setArtifactStatus("active");
         row.setDescription(def.getDescription());
+        // Backfill semver to 'v1' for pre-existing rows that never had one set
+        // (mirrors the literal 'v1' default in
+        // SkillRepository.insertImportedSkillIgnoreConflict; do not overwrite
+        // a non-null semver — forks / promotions own that value, see
+        // SkillService.cloneToFork / SkillAbEvalService).
+        if (row.getSemver() == null || row.getSemver().isBlank()) {
+            row.setSemver("v1");
+        }
         if (def.getTriggers() != null) {
             row.setTriggers(def.getTriggers().isEmpty() ? null
                     : String.join(",", def.getTriggers()));

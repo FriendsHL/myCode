@@ -227,6 +227,37 @@ class SkillImportIT extends AbstractPostgresIT {
     }
 
     @Test
+    @DisplayName("re-import preserves non-null semver — fork-bumped v2 must not revert to v1")
+    void reimport_existingSemverNonNull_notOverwritten() throws IOException {
+        // arrange: fresh import → applyUpdate-bypass path; SQL literal seeds semver='v1'
+        Path source = workspaceRoot.resolve("semver-guard-skill");
+        writeSkillPackage(source, "semver-guard-skill", "v1 body");
+        writeMetaJson(source, "semver-guard-skill", "1.0.0");
+        service.importSkill(source, SkillSource.CLAWHUB, 2001L);
+
+        // Simulate a fork bump landing a 'v2' onto the same import row
+        // (production path: SkillService.cloneToFork; the import row is the
+        // parent of the fork, but the parent's semver may be promoted by the
+        // AB-eval winner path. The invariant under test is: subsequent imports
+        // must not silently revert any non-null semver.)
+        Optional<SkillEntity> beforeReimport = skillRepository
+                .findByOwnerIdAndNameAndSourceAndIsSystem(2001L, "semver-guard-skill", "clawhub", false);
+        assertThat(beforeReimport).isPresent();
+        assertThat(beforeReimport.get().getSemver()).isEqualTo("v1");
+        beforeReimport.get().setSemver("v2");
+        skillRepository.save(beforeReimport.get());
+
+        // act: re-import same slug+version → applyUpdate path on the existing row
+        service.importSkill(source, SkillSource.CLAWHUB, 2001L);
+
+        // assert: 'v2' preserved, not silently reverted to 'v1'
+        Optional<SkillEntity> afterReimport = skillRepository
+                .findByOwnerIdAndNameAndSourceAndIsSystem(2001L, "semver-guard-skill", "clawhub", false);
+        assertThat(afterReimport).isPresent();
+        assertThat(afterReimport.get().getSemver()).isEqualTo("v2");
+    }
+
+    @Test
     @DisplayName("Native ON CONFLICT DO NOTHING happy-path runs in real PG (judge MUST-2 IT regression)")
     void insertImportedSkillIgnoreConflict_realPg_returnsOneOnFresh_thenZeroOnDup() {
         // Direct repository call exercises the native query against the live PG schema —
@@ -262,6 +293,10 @@ class SkillImportIT extends AbstractPostgresIT {
         assertThat(row.get().getContentHash()).isEqualTo("deadbeef");
         assertThat(row.get().getVersion()).isEqualTo("1.0.0");
         assertThat(row.get().getArtifactStatus()).isEqualTo("active");
+        // V118 + SkillRepository literal default: imported skills land with semver='v1'
+        // (FE renders 'v0.0.0' fallback otherwise). Guard the contract so a future SQL
+        // edit can't silently drop the literal.
+        assertThat(row.get().getSemver()).isEqualTo("v1");
     }
 
     /** Empty marker class so {@code @Import} can register a non-empty Spring config. */
