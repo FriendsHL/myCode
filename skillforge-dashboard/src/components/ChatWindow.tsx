@@ -1002,6 +1002,10 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                 message is rendered by the messages.map above. */}
           {(streamingReasoningText && streamingReasoningText.length > 0) && (
             <div className="msg assistant streaming-reasoning-wrap">
+              <div className="msg-head">
+                <RoleAvatar role="assistant" />
+                <span className="msg-name">{assistantName}</span>
+              </div>
               <ReasoningPanel
                 streamingText={streamingReasoningText}
                 reasoningContent={streamingReasoningText}

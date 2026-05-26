@@ -4369,8 +4369,8 @@ html[data-density="spacious"] { --density: 1; }
   margin-top: 0;
 }
 .reasoning-panel__content--completed.reasoning-panel__content--expanded {
-  max-height: 600px;
-  overflow-y: auto;
+  max-height: none;
+  overflow-y: visible;
   margin-top: 8px;
 }
 .reasoning-panel__content-inner {
