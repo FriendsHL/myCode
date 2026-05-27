@@ -124,6 +124,123 @@ class MemoryProposalServiceTest {
     }
 
     @Test
+    @DisplayName("approve transcript-backed reflection: empty sources create ACTIVE reflection")
+    void approve_transcriptBackedReflection_newMemoryCreated() {
+        MemoryProposalEntity p = proposal(111L, MemoryProposalEntity.TYPE_REFLECTION, "[]", null);
+        p.setSuggestedTitle("implementation plans");
+        p.setSuggestedContent("User prefers concrete implementation plans before code changes.");
+        p.setSuggestedImportance("high");
+        p.setEvidenceJson("[{\"source\":\"session\",\"sessionId\":\"sess-1\",\"seqNo\":7,\"quote\":\"plan first\"}]");
+        when(proposalRepository.findByIdForUpdate(111L)).thenReturn(Optional.of(p));
+
+        MemoryProposalService.ApproveResult r = service.approve(111L, 7L);
+
+        assertThat(r.success()).isTrue();
+        ArgumentCaptor<MemoryEntity> memoryCap = ArgumentCaptor.forClass(MemoryEntity.class);
+        verify(memoryRepository).save(memoryCap.capture());
+        MemoryEntity created = memoryCap.getValue();
+        assertThat(created.getUserId()).isEqualTo(1L);
+        assertThat(created.getTitle()).isEqualTo("implementation plans");
+        assertThat(created.getContent()).isEqualTo("User prefers concrete implementation plans before code changes.");
+        assertThat(created.getImportance()).isEqualTo("high");
+        assertThat(created.getStatus()).isEqualTo("ACTIVE");
+        assertThat(created.getMemoryKind()).isEqualTo("reflection");
+        assertThat(created.getType()).isEqualTo("knowledge");
+        assertThat(created.getDerivedFromMemoryIds()).isEqualTo("[]");
+        assertThat(p.getStatus()).isEqualTo(MemoryProposalEntity.STATUS_APPROVED);
+        assertThat(p.getReviewedByUserId()).isEqualTo(7L);
+        verify(memoryRepository, never()).findAllByIdForUpdate(anyList());
+    }
+
+    @Test
+    @DisplayName("approve transcript-backed reflection rejects malformed sourceMemoryIds")
+    void approve_transcriptBackedReflectionMalformedSourceIds_throws() {
+        MemoryProposalEntity p = proposal(113L, MemoryProposalEntity.TYPE_REFLECTION, "not json", null);
+        p.setSuggestedContent("User prefers implementation plans.");
+        p.setEvidenceJson("[{\"source\":\"session\",\"sessionId\":\"sess-1\",\"seqNo\":7,\"quote\":\"plan first\"}]");
+        when(proposalRepository.findByIdForUpdate(113L)).thenReturn(Optional.of(p));
+
+        assertThatThrownBy(() -> service.approve(113L, 7L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("sourceMemoryIds");
+        verify(memoryRepository, never()).findAllByIdForUpdate(anyList());
+        verify(memoryRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("approve transcript-backed reflection requires evidenceJson")
+    void approve_transcriptBackedReflectionMissingEvidence_throws() {
+        MemoryProposalEntity p = proposal(114L, MemoryProposalEntity.TYPE_REFLECTION, "[]", null);
+        p.setSuggestedContent("User prefers implementation plans.");
+        when(proposalRepository.findByIdForUpdate(114L)).thenReturn(Optional.of(p));
+
+        assertThatThrownBy(() -> service.approve(114L, 7L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("evidenceJson");
+        verify(memoryRepository, never()).findAllByIdForUpdate(anyList());
+        verify(memoryRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("approve transcript-backed reflection rejects blank evidenceJson")
+    void approve_transcriptBackedReflectionBlankEvidence_throws() {
+        MemoryProposalEntity p = proposal(115L, MemoryProposalEntity.TYPE_REFLECTION, "[]", null);
+        p.setSuggestedContent("User prefers implementation plans.");
+        p.setEvidenceJson("  ");
+        when(proposalRepository.findByIdForUpdate(115L)).thenReturn(Optional.of(p));
+
+        assertThatThrownBy(() -> service.approve(115L, 7L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("evidenceJson");
+        verify(memoryRepository, never()).findAllByIdForUpdate(anyList());
+        verify(memoryRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("approve transcript-backed reflection rejects malformed evidenceJson")
+    void approve_transcriptBackedReflectionMalformedEvidence_throws() {
+        MemoryProposalEntity p = proposal(116L, MemoryProposalEntity.TYPE_REFLECTION, "[]", null);
+        p.setSuggestedContent("User prefers implementation plans.");
+        p.setEvidenceJson("not json");
+        when(proposalRepository.findByIdForUpdate(116L)).thenReturn(Optional.of(p));
+
+        assertThatThrownBy(() -> service.approve(116L, 7L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("evidenceJson");
+        verify(memoryRepository, never()).findAllByIdForUpdate(anyList());
+        verify(memoryRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("approve transcript-backed reflection rejects invalid evidence item")
+    void approve_transcriptBackedReflectionInvalidEvidenceItem_throws() {
+        MemoryProposalEntity p = proposal(117L, MemoryProposalEntity.TYPE_REFLECTION, "[]", null);
+        p.setSuggestedContent("User prefers implementation plans.");
+        p.setEvidenceJson("[{\"source\":\"session\",\"sessionId\":[\"sess-1\"],\"seqNo\":7,\"quote\":\"plan first\"}]");
+        when(proposalRepository.findByIdForUpdate(117L)).thenReturn(Optional.of(p));
+
+        assertThatThrownBy(() -> service.approve(117L, 7L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("evidenceJson");
+        verify(memoryRepository, never()).findAllByIdForUpdate(anyList());
+        verify(memoryRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("approve non-reflection with empty sources still rejects")
+    void approve_nonReflectionEmptySources_throws() {
+        MemoryProposalEntity p = proposal(112L, MemoryProposalEntity.TYPE_OPTIMIZE, "[]", null);
+        p.setSuggestedContent("rewritten");
+        when(proposalRepository.findByIdForUpdate(112L)).thenReturn(Optional.of(p));
+
+        assertThatThrownBy(() -> service.approve(112L, 7L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("proposal has no sourceMemoryIds");
+        verify(memoryRepository, never()).findAllByIdForUpdate(anyList());
+        verify(memoryRepository, never()).save(any());
+    }
+
+    @Test
     @DisplayName("approve optimize: target content updated, original_content preserved")
     void approve_optimize_targetUpdated() {
         MemoryProposalEntity p = proposal(12L, MemoryProposalEntity.TYPE_OPTIMIZE, "[101]", null);

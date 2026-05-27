@@ -1,6 +1,7 @@
 package com.skillforge.server.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.skillforge.server.entity.MemoryEntity;
 import com.skillforge.server.entity.MemoryProposalEntity;
@@ -72,22 +73,32 @@ public class MemoryProposalService {
                     "proposal not in proposed state: id=" + proposalId + " status=" + p.getStatus());
         }
 
-        List<Long> sourceIds = parseSourceIds(p.getSourceMemoryIds());
+        SourceIdsParseResult parsedSourceIds = parseSourceIdsStrict(p.getSourceMemoryIds());
+        if (!parsedSourceIds.valid()) {
+            throw new IllegalStateException("proposal sourceMemoryIds malformed: id=" + proposalId);
+        }
+        List<Long> sourceIds = parsedSourceIds.ids();
         if (sourceIds.isEmpty()) {
-            throw new IllegalStateException("proposal has no sourceMemoryIds: id=" + proposalId);
+            if (!MemoryProposalEntity.TYPE_REFLECTION.equals(p.getProposalType())) {
+                throw new IllegalStateException("proposal has no sourceMemoryIds: id=" + proposalId);
+            }
+            validateTranscriptBackedReflectionForApprove(p);
         }
 
         // B-4 fix: pessimistic-write lock on source memories.
-        List<MemoryEntity> sources = memoryRepository.findAllByIdForUpdate(sourceIds);
-        if (sources.size() != sourceIds.size()) {
-            // Source memory deleted between propose-time and approve-time → stale.
-            return staleAndPersist(p, "source_memory_missing");
-        }
+        List<MemoryEntity> sources = List.of();
+        if (!sourceIds.isEmpty()) {
+            sources = memoryRepository.findAllByIdForUpdate(sourceIds);
+            if (sources.size() != sourceIds.size()) {
+                // Source memory deleted between propose-time and approve-time → stale.
+                return staleAndPersist(p, "source_memory_missing");
+            }
 
-        // W-3 fix: stale check by proposal_type.
-        StaleCheckResult stale = checkStaleByType(p.getProposalType(), sources);
-        if (stale.isStale()) {
-            return staleAndPersist(p, stale.reason());
+            // W-3 fix: stale check by proposal_type.
+            StaleCheckResult stale = checkStaleByType(p.getProposalType(), sources);
+            if (stale.isStale()) {
+                return staleAndPersist(p, stale.reason());
+            }
         }
 
         // B-3 second line of defense at approve gate.
@@ -346,6 +357,63 @@ public class MemoryProposalService {
         }
     }
 
+    private SourceIdsParseResult parseSourceIdsStrict(String json) {
+        if (json == null || json.isBlank()) {
+            return SourceIdsParseResult.invalid();
+        }
+        try {
+            JsonNode root = objectMapper.readTree(json);
+            if (!root.isArray()) {
+                return SourceIdsParseResult.invalid();
+            }
+            List<Long> ids = objectMapper.convertValue(root, new TypeReference<List<Long>>() {});
+            return SourceIdsParseResult.valid(ids != null ? ids : List.of());
+        } catch (Exception e) {
+            log.warn("MemoryProposalService: failed to parse sourceMemoryIds={}: {}", json, e.getMessage());
+            return SourceIdsParseResult.invalid();
+        }
+    }
+
+    private void validateTranscriptBackedReflectionForApprove(MemoryProposalEntity p) {
+        if (p.getUserId() == null || p.getUserId() <= 0) {
+            throw new IllegalStateException("transcript-backed reflection requires positive userId: id=" + p.getId());
+        }
+        if (p.getEvidenceJson() == null || p.getEvidenceJson().isBlank()) {
+            throw new IllegalStateException("transcript-backed reflection requires evidenceJson: id=" + p.getId());
+        }
+        JsonNode root;
+        try {
+            root = objectMapper.readTree(p.getEvidenceJson());
+        } catch (Exception e) {
+            throw new IllegalStateException(
+                    "transcript-backed reflection evidenceJson malformed: id=" + p.getId(), e);
+        }
+        if (!root.isArray() || root.isEmpty()) {
+            throw new IllegalStateException("transcript-backed reflection evidenceJson must be non-empty array: id="
+                    + p.getId());
+        }
+        for (JsonNode item : root) {
+            if (!isValidSessionEvidence(item)) {
+                throw new IllegalStateException("transcript-backed reflection evidenceJson contains invalid item: id="
+                        + p.getId());
+            }
+        }
+    }
+
+    private static boolean isValidSessionEvidence(JsonNode item) {
+        if (item == null || !item.isObject()) {
+            return false;
+        }
+        JsonNode source = item.get("source");
+        JsonNode sessionId = item.get("sessionId");
+        JsonNode seqNo = item.get("seqNo");
+        JsonNode quote = item.get("quote");
+        return source != null && source.isTextual() && "session".equals(source.asText())
+                && sessionId != null && sessionId.isTextual() && !sessionId.asText().isBlank()
+                && seqNo != null && seqNo.isIntegralNumber()
+                && quote != null && quote.isTextual() && !quote.asText().isBlank();
+    }
+
     private static String truncate(String s, int maxLen) {
         if (s == null || s.length() <= maxLen) return s;
         int end = maxLen;
@@ -361,6 +429,16 @@ public class MemoryProposalService {
                               String suggestedContent,
                               String suggestedImportance,
                               Long winnerMemoryId) {
+    }
+
+    private record SourceIdsParseResult(boolean valid, List<Long> ids) {
+        static SourceIdsParseResult valid(List<Long> ids) {
+            return new SourceIdsParseResult(true, ids);
+        }
+
+        static SourceIdsParseResult invalid() {
+            return new SourceIdsParseResult(false, List.of());
+        }
     }
 
     public record ApproveResult(boolean success, String appliedType, String reason) {

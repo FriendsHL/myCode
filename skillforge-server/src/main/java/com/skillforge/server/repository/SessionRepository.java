@@ -196,6 +196,21 @@ public interface SessionRepository extends JpaRepository<SessionEntity, String> 
             """)
     List<Long> findDistinctUserIdsWithRecentUserMessage(@Param("since") java.time.Instant since);
 
+    @Query("""
+            SELECT s FROM SessionEntity s
+            WHERE s.userId = :userId
+              AND s.parentSessionId IS NULL
+              AND s.origin = 'production'
+              AND s.lastUserMessageAt IS NOT NULL
+              AND s.lastUserMessageAt >= :since
+              AND (s.runtimeStatus IS NULL OR s.runtimeStatus IN ('completed', 'idle', 'waiting_user'))
+            ORDER BY s.lastUserMessageAt DESC
+            """)
+    List<SessionEntity> findRecentProductionSessionsForMemoryDreaming(
+            @Param("userId") Long userId,
+            @Param("since") java.time.Instant since,
+            Pageable pageable);
+
     /**
      * PROD-LABEL-CLUSTER V1 (Phase 1.2): top-level production sessions that finished
      * within the configured window. Used by

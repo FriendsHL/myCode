@@ -357,9 +357,10 @@ skillforge:
     #   V2 (dogfood, V69) : memory-curator system agent + P12 ScheduledTask
     #                       Configure / toggle in the dashboard /schedules page (the
     #                       V69 migration seeds the row with enabled=false). Drives
-    #                       4 agent tools via the normal agent loop — same proposal
-    #                       table, just different orchestration. This is the
-    #                       preferred path going forward.
+    #                       memory-curator tools including transcript dreaming via
+    #                       the normal agent loop — same proposal table, just
+    #                       different orchestration. This is the preferred path
+    #                       going forward.
     #
     # Mutual exclusion: if you flip V1 `scheduled-enabled` true, ALSO disable the
     # `memory-curator nightly` ScheduledTask row (or vice versa). The admin

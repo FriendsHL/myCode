@@ -14,6 +14,8 @@ import com.skillforge.server.util.SkillInputUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -115,7 +117,8 @@ public class CreateMemoryProposalTool implements Tool {
                 "type", "array",
                 "items", Map.of("type", "integer"),
                 "description", "Required. Memory IDs cited as sources. dedup: 2..5 (mass-delete "
-                        + "guard); reflection: >=2; optimize: exactly 1; contradiction: >=2."
+                        + "guard); reflection: >=2 unless backed by session evidence and top-level "
+                        + "userId; optimize: exactly 1; contradiction: >=2."
         ));
         proposalProps.put("winnerMemoryId", Map.of(
                 "type", "integer",
@@ -142,6 +145,12 @@ public class CreateMemoryProposalTool implements Tool {
                 "description", "Why this proposal makes sense. Auto-truncated to "
                         + REASONING_MAX_LEN + " chars (UTF-16 surrogate-safe)."
         ));
+        proposalProps.put("evidence", Map.of(
+                "type", "array",
+                "items", Map.of("type", "object"),
+                "description", "Optional evidence objects. For transcript-backed reflections include "
+                        + "source='session', sessionId, seqNo, and quote."
+        ));
 
         Map<String, Object> proposalSchema = new LinkedHashMap<>();
         proposalSchema.put("type", "object");
@@ -153,6 +162,11 @@ public class CreateMemoryProposalTool implements Tool {
                 "type", "string",
                 "description", "Required. Caller-generated run identifier (e.g. \"synth-<uuid>\"). "
                         + "Stamped on every emitted proposal so admins can filter and audit per run."
+        ));
+        properties.put("userId", Map.of(
+                "type", "integer",
+                "description", "Optional for memory-backed proposals; required when a reflection has "
+                        + "no sourceMemoryIds and is backed only by session evidence."
         ));
         properties.put("proposals", Map.of(
                 "type", "array",
@@ -192,6 +206,7 @@ public class CreateMemoryProposalTool implements Tool {
             }
 
             Long contextUserId = context == null ? null : context.getUserId();
+            Long explicitUserId = SkillInputUtils.toLong(input.get("userId"));
 
             List<RejectionRecord> rejections = new ArrayList<>();
             List<MemoryProposalEntity> toSave = new ArrayList<>();
@@ -206,7 +221,7 @@ public class CreateMemoryProposalTool implements Tool {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> p = (Map<String, Object>) rawMap;
 
-                ProposalDraft draft = parseProposal(i, p, contextUserId);
+                ProposalDraft draft = parseProposal(i, p, contextUserId, explicitUserId);
                 if (!draft.ok()) {
                     rejections.add(new RejectionRecord(i, draft.error()));
                     continue;
@@ -261,7 +276,10 @@ public class CreateMemoryProposalTool implements Tool {
     // Validation
     // ─────────────────────────────────────────────────────────────────────────────────
 
-    private ProposalDraft parseProposal(int idx, Map<String, Object> p, Long contextUserId) {
+    private ProposalDraft parseProposal(int idx,
+                                        Map<String, Object> p,
+                                        Long contextUserId,
+                                        Long explicitUserId) {
         String type = asString(p.get("type"));
         if (type == null || type.isBlank()) {
             return ProposalDraft.fail("type is required");
@@ -272,9 +290,22 @@ public class CreateMemoryProposalTool implements Tool {
                     + " (delete is forbidden — rule-based archival handles age-out)");
         }
 
-        List<Long> sourceIds = parseLongList(p.get("sourceMemoryIds"));
+        Object evidenceObj = p.get("evidence");
+        EvidenceSerialization evidence = serializeEvidence(evidenceObj);
+
+        Object sourceMemoryIdsObj = p.get("sourceMemoryIds");
+        if (!isArrayLike(sourceMemoryIdsObj)) {
+            return ProposalDraft.fail("sourceMemoryIds must be an array");
+        }
+        List<Long> sourceIds = parseLongList(sourceMemoryIdsObj);
         if (sourceIds.isEmpty()) {
-            return ProposalDraft.fail("sourceMemoryIds must be a non-empty array");
+            if (!MemoryProposalEntity.TYPE_REFLECTION.equals(type)) {
+                return ProposalDraft.fail("sourceMemoryIds may be empty only for transcript-backed reflection proposals");
+            }
+            EvidenceValidation strictEvidence = validateStrictSessionEvidence(evidenceObj, evidence);
+            if (!strictEvidence.ok()) {
+                return ProposalDraft.fail(strictEvidence.error());
+            }
         }
         // De-dup the input array itself (LLM occasionally repeats).
         Set<Long> dedup = new LinkedHashSet<>(sourceIds);
@@ -292,7 +323,7 @@ public class CreateMemoryProposalTool implements Tool {
             }
             case MemoryProposalEntity.TYPE_CONTRADICTION,
                  MemoryProposalEntity.TYPE_REFLECTION -> {
-                if (sourceIds.size() < 2) {
+                if (!sourceIds.isEmpty() && sourceIds.size() < 2) {
                     return ProposalDraft.fail(type + " requires >= 2 sourceMemoryIds, got " + sourceIds.size());
                 }
             }
@@ -304,25 +335,32 @@ public class CreateMemoryProposalTool implements Tool {
             default -> { /* unreachable */ }
         }
 
-        // Existence + same-user check.
-        List<MemoryEntity> rows = memoryRepository.findAllById(sourceIds);
-        if (rows.size() != sourceIds.size()) {
-            Set<Long> found = new HashSet<>();
-            for (MemoryEntity m : rows) found.add(m.getId());
-            List<Long> missing = new ArrayList<>();
-            for (Long id : sourceIds) if (!found.contains(id)) missing.add(id);
-            return ProposalDraft.fail("sourceMemoryIds reference missing memory rows: " + missing);
-        }
         Long resolvedUserId = null;
-        for (MemoryEntity m : rows) {
-            if (m.getUserId() == null) {
-                return ProposalDraft.fail("sourceMemoryId " + m.getId() + " has null userId — refusing");
+        if (sourceIds.isEmpty()) {
+            if (explicitUserId == null || explicitUserId <= 0) {
+                return ProposalDraft.fail("userId is required for transcript-backed reflection proposals");
             }
-            if (resolvedUserId == null) {
-                resolvedUserId = m.getUserId();
-            } else if (!resolvedUserId.equals(m.getUserId())) {
-                return ProposalDraft.fail("sourceMemoryIds span multiple users (" + resolvedUserId
-                        + " vs " + m.getUserId() + ") — refusing");
+            resolvedUserId = explicitUserId;
+        } else {
+            // Existence + same-user check.
+            List<MemoryEntity> rows = memoryRepository.findAllById(sourceIds);
+            if (rows.size() != sourceIds.size()) {
+                Set<Long> found = new HashSet<>();
+                for (MemoryEntity m : rows) found.add(m.getId());
+                List<Long> missing = new ArrayList<>();
+                for (Long id : sourceIds) if (!found.contains(id)) missing.add(id);
+                return ProposalDraft.fail("sourceMemoryIds reference missing memory rows: " + missing);
+            }
+            for (MemoryEntity m : rows) {
+                if (m.getUserId() == null) {
+                    return ProposalDraft.fail("sourceMemoryId " + m.getId() + " has null userId — refusing");
+                }
+                if (resolvedUserId == null) {
+                    resolvedUserId = m.getUserId();
+                } else if (!resolvedUserId.equals(m.getUserId())) {
+                    return ProposalDraft.fail("sourceMemoryIds span multiple users (" + resolvedUserId
+                            + " vs " + m.getUserId() + ") — refusing");
+                }
             }
         }
         // Gap-2 fix: SYSTEM context (userId=0, dogfood fan-out from memory-curator
@@ -372,7 +410,7 @@ public class CreateMemoryProposalTool implements Tool {
         }
 
         return new ProposalDraft(true, null, type, sourceIds, winnerMemoryId,
-                suggestedTitle, suggestedContent, suggestedImportance, reasoning, resolvedUserId);
+                suggestedTitle, suggestedContent, suggestedImportance, reasoning, evidence.json(), resolvedUserId);
     }
 
     private boolean alreadyHasEquivalentProposal(Long userId, List<Long> sourceIds, String type) {
@@ -418,6 +456,7 @@ public class CreateMemoryProposalTool implements Tool {
         p.setSuggestedContent(d.suggestedContent());
         p.setSuggestedImportance(d.suggestedImportance());
         p.setReasoning(d.reasoning());
+        p.setEvidenceJson(d.evidenceJson());
         p.setStatus(MemoryProposalEntity.STATUS_PROPOSED);
         return p;
     }
@@ -436,6 +475,71 @@ public class CreateMemoryProposalTool implements Tool {
         }
     }
 
+    private EvidenceSerialization serializeEvidence(Object evidenceObj) {
+        if (evidenceObj == null) {
+            return EvidenceSerialization.empty();
+        }
+        if (!(evidenceObj instanceof List<?> list)) {
+            return EvidenceSerialization.malformed();
+        }
+        try {
+            if (list.isEmpty()) {
+                return EvidenceSerialization.empty();
+            }
+            String json = objectMapper.writeValueAsString(list);
+            return EvidenceSerialization.serialized(list, json);
+        } catch (Exception e) {
+            log.debug("CreateMemoryProposalTool failed to serialize evidence: {}", e.getMessage());
+            return EvidenceSerialization.malformed();
+        }
+    }
+
+    private static EvidenceValidation validateStrictSessionEvidence(Object evidenceObj,
+                                                                    EvidenceSerialization evidence) {
+        if (!(evidenceObj instanceof List<?>)) {
+            return EvidenceValidation.fail("transcript-backed reflection requires serializable evidence array");
+        }
+        if (!evidence.serializable()) {
+            return EvidenceValidation.fail("transcript-backed reflection requires serializable evidence array");
+        }
+        if (evidence.items().isEmpty()) {
+            return EvidenceValidation.fail("reflection with empty sourceMemoryIds requires session evidence");
+        }
+        if (!allSessionEvidence(evidence.items())) {
+            return EvidenceValidation.fail(
+                    "transcript-backed reflection requires session evidence and requires only valid session evidence");
+        }
+        return EvidenceValidation.valid();
+    }
+
+    private static boolean allSessionEvidence(List<?> list) {
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> evidence)) {
+                return false;
+            }
+            String source = asStrictString(evidence.get("source"));
+            String sessionId = asStrictString(evidence.get("sessionId"));
+            Object seqNo = evidence.get("seqNo");
+            String quote = asStrictString(evidence.get("quote"));
+            if (!"session".equals(source)
+                    || sessionId == null || sessionId.isBlank()
+                    || !isIntegralNumber(seqNo)
+                    || quote == null || quote.isBlank()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isIntegralNumber(Object value) {
+        return value instanceof Byte
+                || value instanceof Short
+                || value instanceof Integer
+                || value instanceof Long
+                || value instanceof BigInteger
+                || (value instanceof BigDecimal bd && bd.scale() <= 0);
+    }
+
     private static List<Long> parseLongList(Object raw) {
         if (raw == null) return List.of();
         Iterable<?> iter;
@@ -452,6 +556,14 @@ public class CreateMemoryProposalTool implements Tool {
             if (v != null) out.add(v);
         }
         return out;
+    }
+
+    private static boolean isArrayLike(Object raw) {
+        return raw instanceof Iterable<?> || (raw != null && raw.getClass().isArray());
+    }
+
+    private static String asStrictString(Object v) {
+        return v instanceof String s ? s : null;
     }
 
     private static String asString(Object v) {
@@ -492,10 +604,38 @@ public class CreateMemoryProposalTool implements Tool {
                                   String suggestedContent,
                                   String suggestedImportance,
                                   String reasoning,
+                                  String evidenceJson,
                                   Long userId) {
         static ProposalDraft fail(String error) {
             return new ProposalDraft(false, error, null, List.of(), null,
-                    null, null, null, null, null);
+                    null, null, null, null, null, null);
+        }
+    }
+
+    private record EvidenceSerialization(boolean serializable,
+                                         List<?> items,
+                                         String json) {
+        static EvidenceSerialization empty() {
+            return new EvidenceSerialization(true, List.of(), null);
+        }
+
+        static EvidenceSerialization serialized(List<?> items, String json) {
+            return new EvidenceSerialization(true, items, json);
+        }
+
+        static EvidenceSerialization malformed() {
+            return new EvidenceSerialization(false, List.of(), null);
+        }
+    }
+
+    private record EvidenceValidation(boolean ok,
+                                      String error) {
+        static EvidenceValidation valid() {
+            return new EvidenceValidation(true, null);
+        }
+
+        static EvidenceValidation fail(String error) {
+            return new EvidenceValidation(false, error);
         }
     }
 

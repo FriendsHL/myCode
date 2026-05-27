@@ -90,7 +90,7 @@ public class MultiTurnTranscriptBuilder {
             if (!isConversationRow(row)) continue;
             String text = extractText(row);
             if (text == null || text.isBlank()) continue;
-            transcript.add(row.getRole(), text);
+            transcript.add(row.getSeqNo(), row.getRole(), text);
         }
         return transcript;
     }

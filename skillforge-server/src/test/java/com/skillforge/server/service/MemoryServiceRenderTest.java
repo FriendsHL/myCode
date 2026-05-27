@@ -328,6 +328,23 @@ class MemoryServiceRenderTest {
     }
 
     @Test
+    @DisplayName("previewMemoryInjectionForPrompt: same text as legacy preview and returns injected ids without recall bump")
+    void previewMemoryInjection_sameTextAndIds_noRecallIncrement() {
+        when(memoryRepository.findByUserIdAndStatusOrderByUpdatedAtDesc(7L, "ACTIVE"))
+                .thenReturn(List.of(
+                        memory(1L, "preference", "use Java", "v1"),
+                        memory(2L, "knowledge", "Spring", "Use constructor injection.")
+                ));
+
+        MemoryInjection previewWithIds = memoryService.previewMemoryInjectionForPrompt(7L, null);
+        String legacyPreview = memoryService.previewMemoriesForPrompt(7L, null);
+
+        assertThat(previewWithIds.text()).isEqualTo(legacyPreview);
+        assertThat(previewWithIds.injectedIds()).containsExactlyInAnyOrder(1L, 2L);
+        verify(memoryRepository, never()).incrementRecallCount(anyLong(), any());
+    }
+
+    @Test
     @DisplayName("getMemoriesForPromptInjection: every injected id triggers exactly one recall bump")
     void injection_recallBumpExactlyOnce() {
         when(memoryRepository.findByUserIdAndStatusOrderByUpdatedAtDesc(7L, "ACTIVE"))

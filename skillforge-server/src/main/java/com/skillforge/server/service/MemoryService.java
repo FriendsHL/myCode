@@ -772,7 +772,18 @@ public class MemoryService {
      */
     @Transactional(readOnly = true)
     public String previewMemoriesForPrompt(Long userId, String taskContext) {
-        return renderMemoriesForPromptInjection(userId, taskContext, new LinkedHashSet<>());
+        return previewMemoryInjectionForPrompt(userId, taskContext).text();
+    }
+
+    /**
+     * Memory context preview with rendered text and ids, without bumping recall counts.
+     * Used by flywheel/system-agent read-only context surfaces that need an auditable id set.
+     */
+    @Transactional(readOnly = true)
+    public MemoryInjection previewMemoryInjectionForPrompt(Long userId, String taskContext) {
+        Set<Long> injectedIds = new LinkedHashSet<>();
+        String rendered = renderMemoriesForPromptInjection(userId, taskContext, injectedIds);
+        return new MemoryInjection(rendered, injectedIds);
     }
 
     /**
