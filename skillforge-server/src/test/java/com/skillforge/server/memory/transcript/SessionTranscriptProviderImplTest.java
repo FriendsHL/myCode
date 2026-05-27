@@ -1,7 +1,10 @@
 package com.skillforge.server.memory.transcript;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.skillforge.server.entity.SessionEntity;
+import com.skillforge.server.entity.SessionMessageEntity;
 import com.skillforge.server.eval.MultiTurnTranscript;
+import com.skillforge.server.repository.SessionMessageRepository;
 import com.skillforge.server.repository.SessionRepository;
 import com.skillforge.server.skill.MultiTurnTranscriptBuilder;
 import org.junit.jupiter.api.DisplayName;
@@ -10,6 +13,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 
 import java.time.Instant;
@@ -32,6 +36,11 @@ class SessionTranscriptProviderImplTest {
 
     @Mock
     private MultiTurnTranscriptBuilder transcriptBuilder;
+
+    @Mock
+    private SessionMessageRepository sessionMessageRepository;
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Test
     @DisplayName("null and non-positive userId return empty without repository hits")
@@ -105,7 +114,7 @@ class SessionTranscriptProviderImplTest {
         SessionEntity empty = session("s-empty", 42L, 10L, Instant.parse("2026-05-26T10:00:00Z"));
         SessionEntity valid = session("s-valid", 42L, 11L, Instant.parse("2026-05-26T09:00:00Z"));
         MultiTurnTranscript validTranscript = new MultiTurnTranscript();
-        validTranscript.add("user", "later");
+        validTranscript.add(11L, "user", "later");
 
         when(sessionRepository.findRecentProductionSessionsForMemoryDreaming(eq(42L), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(empty), List.of(valid));
@@ -118,6 +127,8 @@ class SessionTranscriptProviderImplTest {
         assertThat(chunks).hasSize(1);
         assertThat(chunks.get(0).sessionId()).isEqualTo("s-valid");
         assertThat(chunks.get(0).transcript()).contains("[user] later");
+        assertThat(chunks.get(0).turns())
+                .containsExactly(new SessionTranscriptTurn(11L, "user", "later"));
         ArgumentCaptor<Pageable> pageCap = ArgumentCaptor.forClass(Pageable.class);
         verify(sessionRepository, times(2))
                 .findRecentProductionSessionsForMemoryDreaming(eq(42L), any(Instant.class), pageCap.capture());
@@ -131,8 +142,8 @@ class SessionTranscriptProviderImplTest {
         Instant completedAt = Instant.parse("2026-05-26T10:00:00Z");
         SessionEntity session = session("s-1", 42L, 10L, completedAt);
         MultiTurnTranscript transcript = new MultiTurnTranscript();
-        transcript.add("user", "hello");
-        transcript.add("assistant", "a".repeat(700));
+        transcript.add(5L, "user", "hello");
+        transcript.add(7L, "assistant", "a".repeat(700));
 
         when(sessionRepository.findRecentProductionSessionsForMemoryDreaming(eq(42L), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(session));
@@ -150,6 +161,30 @@ class SessionTranscriptProviderImplTest {
         assertThat(chunk.turnCount()).isEqualTo(2);
         assertThat(chunk.transcript()).endsWith("\n[truncated]");
         assertThat(chunk.transcript()).startsWith("[user] hello");
+        assertThat(chunk.turns()).hasSize(2);
+        assertThat(chunk.turns().get(0)).isEqualTo(new SessionTranscriptTurn(5L, "user", "hello"));
+        assertThat(chunk.turns().get(1).seqNo()).isEqualTo(7L);
+        assertThat(chunk.turns().get(1).role()).isEqualTo("assistant");
+    }
+
+    @Test
+    @DisplayName("builder preserves real session message seqNo without changing render output")
+    void multiTurnTranscriptBuilder_realSessionRows_preservesSeqNoAndRenderFormat() {
+        SessionMessageEntity user = message(5L, "user", "NORMAL", "\"hello\"");
+        SessionMessageEntity assistant = message(7L, "assistant", "NORMAL",
+                "[{\"type\":\"text\",\"text\":\"hi\"}]");
+        when(sessionMessageRepository.findBySessionIdOrderBySeqNoAsc(eq("s-real"), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(user, assistant)));
+        MultiTurnTranscriptBuilder builder = new MultiTurnTranscriptBuilder(sessionMessageRepository, objectMapper);
+
+        MultiTurnTranscript transcript = builder.fromSession("s-real");
+
+        assertThat(transcript.render()).isEqualTo("[user] hello\n\n[assistant] hi");
+        assertThat(transcript.getEntries()).hasSize(2);
+        assertThat(transcript.getEntries().get(0).getSeqNo()).isEqualTo(5L);
+        assertThat(transcript.getEntries().get(0).getRole()).isEqualTo("user");
+        assertThat(transcript.getEntries().get(0).getContent()).isEqualTo("hello");
+        assertThat(transcript.getEntries().get(1).getSeqNo()).isEqualTo(7L);
     }
 
     private static SessionEntity session(String id, Long userId, Long agentId, Instant completedAt) {
@@ -159,6 +194,16 @@ class SessionTranscriptProviderImplTest {
         s.setAgentId(agentId);
         s.setCompletedAt(completedAt);
         return s;
+    }
+
+    private static SessionMessageEntity message(long seqNo, String role, String msgType, String contentJson) {
+        SessionMessageEntity m = new SessionMessageEntity();
+        m.setSessionId("s-real");
+        m.setSeqNo(seqNo);
+        m.setRole(role);
+        m.setMsgType(msgType);
+        m.setContentJson(contentJson);
+        return m;
     }
 
     private SessionTranscriptProviderImpl provider(MemoryTranscriptProperties properties) {

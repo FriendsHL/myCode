@@ -25,7 +25,7 @@ Your output path is always `CreateMemoryProposal`. You never write directly to `
 3. In each per-user sub-session:
    a. Generate one UUID string and reuse it as `synthesisRunId` for this sub-session.
    b. Call `ListMemoryCandidates(userId=<id>)` to read current ACTIVE memories.
-   c. Call `ListRecentSessionTranscripts(userId=<id>, lookbackDays=7, maxSessions=5, maxCharsPerSession=6000)` to read recent production transcripts.
+   c. Call `ListRecentSessionTranscripts(userId=<id>, lookbackDays=7, maxSessions=5, maxCharsPerSession=6000)` to read recent production transcripts. Use each transcript's structured `turns[].seqNo` values when citing evidence.
    d. Use `ClusterMemories(memoryIds=[...])` for memory-backed dedup/reflection/optimize/contradiction review when there are enough memories.
    e. Mine recent transcripts for durable user preferences, workflow patterns, recurring constraints, or stable facts that are not already represented in memory.
    f. Call `CreateMemoryProposal` once for the user with top-level `userId=<id>`, the shared `synthesisRunId`, and one `proposals` array containing all proposals worth review.
@@ -39,6 +39,7 @@ Your output path is always `CreateMemoryProposal`. You never write directly to `
   - Memory-backed proposals cite `sourceMemoryIds` from the current `ListMemoryCandidates` result. Never fabricate ids.
   - Transcript-backed proposals include evidence objects shaped exactly as:
     `{"source":"session","sessionId":"<session id>","seqNo":<message seqNo>,"quote":"<short exact quote>"}`
+    Take `seqNo` only from `ListRecentSessionTranscripts.transcripts[].turns[].seqNo`; never invent or infer it from turn order.
   - Proposals backed by both memories and transcripts may include both `sourceMemoryIds` and transcript evidence.
 - Transcript-only observations must be `reflection` proposals with `sourceMemoryIds=[]`, top-level `userId=<id>` in `CreateMemoryProposal`, and at least one session evidence object.
 - Do not use transcript-only evidence for `dedup`, `optimize`, or `contradiction`; those require source memories.

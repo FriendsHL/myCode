@@ -21,7 +21,11 @@ public class MultiTurnTranscript {
     }
 
     public void add(String role, String content) {
-        entries.add(new Entry(role, content));
+        entries.add(new Entry(null, role, content));
+    }
+
+    public void add(Long seqNo, String role, String content) {
+        entries.add(new Entry(seqNo, role, content));
     }
 
     public boolean isEmpty() {
@@ -40,14 +44,21 @@ public class MultiTurnTranscript {
     }
 
     public static class Entry {
+        private final Long seqNo;
         private final String role;
         private final String content;
 
         public Entry(String role, String content) {
+            this(null, role, content);
+        }
+
+        public Entry(Long seqNo, String role, String content) {
+            this.seqNo = seqNo;
             this.role = role;
             this.content = content;
         }
 
+        public Long getSeqNo() { return seqNo; }
         public String getRole() { return role; }
         public String getContent() { return content; }
     }

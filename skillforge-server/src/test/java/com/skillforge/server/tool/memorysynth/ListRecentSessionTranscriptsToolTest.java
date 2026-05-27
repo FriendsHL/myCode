@@ -7,6 +7,7 @@ import com.skillforge.core.skill.SkillResult;
 import com.skillforge.server.memory.transcript.MemoryTranscriptProperties;
 import com.skillforge.server.memory.transcript.SessionTranscriptChunk;
 import com.skillforge.server.memory.transcript.SessionTranscriptProvider;
+import com.skillforge.server.memory.transcript.SessionTranscriptTurn;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -95,7 +96,11 @@ class ListRecentSessionTranscriptsToolTest {
                 10L,
                 Instant.parse("2026-05-26T10:00:00Z"),
                 2,
-                "[user] hello\n\n[assistant] hi"
+                "[user] hello\n\n[assistant] hi",
+                List.of(
+                        new SessionTranscriptTurn(5L, "user", "hello"),
+                        new SessionTranscriptTurn(7L, "assistant", "hi")
+                )
         );
         when(transcriptProvider.recentTranscripts(42L, 7, 5, 6000)).thenReturn(List.of(chunk));
         ListRecentSessionTranscriptsTool tool = tool();
@@ -115,6 +120,12 @@ class ListRecentSessionTranscriptsToolTest {
         assertThat(first.path("completedAt").asText()).isEqualTo("2026-05-26T10:00:00Z");
         assertThat(first.path("turnCount").asInt()).isEqualTo(2);
         assertThat(first.path("transcript").asText()).contains("[user] hello");
+        JsonNode turns = first.path("turns");
+        assertThat(turns).hasSize(2);
+        assertThat(turns.get(0).path("seqNo").asLong()).isEqualTo(5L);
+        assertThat(turns.get(0).path("role").asText()).isEqualTo("user");
+        assertThat(turns.get(0).path("text").asText()).isEqualTo("hello");
+        assertThat(turns.get(1).path("seqNo").asLong()).isEqualTo(7L);
     }
 
     @Test

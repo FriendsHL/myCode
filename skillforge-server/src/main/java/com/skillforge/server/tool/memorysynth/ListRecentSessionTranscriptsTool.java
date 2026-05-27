@@ -8,6 +8,7 @@ import com.skillforge.core.skill.Tool;
 import com.skillforge.server.memory.transcript.MemoryTranscriptProperties;
 import com.skillforge.server.memory.transcript.SessionTranscriptChunk;
 import com.skillforge.server.memory.transcript.SessionTranscriptProvider;
+import com.skillforge.server.memory.transcript.SessionTranscriptTurn;
 import com.skillforge.server.util.SkillInputUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -111,6 +112,7 @@ public class ListRecentSessionTranscriptsTool implements Tool {
                 dto.put("completedAt", chunk.completedAt() != null ? chunk.completedAt().toString() : null);
                 dto.put("turnCount", chunk.turnCount());
                 dto.put("transcript", chunk.transcript());
+                dto.put("turns", toTurnDtos(chunk.turns()));
                 transcriptDtos.add(dto);
             }
 
@@ -124,5 +126,17 @@ public class ListRecentSessionTranscriptsTool implements Tool {
             log.error("ListRecentSessionTranscriptsTool execute failed", e);
             return SkillResult.error("ListRecentSessionTranscripts failed; see server logs");
         }
+    }
+
+    private static List<Map<String, Object>> toTurnDtos(List<SessionTranscriptTurn> turns) {
+        List<Map<String, Object>> dtos = new ArrayList<>(turns.size());
+        for (SessionTranscriptTurn turn : turns) {
+            Map<String, Object> dto = new LinkedHashMap<>();
+            dto.put("seqNo", turn.seqNo());
+            dto.put("role", turn.role());
+            dto.put("text", turn.text());
+            dtos.add(dto);
+        }
+        return dtos;
     }
 }

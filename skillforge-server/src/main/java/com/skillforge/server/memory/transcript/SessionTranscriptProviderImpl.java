@@ -97,8 +97,30 @@ public class SessionTranscriptProviderImpl implements SessionTranscriptProvider 
                 session.getAgentId(),
                 session.getCompletedAt(),
                 transcript.getEntries().size(),
-                truncate(rendered, safeChars)
+                truncate(rendered, safeChars),
+                buildTurns(transcript, safeChars)
         );
+    }
+
+    private static List<SessionTranscriptTurn> buildTurns(MultiTurnTranscript transcript, int safeChars) {
+        List<SessionTranscriptTurn> turns = new ArrayList<>();
+        int renderedLength = 0;
+        for (MultiTurnTranscript.Entry entry : transcript.getEntries()) {
+            if (entry.getSeqNo() == null) {
+                continue;
+            }
+            String role = entry.getRole();
+            String text = entry.getContent() == null ? "" : entry.getContent();
+            String prefix = (turns.isEmpty() ? "" : "\n\n") + "[" + role + "] ";
+            int remaining = safeChars - renderedLength - prefix.length();
+            if (remaining <= 0) {
+                break;
+            }
+            String safeText = text.length() > remaining ? text.substring(0, remaining) : text;
+            turns.add(new SessionTranscriptTurn(entry.getSeqNo(), role, safeText));
+            renderedLength += prefix.length() + safeText.length();
+        }
+        return turns;
     }
 
     private static int clamp(int value, int min, int max) {
