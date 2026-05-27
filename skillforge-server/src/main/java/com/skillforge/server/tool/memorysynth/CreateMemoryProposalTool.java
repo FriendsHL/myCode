@@ -303,9 +303,6 @@ public class CreateMemoryProposalTool implements Tool {
             if (!evidence.ok()) {
                 return ProposalDraft.fail(evidence.error());
             }
-            if (!evidence.hasSessionEvidence()) {
-                return ProposalDraft.fail("reflection with empty sourceMemoryIds requires session evidence");
-            }
         }
         // De-dup the input array itself (LLM occasionally repeats).
         Set<Long> dedup = new LinkedHashSet<>(sourceIds);
@@ -483,31 +480,38 @@ public class CreateMemoryProposalTool implements Tool {
             return EvidenceValidation.fail("transcript-backed reflection requires serializable evidence array");
         }
         try {
-            String json = list.isEmpty() ? null : objectMapper.writeValueAsString(list);
-            return new EvidenceValidation(true, null, json, hasSessionEvidence(list));
+            if (list.isEmpty()) {
+                return EvidenceValidation.fail("reflection with empty sourceMemoryIds requires session evidence");
+            }
+            String json = objectMapper.writeValueAsString(list);
+            if (!allSessionEvidence(list)) {
+                return EvidenceValidation.fail(
+                        "transcript-backed reflection requires session evidence and requires only valid session evidence");
+            }
+            return new EvidenceValidation(true, null, json);
         } catch (Exception e) {
             log.debug("CreateMemoryProposalTool failed to serialize evidence: {}", e.getMessage());
             return EvidenceValidation.fail("transcript-backed reflection requires serializable evidence array");
         }
     }
 
-    private static boolean hasSessionEvidence(List<?> list) {
+    private static boolean allSessionEvidence(List<?> list) {
         for (Object item : list) {
             if (!(item instanceof Map<?, ?> evidence)) {
-                continue;
+                return false;
             }
             String source = asString(evidence.get("source"));
             String sessionId = asString(evidence.get("sessionId"));
             Object seqNo = evidence.get("seqNo");
             String quote = asString(evidence.get("quote"));
-            if ("session".equals(source)
-                    && sessionId != null && !sessionId.isBlank()
-                    && isIntegralNumber(seqNo)
-                    && quote != null && !quote.isBlank()) {
-                return true;
+            if (!"session".equals(source)
+                    || sessionId == null || sessionId.isBlank()
+                    || !isIntegralNumber(seqNo)
+                    || quote == null || quote.isBlank()) {
+                return false;
             }
         }
-        return false;
+        return true;
     }
 
     private static boolean isIntegralNumber(Object value) {
@@ -588,14 +592,13 @@ public class CreateMemoryProposalTool implements Tool {
 
     private record EvidenceValidation(boolean ok,
                                       String error,
-                                      String json,
-                                      boolean hasSessionEvidence) {
+                                      String json) {
         static EvidenceValidation empty() {
-            return new EvidenceValidation(true, null, null, false);
+            return new EvidenceValidation(false, "reflection with empty sourceMemoryIds requires session evidence", null);
         }
 
         static EvidenceValidation fail(String error) {
-            return new EvidenceValidation(false, error, null, false);
+            return new EvidenceValidation(false, error, null);
         }
     }
 

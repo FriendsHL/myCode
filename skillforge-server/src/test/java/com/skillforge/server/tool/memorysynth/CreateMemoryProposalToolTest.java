@@ -507,6 +507,40 @@ class CreateMemoryProposalToolTest {
     }
 
     @Test
+    @DisplayName("transcript-backed reflection rejects mixed valid and invalid evidence")
+    void execute_transcriptReflectionMixedEvidence_rejected() throws Exception {
+        SkillResult result = tool.execute(Map.of(
+                "synthesisRunId", "dream-mixed-evidence",
+                "userId", 42L,
+                "proposals", List.of(Map.of(
+                        "type", "reflection",
+                        "sourceMemoryIds", List.of(),
+                        "suggestedContent", "User prefers implementation plans.",
+                        "evidence", List.of(
+                                Map.of(
+                                        "source", "session",
+                                        "sessionId", "sess-1",
+                                        "seqNo", 7,
+                                        "quote", "plan first"
+                                ),
+                                Map.of(
+                                        "source", "memory",
+                                        "sessionId", "sess-2",
+                                        "seqNo", 8,
+                                        "quote", "not valid transcript evidence"
+                                )
+                        )
+                ))
+        ), new SkillContext(null, "curator-session", 0L));
+
+        JsonNode root = objectMapper.readTree(result.getOutput());
+        assertThat(root.path("createdCount").asInt()).isZero();
+        assertThat(root.path("rejections").get(0).path("error").asText())
+                .contains("requires only valid session evidence");
+        verify(proposalRepository, never()).saveAll(anyList());
+    }
+
+    @Test
     @DisplayName("Gap-2 regression: non-SYSTEM context still rejected on cross-user mismatch")
     void execute_regularContext_acrossUsers_stillDenied() throws Exception {
         // Regular user 2 context trying to author a proposal on user 1's memories — denied.
