@@ -73,10 +73,13 @@ import com.skillforge.server.service.MemoryService;
 import com.skillforge.server.service.ScheduledTaskService;
 import com.skillforge.server.service.SessionService;
 import com.skillforge.server.service.UserConfigService;
+import com.skillforge.server.memory.transcript.MemoryTranscriptProperties;
+import com.skillforge.server.memory.transcript.SessionTranscriptProvider;
 import com.skillforge.server.tool.memorysynth.ClusterMemoriesTool;
 import com.skillforge.server.tool.memorysynth.CreateMemoryProposalTool;
 import com.skillforge.server.tool.memorysynth.ListActiveUsersTool;
 import com.skillforge.server.tool.memorysynth.ListMemoryCandidatesTool;
+import com.skillforge.server.tool.memorysynth.ListRecentSessionTranscriptsTool;
 import com.skillforge.server.tool.scheduling.CreateScheduledTaskTool;
 import com.skillforge.server.tool.scheduling.DeleteScheduledTaskTool;
 import com.skillforge.server.tool.scheduling.GetScheduledTaskTool;
@@ -121,7 +124,8 @@ import java.util.concurrent.TimeUnit;
         SkillImportProperties.class,
         SkillSecurityScanProperties.class,
         EvalUserSimulatorProperties.class,
-        WebToolsProperties.class
+        WebToolsProperties.class,
+        MemoryTranscriptProperties.class
 })
 public class SkillForgeConfig {
 
@@ -728,6 +732,19 @@ public class SkillForgeConfig {
         ListMemoryCandidatesTool tool = new ListMemoryCandidatesTool(memoryRepository, objectMapper);
         skillRegistry.registerTool(tool);
         log.info("Registered ListMemoryCandidatesTool into SkillRegistry");
+        return tool;
+    }
+
+    @Bean
+    public ListRecentSessionTranscriptsTool listRecentSessionTranscriptsTool(
+            SessionTranscriptProvider transcriptProvider,
+            MemoryTranscriptProperties memoryTranscriptProperties,
+            ObjectMapper objectMapper,
+            SkillRegistry skillRegistry) {
+        ListRecentSessionTranscriptsTool tool = new ListRecentSessionTranscriptsTool(
+                transcriptProvider, memoryTranscriptProperties, objectMapper);
+        skillRegistry.registerTool(tool);
+        log.info("Registered ListRecentSessionTranscriptsTool into SkillRegistry");
         return tool;
     }
 
