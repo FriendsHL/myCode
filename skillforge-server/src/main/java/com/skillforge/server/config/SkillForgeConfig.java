@@ -75,11 +75,13 @@ import com.skillforge.server.service.SessionService;
 import com.skillforge.server.service.UserConfigService;
 import com.skillforge.server.memory.transcript.MemoryTranscriptProperties;
 import com.skillforge.server.memory.transcript.SessionTranscriptProvider;
+import com.skillforge.server.memory.context.MemoryContextProvider;
 import com.skillforge.server.tool.memorysynth.ClusterMemoriesTool;
 import com.skillforge.server.tool.memorysynth.CreateMemoryProposalTool;
 import com.skillforge.server.tool.memorysynth.ListActiveUsersTool;
 import com.skillforge.server.tool.memorysynth.ListMemoryCandidatesTool;
 import com.skillforge.server.tool.memorysynth.ListRecentSessionTranscriptsTool;
+import com.skillforge.server.tool.memorycontext.ListRelevantMemoriesTool;
 import com.skillforge.server.tool.scheduling.CreateScheduledTaskTool;
 import com.skillforge.server.tool.scheduling.DeleteScheduledTaskTool;
 import com.skillforge.server.tool.scheduling.GetScheduledTaskTool;
@@ -770,6 +772,17 @@ public class SkillForgeConfig {
                 memoryProposalRepository, memoryRepository, objectMapper);
         skillRegistry.registerTool(tool);
         log.info("Registered CreateMemoryProposalTool into SkillRegistry");
+        return tool;
+    }
+
+    @Bean
+    public ListRelevantMemoriesTool listRelevantMemoriesTool(
+            MemoryContextProvider memoryContextProvider,
+            ObjectMapper objectMapper,
+            SkillRegistry skillRegistry) {
+        ListRelevantMemoriesTool tool = new ListRelevantMemoriesTool(memoryContextProvider, objectMapper);
+        skillRegistry.registerTool(tool);
+        log.info("Registered ListRelevantMemoriesTool into SkillRegistry");
         return tool;
     }
 
