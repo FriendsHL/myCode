@@ -407,6 +407,62 @@ class CreateMemoryProposalToolTest {
     }
 
     @Test
+    @DisplayName("transcript-backed reflection rejects floating-point seqNo")
+    void execute_transcriptReflectionFloatingSeqNo_rejected() throws Exception {
+        SkillResult result = tool.execute(Map.of(
+                "synthesisRunId", "dream-float-seq",
+                "userId", 42L,
+                "proposals", List.of(Map.of(
+                        "type", "reflection",
+                        "sourceMemoryIds", List.of(),
+                        "suggestedContent", "User prefers implementation plans.",
+                        "evidence", List.of(Map.of(
+                                "source", "session",
+                                "sessionId", "sess-1",
+                                "seqNo", 7.0d,
+                                "quote", "plan first"
+                        ))
+                ))
+        ), new SkillContext(null, "curator-session", 0L));
+
+        JsonNode root = objectMapper.readTree(result.getOutput());
+        assertThat(root.path("createdCount").asInt()).isZero();
+        assertThat(root.path("rejections").get(0).path("error").asText())
+                .contains("requires only valid session evidence");
+        verify(proposalRepository, never()).saveAll(anyList());
+    }
+
+    @Test
+    @DisplayName("memory-backed reflection persists non-session evidence array")
+    void execute_memoryBackedReflectionWithGenericEvidence_persistsEvidence() throws Exception {
+        stubMemoryFindAllById(42L, 1L, 2L);
+
+        SkillResult result = tool.execute(Map.of(
+                "synthesisRunId", "dream-memory-evidence",
+                "proposals", List.of(Map.of(
+                        "type", "reflection",
+                        "sourceMemoryIds", List.of(1L, 2L),
+                        "suggestedContent", "User prefers implementation plans.",
+                        "evidence", List.of(Map.of(
+                                "source", "memory",
+                                "memoryId", 1,
+                                "quote", "existing memory evidence"
+                        ))
+                ))
+        ), new SkillContext(null, "curator-session", 42L));
+
+        assertThat(result.isSuccess()).isTrue();
+        JsonNode root = objectMapper.readTree(result.getOutput());
+        assertThat(root.path("createdCount").asInt()).isEqualTo(1);
+
+        ArgumentCaptor<List<MemoryProposalEntity>> cap = ArgumentCaptor.forClass(List.class);
+        verify(proposalRepository).saveAll(cap.capture());
+        MemoryProposalEntity saved = cap.getValue().get(0);
+        assertThat(saved.getEvidenceJson()).contains("\"source\":\"memory\"");
+        assertThat(saved.getEvidenceJson()).contains("\"memoryId\":1");
+    }
+
+    @Test
     @DisplayName("transcript-backed reflection requires positive explicit userId")
     void execute_transcriptReflectionMissingOrInvalidUserId_rejected() throws Exception {
         Map<String, Object> proposal = Map.of(

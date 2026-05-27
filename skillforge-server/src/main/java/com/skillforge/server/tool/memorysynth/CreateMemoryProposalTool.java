@@ -14,6 +14,8 @@ import com.skillforge.server.util.SkillInputUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -289,7 +291,7 @@ public class CreateMemoryProposalTool implements Tool {
         }
 
         Object evidenceObj = p.get("evidence");
-        EvidenceValidation evidence = validateEvidence(evidenceObj);
+        EvidenceSerialization evidence = serializeEvidence(evidenceObj);
 
         Object sourceMemoryIdsObj = p.get("sourceMemoryIds");
         if (!isArrayLike(sourceMemoryIdsObj)) {
@@ -300,8 +302,9 @@ public class CreateMemoryProposalTool implements Tool {
             if (!MemoryProposalEntity.TYPE_REFLECTION.equals(type)) {
                 return ProposalDraft.fail("sourceMemoryIds may be empty only for transcript-backed reflection proposals");
             }
-            if (!evidence.ok()) {
-                return ProposalDraft.fail(evidence.error());
+            EvidenceValidation strictEvidence = validateStrictSessionEvidence(evidenceObj, evidence);
+            if (!strictEvidence.ok()) {
+                return ProposalDraft.fail(strictEvidence.error());
             }
         }
         // De-dup the input array itself (LLM occasionally repeats).
@@ -472,27 +475,41 @@ public class CreateMemoryProposalTool implements Tool {
         }
     }
 
-    private EvidenceValidation validateEvidence(Object evidenceObj) {
+    private EvidenceSerialization serializeEvidence(Object evidenceObj) {
         if (evidenceObj == null) {
-            return EvidenceValidation.empty();
+            return EvidenceSerialization.empty();
         }
         if (!(evidenceObj instanceof List<?> list)) {
-            return EvidenceValidation.fail("transcript-backed reflection requires serializable evidence array");
+            return EvidenceSerialization.malformed();
         }
         try {
             if (list.isEmpty()) {
-                return EvidenceValidation.fail("reflection with empty sourceMemoryIds requires session evidence");
+                return EvidenceSerialization.empty();
             }
             String json = objectMapper.writeValueAsString(list);
-            if (!allSessionEvidence(list)) {
-                return EvidenceValidation.fail(
-                        "transcript-backed reflection requires session evidence and requires only valid session evidence");
-            }
-            return new EvidenceValidation(true, null, json);
+            return EvidenceSerialization.serialized(list, json);
         } catch (Exception e) {
             log.debug("CreateMemoryProposalTool failed to serialize evidence: {}", e.getMessage());
+            return EvidenceSerialization.malformed();
+        }
+    }
+
+    private static EvidenceValidation validateStrictSessionEvidence(Object evidenceObj,
+                                                                    EvidenceSerialization evidence) {
+        if (!(evidenceObj instanceof List<?>)) {
             return EvidenceValidation.fail("transcript-backed reflection requires serializable evidence array");
         }
+        if (!evidence.serializable()) {
+            return EvidenceValidation.fail("transcript-backed reflection requires serializable evidence array");
+        }
+        if (evidence.items().isEmpty()) {
+            return EvidenceValidation.fail("reflection with empty sourceMemoryIds requires session evidence");
+        }
+        if (!allSessionEvidence(evidence.items())) {
+            return EvidenceValidation.fail(
+                    "transcript-backed reflection requires session evidence and requires only valid session evidence");
+        }
+        return EvidenceValidation.valid();
     }
 
     private static boolean allSessionEvidence(List<?> list) {
@@ -515,11 +532,12 @@ public class CreateMemoryProposalTool implements Tool {
     }
 
     private static boolean isIntegralNumber(Object value) {
-        if (!(value instanceof Number number)) {
-            return false;
-        }
-        double d = number.doubleValue();
-        return Double.isFinite(d) && Math.rint(d) == d;
+        return value instanceof Byte
+                || value instanceof Short
+                || value instanceof Integer
+                || value instanceof Long
+                || value instanceof BigInteger
+                || (value instanceof BigDecimal bd && bd.scale() <= 0);
     }
 
     private static List<Long> parseLongList(Object raw) {
@@ -594,15 +612,30 @@ public class CreateMemoryProposalTool implements Tool {
         }
     }
 
+    private record EvidenceSerialization(boolean serializable,
+                                         List<?> items,
+                                         String json) {
+        static EvidenceSerialization empty() {
+            return new EvidenceSerialization(true, List.of(), null);
+        }
+
+        static EvidenceSerialization serialized(List<?> items, String json) {
+            return new EvidenceSerialization(true, items, json);
+        }
+
+        static EvidenceSerialization malformed() {
+            return new EvidenceSerialization(false, List.of(), null);
+        }
+    }
+
     private record EvidenceValidation(boolean ok,
-                                      String error,
-                                      String json) {
-        static EvidenceValidation empty() {
-            return new EvidenceValidation(false, "reflection with empty sourceMemoryIds requires session evidence", null);
+                                      String error) {
+        static EvidenceValidation valid() {
+            return new EvidenceValidation(true, null);
         }
 
         static EvidenceValidation fail(String error) {
-            return new EvidenceValidation(false, error, null);
+            return new EvidenceValidation(false, error);
         }
     }
 
