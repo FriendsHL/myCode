@@ -122,7 +122,7 @@ public class ListRecentSessionTranscriptsTool implements Tool {
             return SkillResult.success(objectMapper.writeValueAsString(payload));
         } catch (Exception e) {
             log.error("ListRecentSessionTranscriptsTool execute failed", e);
-            return SkillResult.error("ListRecentSessionTranscripts error: " + e.getMessage());
+            return SkillResult.error("ListRecentSessionTranscripts failed; see server logs");
         }
     }
 }

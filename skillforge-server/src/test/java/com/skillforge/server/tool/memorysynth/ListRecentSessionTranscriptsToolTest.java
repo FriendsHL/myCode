@@ -117,6 +117,20 @@ class ListRecentSessionTranscriptsToolTest {
         assertThat(first.path("transcript").asText()).contains("[user] hello");
     }
 
+    @Test
+    @DisplayName("provider exception returns sanitized generic error")
+    void execute_providerThrows_returnsSanitizedError() {
+        when(transcriptProvider.recentTranscripts(42L, 7, 5, 6000))
+                .thenThrow(new RuntimeException("SQL error: relation t_secret does not exist /tmp/foo"));
+        ListRecentSessionTranscriptsTool tool = tool();
+
+        SkillResult result = tool.execute(Map.of("userId", 42L), new SkillContext(null, "s1", 42L));
+
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.getError()).contains("ListRecentSessionTranscripts failed; see server logs");
+        assertThat(result.getError()).doesNotContain("SQL", "t_secret", "/tmp/foo");
+    }
+
     private ListRecentSessionTranscriptsTool tool() {
         return new ListRecentSessionTranscriptsTool(
                 transcriptProvider,
