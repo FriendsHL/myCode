@@ -1,8 +1,8 @@
 # WEB-TOOLS-HARDENING — WebSearch / WebFetch 稳定性 + 信息保留升级
 
 > 创建：2026-05-26
-> 更新：2026-05-27（按用户最终拍板进入 Mid 实现）
-> 状态：implementing
+> 更新：2026-05-27（V1 交付完成 + 归档；commit `1be8f7d`；mvn -pl skillforge-tools test 56/0/0 + 2 skipped (live smoke 需真 API key) → BUILD SUCCESS）
+> 状态：done
 > 模式：Mid
 
 ## 决策
