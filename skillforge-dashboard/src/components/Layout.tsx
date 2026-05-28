@@ -33,6 +33,7 @@ const primaryNav: NavItem[] = [
   { key: 'channels', path: '/channels', label: 'Channels' },
   { key: 'tasks', path: '/tasks', label: 'Tasks' },
   { key: 'insights', path: '/insights/patterns', label: 'Optimization' },
+  { key: 'flywheel-runs', path: '/flywheel-runs', label: 'Flywheel Runs' },
 ];
 
 const paletteItems: PaletteItem[] = primaryNav.map((i) => ({
