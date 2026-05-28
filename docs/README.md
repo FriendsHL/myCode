@@ -1,6 +1,6 @@
 # SkillForge 文档
 
-> 更新于：2026-05-26
+> 更新于：2026-05-29（AUTOEVOLVING-MASTER 总包 + V1 子包起；OPT-LOOP-FRAMEWORK Sprint 2/4 rollback 归档）
 > Agent 规则：先读这里，再只打开当前任务链接到的文档。
 
 编辑 docs 前，先读 [DOCS-GOVERNANCE.md](DOCS-GOVERNANCE.md)。
@@ -19,7 +19,8 @@
 
 | ID | 标题 | 状态 | 需求包 | MRD | PRD | 技术方案 | 交付 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| **OPT-LOOP-FRAMEWORK** V1 | 飞轮编排框架抽取 + Run 实体泛化：基于 OPT-REPORT-V1 现成"orchestrator agent + Run + Dashboard + WS push"模式扩展。`OptReportEntity → FlywheelRunEntity`（rename + 补 trigger_source / input_json / loop_kind 3 列 + 兼容视图）+ 抽 `OrchestratorAgentExecutor` Java framework + 新 `DispatchOrchestrationStep` Tool 替代 3 个 orchestrator agent prompt 手写 SubAgent dispatch 段。V1 只接管 memory-curator 验证 framework + 新 `/flywheel-runs` dashboard page。**前置**：DREAMING V1 先 ship + 稳定 1 周（避 memory-curator 双重改造）。**取代旧作废 FLYWHEEL-ORCHESTRATION-DSL**（YAML DSL 方向基于错的现状理解被 git checkout 丢掉）| prd-draft | [需求包](requirements/active/2026-05-27-OPT-LOOP-FRAMEWORK/index.md) | [MRD](requirements/active/2026-05-27-OPT-LOOP-FRAMEWORK/mrd.md) | [PRD](requirements/active/2026-05-27-OPT-LOOP-FRAMEWORK/prd.md) | [tech-design](requirements/active/2026-05-27-OPT-LOOP-FRAMEWORK/tech-design.md) | — |
+| **AUTOEVOLVING-MASTER** ⭐ | autoEvolving 父需求总包（Karpathy autoresearch 思想根）。整合 4 surface A/B + canary + Iron Law + DREAMING memory + OPT-REPORT + 14-stage flywheel + autoResearch（V2 接入）+ DSL workflow 编排 + 框架自进化（V5）。**V1-V5 ~5-6 个月**。**user 2026-05-29 ratify M1-M7 + DSL 选型 Rhino + L1 sandbox** | overview ratified | [需求包](requirements/active/2026-05-28-AUTOEVOLVING-MASTER/index.md) | — | — | — | — |
+| **AUTOEVOLVING-V1-DSL-DASHBOARD** ⭐ | AUTOEVOLVING V1 = DSL workflow engine（Rhino + L1 capability sandbox + 6 原语严格参考 [Claude Code Workflow](../research-docs/research/claude%20code%20源码/08%20Workflow%20工具与编排指南.md)）+ autoEvolving dashboard `/autoevolving`（KPI + 3 信号源面板 + workflow DAG viz panel 复用 FlywheelObservability + 异常诊断 + 手动触发）。OPT-REPORT 改造为 demo workflow，保留 agent-driven fallback。~4.5 周 4 sprint | prd-draft | [需求包](requirements/active/2026-05-29-AUTOEVOLVING-V1-DSL-DASHBOARD/index.md) | — | [PRD](requirements/active/2026-05-29-AUTOEVOLVING-V1-DSL-DASHBOARD/prd.md) | [tech-design](requirements/active/2026-05-29-AUTOEVOLVING-V1-DSL-DASHBOARD/tech-design.md) + [DSL syntax](requirements/active/2026-05-29-AUTOEVOLVING-V1-DSL-DASHBOARD/dsl-syntax.md) | — |
 
 > 整体方案：[plans/PROD-OPTIMIZATION-FLYWHEEL/plan.md](plans/PROD-OPTIMIZATION-FLYWHEEL/plan.md) —— 数据飞轮 / 优化闭环 6 版本拆分（**V1-V6 全部已交付**，⑤ A/B 自动 trigger 真闭环 prompt+skill 双 surface 通）
 
@@ -31,7 +32,7 @@
 | --- | --- | --- | --- |
 | **OUTCOMES-RUBRIC-FOUNDATION** | 借鉴 Managed Agents Outcomes (`t_rubric` entity + grader 隔离 audit + V2 `AgentLoopEngine` 第 5 轴 exit) — 跟 active DREAMING-MEMORY-EXTENSION 同次研究产出，用户拆开独立 ship | backlog | [需求包](requirements/backlog/OUTCOMES-RUBRIC-FOUNDATION/index.md) |
 | **WEBSEARCH-SEARXNG-BACKEND** | WebSearch SearXNG 自部署 backend。重要不紧急；当每周搜索调用量/费用明显升高，或隐私/内网搜索诉求出现时再启动 | backlog | 见 [todo.md](todo.md) |
-| **AUTORESEARCH-OPTIMIZATION** | AutoResearch 自动调研外部（论文/blog/GitHub via WebSearch+WebFetch）→ 提取业界最佳实践 → 给出 SkillForge 自身的 **skill description / SystemAgent prompt / 代码框架** 优化建议。**跟飞轮 OPT-LOOP-FRAMEWORK 互补**：飞轮看自家生产 session 事实，autoResearch 看外部研究。**优化范围本身需 brainstorm**（3 个粒度优先级 + 互相关系待澄清），可能 phase 拆 | backlog | 见 [todo.md](todo.md) |
+| **AUTORESEARCH-OPTIMIZATION** | **重定位为 AUTOEVOLVING V2 (a) 子需求**：autoResearch 自动调研外部（arxiv + GitHub trending）→ LLM 2-stage 抽取 → Iron Law 人审 → backlog。V1 dashboard 留 placeholder「AUTORESEARCH V1 to ship」，本包 ship 后接入数据。原 PRD 5 D + FR + AC + 4 sprint 划分仍有效 | prd-draft (V2 排期) | [需求包](requirements/active/2026-05-28-AUTORESEARCH-OPTIMIZATION/index.md) / [MRD](requirements/active/2026-05-28-AUTORESEARCH-OPTIMIZATION/mrd.md) / [PRD](requirements/active/2026-05-28-AUTORESEARCH-OPTIMIZATION/prd.md) / [tech-design](requirements/active/2026-05-28-AUTORESEARCH-OPTIMIZATION/tech-design.md) |
 | SEC-1 | Channel 配置加密 | deferred | [需求包](requirements/backlog/SEC-1-channel-config-encryption/index.md) |
 | BUG-G | 防御性 follow-up | deferred | [需求包](requirements/deferred/BUG-G-defensive-hardening/index.md) |
 | P9-4 | Partial compact（按位置切） | deferred | [需求包](requirements/deferred/P9-4-partial-compact/index.md) |
