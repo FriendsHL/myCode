@@ -228,7 +228,7 @@ public class OrchestratorAgentExecutor {
             stepRunIds.add(stepRunId);
             futures.add(future);
             try {
-                dispatchOneWorker(worker, stepRunId, parentSession);
+                dispatchOneWorker(worker, stepRunId, parentRunId, parentSession);
             } catch (RuntimeException dispatchErr) {
                 // Failure during the synchronous dispatch — complete the
                 // future immediately with an error so the aggregate doesn't
@@ -355,7 +355,7 @@ public class OrchestratorAgentExecutor {
     // ─────────────────────────────────────────────────────────────────────
 
     private void dispatchOneWorker(OrchestratorWorkerSpec worker, String stepRunId,
-                                   SessionEntity parentSession) {
+                                   String parentRunId, SessionEntity parentSession) {
         // 1. Register the SubAgentRun row (depth + concurrency guards). May
         //    throw IllegalStateException — caller catches + writes step error.
         SubAgentRegistry.SubAgentRun run = subAgentRegistry.registerRun(
@@ -382,7 +382,24 @@ public class OrchestratorAgentExecutor {
         // 5. Kick off child loop. preserveActiveRoot=true mirrors
         //    SubAgentTool.handleDispatch — child's first turn inherits parent's
         //    active_root_trace_id (already set on child in step 2).
-        chatService.chatAsync(child.getId(), worker.task(),
+        //
+        //    Sprint 2.1 hot-fix: prepend a [FRAMEWORK ...] marker to the worker
+        //    task so the child LLM can extract stepRunId (and parentRunId for
+        //    diagnostics) and pass it back via the RecordOrchestrationStepResult
+        //    Tool. Without this header the main completion path is dead —
+        //    Tool description tells the LLM "stepRunId is provided in your
+        //    kickoff message" but Sprint 2 ship was passing only worker.task()
+        //    raw. Production then silently relied on the
+        //    SessionLoopFinishedEvent fallback listener (matches step row by
+        //    sub_agent_session_id, status payload unstructured), which works
+        //    but loses the structured outputJson the Tool path persists.
+        // Use literal '\n' (not %n) so the marker is deterministic across
+        // platforms — the child LLM parses by splitting on '\n', and CI on
+        // Windows must produce the same kickoff bytes as macOS dev.
+        String taskWithHeader = String.format(
+                "[FRAMEWORK STEP_RUN_ID=%s RUN_ID=%s]\n%s",
+                stepRunId, parentRunId, worker.task());
+        chatService.chatAsync(child.getId(), taskWithHeader,
                 parentSession.getUserId(), true);
 
         log.info("OrchestratorAgentExecutor.dispatchOneWorker: stepRunId={} childSessionId={} "

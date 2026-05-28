@@ -223,12 +223,92 @@ class OrchestratorAgentExecutorTest {
         // Step row backfill — the W-1 critical fix
         verify(flywheelRunService).attachStepSubAgentSession("step-13", "path-b-child");
 
-        // chatAsync was kicked with preserveActiveRoot=true (matches SubAgentTool.handleDispatch)
-        verify(chatService).chatAsync(eq("path-b-child"), eq("task"), eq(parent.getUserId()), eq(true));
+        // chatAsync was kicked with preserveActiveRoot=true (matches SubAgentTool.handleDispatch).
+        // Sprint 2.1 hot-fix: dispatch prepends a [FRAMEWORK STEP_RUN_ID=... RUN_ID=...] header
+        // line before the worker task so the child LLM can extract stepRunId for the
+        // RecordOrchestrationStepResult Tool call. Verify the header is present + the original
+        // task body still trails it.
+        ArgumentCaptor<String> taskCaptor = ArgumentCaptor.forClass(String.class);
+        verify(chatService).chatAsync(eq("path-b-child"), taskCaptor.capture(),
+                eq(parent.getUserId()), eq(true));
+        String dispatchedTask = taskCaptor.getValue();
+        assertThat(dispatchedTask).startsWith("[FRAMEWORK STEP_RUN_ID=step-13 RUN_ID=run-13]");
+        assertThat(dispatchedTask).endsWith("task");
 
         // Cleanup — complete the future so the test doesn't dangle
         executor.completeStep("step-13", new StepResult("step-13", "completed", null, null));
         agg.get(1, TimeUnit.SECONDS);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Sprint 2.1 hot-fix: dispatchOneWorker prepends [FRAMEWORK STEP_RUN_ID=...
+    //   RUN_ID=...] header to the worker task so the child LLM can extract
+    //   stepRunId and call RecordOrchestrationStepResult Tool. Without this
+    //   header the main completion path is dead and production silently
+    //   degrades to the SessionLoopFinishedEvent fallback listener.
+    // ─────────────────────────────────────────────────────────────────────
+    @Test
+    @DisplayName("Sprint 2.1 hot-fix: dispatchOneWorker prepends [FRAMEWORK STEP_RUN_ID=... RUN_ID=...] header to worker task")
+    void hotfix_dispatchOneWorker_prependsFrameworkHeader() throws Exception {
+        SessionEntity parent = parentSession();
+        String parentRunId = "run-hotfix-2026-05-28";
+        String stepA = "step-hotfix-A";
+        String stepB = "step-hotfix-B";
+        when(flywheelRunService.appendStep(eq(parentRunId), anyString())).thenReturn(stepA, stepB);
+        when(subAgentRegistry.registerRun(eq(parent), eq(11L), anyString(), anyString()))
+                .thenReturn(makeRun("rA"));
+        when(subAgentRegistry.registerRun(eq(parent), eq(22L), anyString(), anyString()))
+                .thenReturn(makeRun("rB"));
+        when(sessionService.createSubSession(eq(parent), eq(11L), eq("rA")))
+                .thenReturn(childSession("cA"));
+        when(sessionService.createSubSession(eq(parent), eq(22L), eq("rB")))
+                .thenReturn(childSession("cB"));
+
+        String taskBodyA = "Curate user 42 memory candidates from last 7 days";
+        String taskBodyB = "Backfill attribution windows for session XYZ";
+        OrchestratorWorkerSpec specA = new OrchestratorWorkerSpec(11L, "memory-curator", taskBodyA, "{\"u\":42}", 60);
+        OrchestratorWorkerSpec specB = new OrchestratorWorkerSpec(22L, "attribution-batch", taskBodyB, "{\"s\":\"XYZ\"}", 60);
+
+        CompletableFuture<List<StepResult>> agg = executor.dispatchSubAgents(
+                parentRunId, parent, List.of(specA, specB));
+
+        // Capture every chatAsync invocation to inspect the dispatched task strings.
+        ArgumentCaptor<String> taskCaptor = ArgumentCaptor.forClass(String.class);
+        verify(chatService, times(2)).chatAsync(anyString(), taskCaptor.capture(),
+                eq(parent.getUserId()), eq(true));
+        List<String> dispatchedTasks = taskCaptor.getAllValues();
+        assertThat(dispatchedTasks).hasSize(2);
+
+        // Worker A: header carries stepA + parentRunId, original task body trails after newline.
+        String dispatchedA = dispatchedTasks.get(0);
+        assertThat(dispatchedA)
+                .as("worker A dispatched task must start with [FRAMEWORK ...] header")
+                .startsWith("[FRAMEWORK STEP_RUN_ID=" + stepA + " RUN_ID=" + parentRunId + "]");
+        assertThat(dispatchedA)
+                .as("worker A dispatched task must contain the original task body after the header")
+                .endsWith(taskBodyA);
+        // Header line must end with a newline separator before the task body so the LLM
+        // can split on '\n' and parse the marker without ambiguity.
+        assertThat(dispatchedA).contains("]\n" + taskBodyA);
+
+        // Worker B: header carries stepB + same parentRunId, original task body trails after newline.
+        String dispatchedB = dispatchedTasks.get(1);
+        assertThat(dispatchedB)
+                .as("worker B dispatched task must start with [FRAMEWORK ...] header")
+                .startsWith("[FRAMEWORK STEP_RUN_ID=" + stepB + " RUN_ID=" + parentRunId + "]");
+        assertThat(dispatchedB)
+                .as("worker B dispatched task must contain the original task body after the header")
+                .endsWith(taskBodyB);
+        assertThat(dispatchedB).contains("]\n" + taskBodyB);
+
+        // Same parentRunId echoed in both headers (one parent run drives both workers).
+        assertThat(dispatchedA).contains("RUN_ID=" + parentRunId);
+        assertThat(dispatchedB).contains("RUN_ID=" + parentRunId);
+
+        // Cleanup — complete the futures so the aggregate doesn't dangle.
+        executor.completeStep(stepA, new StepResult(stepA, "completed", null, null));
+        executor.completeStep(stepB, new StepResult(stepB, "completed", null, null));
+        agg.get(2, TimeUnit.SECONDS);
     }
 
     // ─────────────────────────────────────────────────────────────────────

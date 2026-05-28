@@ -76,7 +76,9 @@ public class RecordOrchestrationStepResult implements Tool {
                 + "orchestrator worker run. Persists your structured outputJson + terminal "
                 + "status onto t_flywheel_run_step and unblocks the parent orchestrator that "
                 + "is waiting on DispatchOrchestrationStep. stepRunId is provided in your "
-                + "kickoff message. status defaults to 'completed'; pass status='error' + "
+                + "first user message as a [FRAMEWORK STEP_RUN_ID=<uuid> RUN_ID=<uuid>] header "
+                + "line — parse that header and pass the STEP_RUN_ID value verbatim as the "
+                + "stepRunId argument. status defaults to 'completed'; pass status='error' + "
                 + "errorReason when the run failed mid-way. outputJson is your free-schema "
                 + "result payload (e.g. {memoryProposalIds:[...]} for memory-curator).";
     }
