@@ -1,6 +1,8 @@
 package com.skillforge.server.optreport;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.skillforge.server.bootstrap.SystemAgentNames;
 import com.skillforge.server.entity.AgentEntity;
 import com.skillforge.server.entity.SessionEntity;
@@ -11,6 +13,7 @@ import com.skillforge.server.repository.AgentRepository;
 import com.skillforge.server.service.ChatService;
 import com.skillforge.server.service.SessionService;
 import com.skillforge.server.websocket.UserWebSocketHandler;
+import com.skillforge.workflow.WorkflowRunnerService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -46,15 +49,21 @@ class OptReportServiceTest {
     @Mock private SessionService sessionService;
     @Mock private ChatService chatService;
     @Mock private UserWebSocketHandler userWebSocketHandler;
+    @Mock private WorkflowRunnerService workflowRunnerService;
 
     private ObjectMapper objectMapper;
     private OptReportService service;
 
     @BeforeEach
     void setUp() {
-        objectMapper = new ObjectMapper();
+        // java.md footgun #1: register JavaTimeModule so Instant fields
+        // (FlywheelRunEntity.updatedAt) serialize correctly via this ObjectMapper.
+        objectMapper = new ObjectMapper()
+                .registerModule(new JavaTimeModule())
+                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        // useWorkflow=false → legacy agent-driven path under test (Sprint 3 default).
         service = new OptReportService(runRepository, flywheelRunService, agentRepository, sessionService,
-                chatService, userWebSocketHandler, objectMapper);
+                chatService, userWebSocketHandler, objectMapper, workflowRunnerService, false);
     }
 
     @Test
@@ -135,6 +144,38 @@ class OptReportServiceTest {
         assertThatThrownBy(() -> service.startReport(7L, 7))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("report-generator");
+    }
+
+    @Test
+    @DisplayName("startReport[useWorkflow=true]: routes through WorkflowRunnerService.startRun, leaves legacy path untouched")
+    void startReport_workflowRoute() {
+        OptReportService workflowService = new OptReportService(runRepository, flywheelRunService,
+                agentRepository, sessionService, chatService, userWebSocketHandler, objectMapper,
+                workflowRunnerService, true);
+
+        AgentEntity target = newAgent(7L, "design-agent");
+        when(agentRepository.findById(7L)).thenReturn(Optional.of(target));
+        when(workflowRunnerService.startRun(eq("opt-report"), any(), eq(OptReportService.SYSTEM_USER_ID)))
+                .thenReturn("wf-run-1");
+        FlywheelRunEntity wfRun = newRun("wf-run-1", 7L, FlywheelRunEntity.STATUS_RUNNING);
+        wfRun.setLoopKind("workflow");
+        when(runRepository.findById("wf-run-1")).thenReturn(Optional.of(wfRun));
+
+        FlywheelRunEntity result = workflowService.startReport(7L, 7);
+
+        assertThat(result.getId()).isEqualTo("wf-run-1");
+        assertThat(result.getLoopKind()).isEqualTo("workflow");
+
+        // workflow args carry agentId + windowDays
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> argsCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(workflowRunnerService).startRun(eq("opt-report"), argsCaptor.capture(),
+                eq(OptReportService.SYSTEM_USER_ID));
+        assertThat(argsCaptor.getValue()).containsEntry("agentId", 7L).containsEntry("windowDays", 7);
+
+        // legacy agent-driven path is NOT exercised
+        verify(flywheelRunService, never()).startRun(anyString(), anyString(), any(), anyLong(), anyInt());
+        verify(chatService, never()).chatAsync(anyString(), anyString(), anyLong());
     }
 
     @Test

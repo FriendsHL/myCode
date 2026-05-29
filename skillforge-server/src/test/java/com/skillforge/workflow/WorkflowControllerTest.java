@@ -227,7 +227,16 @@ class WorkflowControllerTest {
         gate.setStepKind(FlywheelRunStepEntity.STEP_KIND_HUMAN_APPROVE);
         gate.setStatus(FlywheelRunStepEntity.STATUS_PENDING);
         gate.setStepInputJson("{\"agentSlug\":\"reviewer\"}");
-        when(flywheelRunService.listStepsByRunId("run-7")).thenReturn(List.of(gate));
+
+        // Sprint 3 B2: a subagent_dispatch step carrying a phase → DTO surfaces it.
+        FlywheelRunStepEntity dispatch = new FlywheelRunStepEntity();
+        dispatch.setId("step-2");
+        dispatch.setRunId("run-7");
+        dispatch.setStepIndex(2);
+        dispatch.setStepKind(FlywheelRunStepEntity.STEP_KIND_SUBAGENT_DISPATCH);
+        dispatch.setStatus(FlywheelRunStepEntity.STATUS_COMPLETED);
+        dispatch.setStepInputJson("{\"phase\":\"Annotate\",\"agentSlug\":\"session-batch-annotator\",\"stepIndex\":2}");
+        when(flywheelRunService.listStepsByRunId("run-7")).thenReturn(List.of(gate, dispatch));
 
         mvc.perform(get("/api/workflows/runs/run-7"))
                 .andExpect(status().isOk())
@@ -239,6 +248,11 @@ class WorkflowControllerTest {
                 .andExpect(jsonPath("$.steps[0].stepIndex").value(1))
                 .andExpect(jsonPath("$.steps[0].stepKind").value("human_approve"))
                 .andExpect(jsonPath("$.steps[0].status").value("pending"))
-                .andExpect(jsonPath("$.steps[0].agentSlug").value("reviewer"));
+                .andExpect(jsonPath("$.steps[0].agentSlug").value("reviewer"))
+                // gate step has no phase in its step_input_json → null
+                .andExpect(jsonPath("$.steps[0].phase").doesNotExist())
+                // B2: dispatch step's phase is surfaced for the FE DAG grouping
+                .andExpect(jsonPath("$.steps[1].phase").value("Annotate"))
+                .andExpect(jsonPath("$.steps[1].agentSlug").value("session-batch-annotator"));
     }
 }

@@ -350,13 +350,43 @@ public class WorkflowRunnerService {
         return node;
     }
 
-    private String serializeResult(Object result) {
-        Map<String, Object> summary = new LinkedHashMap<>();
-        summary.put("result", String.valueOf(result));
+    /**
+     * Serialize a workflow's JS return value into {@code summary_json} (Sprint 3
+     * soft-point ②). A structured return ({@code Map}/{@code List} — the common
+     * case, e.g. OPT-REPORT's {@code return { summary, ... }}) is written as
+     * real structured JSON via the Spring-managed {@link ObjectMapper}
+     * (JavaTimeModule configured — java.md footgun #1), so downstream consumers
+     * (AC-8 {@code topIssues} query / FE) can read nested fields. A scalar /
+     * String / null return keeps the legacy {@code {"result": "..."}} wrapper for
+     * back-compat. Pre-Sprint-3 this method String.valueOf'd everything, turning
+     * a Map into a {@code {"result":"{summary={...}}"}} junk string.
+     *
+     * @throws IllegalStateException if serialization fails — the caller
+     *         ({@link #runWorkflowBody}) must let this propagate to its
+     *         {@code catch(Exception)} → {@code markError}, so a serialization
+     *         failure transitions the run to {@code error} rather than silently
+     *         marking it {@code completed} with an empty {@code "{}"} summary.
+     */
+    String serializeResult(Object result) {
         try {
+            if (result instanceof Map<?, ?> || result instanceof Iterable<?>) {
+                return objectMapper.writeValueAsString(result);
+            }
+            Map<String, Object> summary = new LinkedHashMap<>();
+            summary.put("result", result == null ? null : String.valueOf(result));
             return objectMapper.writeValueAsString(summary);
         } catch (Exception e) {
-            return "{}";
+            // Do NOT swallow to "{}" — that marks the run completed with an empty
+            // summary (AC-8 topIssues query returns empty, FE shows a blank report
+            // with no error). Re-throw so runWorkflowBody's catch(Exception) hits
+            // markError and the run transitions to 'error' instead of falsely
+            // 'completed' (Sprint 3 r1 code-W1 / java-W2).
+            log.warn("WorkflowRunnerService.serializeResult: failed to serialize result type {}: {}",
+                    result == null ? "null" : result.getClass().getName(), e.getMessage());
+            throw new IllegalStateException(
+                    "serializeResult failed for type "
+                            + (result == null ? "null" : result.getClass().getName())
+                            + ": " + e.getMessage(), e);
         }
     }
 }

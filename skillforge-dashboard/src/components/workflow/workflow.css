@@ -1,0 +1,401 @@
+/*
+ * AUTOEVOLVING V1 Sprint 3 — workflow run DAG panel.
+ * Linear / Raycast dark-precision idiom (design.md): subtle depth, single accent,
+ * semantic status colour, designed hover/active states.
+ */
+
+.wf-panel {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: var(--sp-4, 16px);
+  height: 100%;
+  min-height: 0;
+  padding: var(--sp-4, 16px);
+  box-sizing: border-box;
+}
+
+/* ───────────────── runs list (left) ───────────────── */
+
+.wf-runs-list {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md, 8px);
+  background: var(--bg-card);
+  overflow: hidden;
+}
+
+.wf-runs-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.wf-runs-head-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--fg-1);
+}
+
+.wf-runs-head-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-4);
+  background: var(--bg-elev);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.wf-runs-hint {
+  padding: 14px;
+  font-size: 12px;
+  color: var(--fg-3);
+}
+
+.wf-runs-hint--error {
+  color: var(--color-error);
+}
+
+.wf-runs-ul {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.wf-run-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  padding: 10px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.wf-run-row:hover {
+  background: var(--bg-hover);
+}
+
+.wf-run-row--active {
+  background: var(--bg-elev);
+  border-color: var(--accent-primary);
+}
+
+.wf-run-row-top,
+.wf-run-row-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.wf-run-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wf-run-id {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-4);
+}
+
+.wf-run-time {
+  font-size: 11px;
+  color: var(--fg-4);
+}
+
+/* ───────────────── status chip ───────────────── */
+
+.wf-chip {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+
+.wf-chip--pending {
+  color: var(--fg-3);
+  background: var(--bg-elev);
+  border-color: var(--border-subtle);
+}
+
+.wf-chip--running {
+  color: var(--accent-primary);
+  background: color-mix(in srgb, var(--accent-primary) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent-primary) 40%, transparent);
+}
+
+.wf-chip--completed {
+  color: var(--color-success);
+  background: color-mix(in srgb, var(--color-success) 14%, transparent);
+  border-color: color-mix(in srgb, var(--color-success) 40%, transparent);
+}
+
+.wf-chip--error {
+  color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 14%, transparent);
+  border-color: color-mix(in srgb, var(--color-error) 40%, transparent);
+}
+
+.wf-chip--paused {
+  color: var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 16%, transparent);
+  border-color: color-mix(in srgb, var(--color-warning) 45%, transparent);
+}
+
+/* ───────────────── detail (right) ───────────────── */
+
+.wf-detail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md, 8px);
+  background: var(--bg-card);
+  overflow: hidden;
+}
+
+.wf-detail-hint {
+  padding: 24px;
+  font-size: 13px;
+  color: var(--fg-3);
+}
+
+.wf-detail-hint--error {
+  color: var(--color-error);
+}
+
+.wf-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.wf-detail-head-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.wf-detail-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--fg-1);
+}
+
+.wf-detail-runid {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-4);
+}
+
+.wf-detail-error {
+  margin: 12px 18px 0;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-error) 35%, transparent);
+  border-radius: var(--radius-sm, 6px);
+}
+
+/* ───────────────── DAG canvas ───────────────── */
+
+.wf-dag {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.wf-dag-empty {
+  padding: 24px;
+  font-size: 13px;
+  color: var(--fg-3);
+}
+
+/* React Flow canvas background blends with the card surface. */
+.wf-dag .react-flow__background {
+  background: var(--bg-base);
+}
+
+/* ───────────────── nodes ───────────────── */
+
+.wf-node {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 200px;
+  box-sizing: border-box;
+  padding: 9px 11px;
+  border: 1px solid var(--border-subtle);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow-card);
+  font-size: 12px;
+}
+
+.wf-node--phase {
+  background: var(--bg-card);
+  border-style: solid;
+}
+
+.wf-node--phase .wf-node-title {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.wf-node-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.wf-node-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wf-node-sub {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-4);
+}
+
+.wf-node-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.wf-status-text {
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--fg-3);
+}
+
+.wf-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--fg-4);
+}
+
+.wf-dot--pending {
+  background: var(--fg-4);
+}
+
+.wf-dot--running {
+  background: var(--accent-primary);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent-primary) 60%, transparent);
+  animation: wf-pulse 1.6s ease-out infinite;
+}
+
+.wf-dot--completed {
+  background: var(--color-success);
+}
+
+.wf-dot--error {
+  background: var(--color-error);
+}
+
+.wf-dot--paused {
+  background: var(--color-warning);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-warning) 60%, transparent);
+  animation: wf-pulse-warn 1.8s ease-out infinite;
+}
+
+/* left-border colour encodes status (semantic colour, design.md). */
+.wf-node--pending {
+  border-left-color: var(--border-medium, var(--border-subtle));
+}
+.wf-node--running {
+  border-left-color: var(--accent-primary);
+}
+.wf-node--completed {
+  border-left-color: var(--color-success);
+}
+.wf-node--error {
+  border-left-color: var(--color-error);
+}
+.wf-node--paused {
+  border-left-color: var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 8%, var(--bg-elev));
+}
+
+@keyframes wf-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent-primary) 55%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent-primary) 0%, transparent);
+  }
+}
+
+@keyframes wf-pulse-warn {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-warning) 55%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-warning) 0%, transparent);
+  }
+}
+
+/* handles — minimal, read-only DAG. */
+.wf-handle {
+  width: 6px;
+  height: 6px;
+  background: var(--border-medium, var(--border-subtle));
+  border: none;
+}
+
+/* edges */
+.wf-edge .react-flow__edge-path,
+.react-flow__edge.wf-edge .react-flow__edge-path {
+  stroke: var(--border-medium, var(--border-subtle));
+  stroke-width: 1.5;
+}
+
+.react-flow__edge.wf-edge--child .react-flow__edge-path {
+  stroke-dasharray: 4 3;
+  opacity: 0.7;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wf-dot--running,
+  .wf-dot--paused {
+    animation: none;
+  }
+}

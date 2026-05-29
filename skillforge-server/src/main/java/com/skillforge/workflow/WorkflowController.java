@@ -261,6 +261,7 @@ public class WorkflowController {
                 s.getStepKind(),
                 s.getStatus(),
                 agentSlugOf(s.getStepInputJson()),
+                phaseOf(s.getStepInputJson()),
                 toIso(s.getCreatedAt()),
                 toIso(s.getUpdatedAt()));
     }
@@ -280,13 +281,27 @@ public class WorkflowController {
     }
 
     private String agentSlugOf(String stepInputJson) {
+        return stringFieldOf(stepInputJson, "agentSlug");
+    }
+
+    /**
+     * Sprint 3 B2: the {@code meta.phases[]} title the step belongs to, written
+     * into {@code step_input_json} by {@code DefaultWorkflowAgentInvoker
+     * .buildStepInput} / {@code HostHumanApprove.buildStepInput}. Null when the
+     * step never recorded a phase (legacy rows / human_approve gate).
+     */
+    private String phaseOf(String stepInputJson) {
+        return stringFieldOf(stepInputJson, "phase");
+    }
+
+    private String stringFieldOf(String stepInputJson, String field) {
         if (stepInputJson == null || stepInputJson.isBlank()) {
             return null;
         }
         try {
             JsonNode node = objectMapper.readTree(stepInputJson);
-            JsonNode slug = node.get("agentSlug");
-            return slug == null || slug.isNull() ? null : slug.asText();
+            JsonNode v = node.get(field);
+            return v == null || v.isNull() ? null : v.asText();
         } catch (Exception e) {
             return null;
         }

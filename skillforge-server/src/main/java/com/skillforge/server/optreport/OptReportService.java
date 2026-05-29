@@ -12,8 +12,10 @@ import com.skillforge.server.repository.AgentRepository;
 import com.skillforge.server.service.ChatService;
 import com.skillforge.server.service.SessionService;
 import com.skillforge.server.websocket.UserWebSocketHandler;
+import com.skillforge.workflow.WorkflowRunnerService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -74,6 +76,19 @@ public class OptReportService {
     private final ChatService chatService;
     private final UserWebSocketHandler userWebSocketHandler;
     private final ObjectMapper objectMapper;
+    private final WorkflowRunnerService workflowRunnerService;
+
+    /**
+     * AUTOEVOLVING V1 Sprint 3 (Task F, soft-point ①): when true,
+     * {@link #startReport} routes through the {@code opt-report} DSL workflow
+     * instead of the agent-driven report-generator path. Defaults to {@code false}
+     * so the legacy OPT-REPORT-V1 path is byte-for-byte unchanged (zero
+     * regression); dogfood flips it on manually.
+     */
+    private final boolean useWorkflow;
+
+    /** Workflow name registered by {@code opt-report.workflow.js}. */
+    private static final String OPT_REPORT_WORKFLOW_NAME = "opt-report";
 
     public OptReportService(FlywheelRunRepository runRepository,
                             FlywheelRunService flywheelRunService,
@@ -81,7 +96,9 @@ public class OptReportService {
                             SessionService sessionService,
                             ChatService chatService,
                             UserWebSocketHandler userWebSocketHandler,
-                            ObjectMapper objectMapper) {
+                            ObjectMapper objectMapper,
+                            WorkflowRunnerService workflowRunnerService,
+                            @Value("${flywheel.opt-report.use-workflow:false}") boolean useWorkflow) {
         this.runRepository = runRepository;
         this.flywheelRunService = flywheelRunService;
         this.agentRepository = agentRepository;
@@ -89,6 +106,8 @@ public class OptReportService {
         this.chatService = chatService;
         this.userWebSocketHandler = userWebSocketHandler;
         this.objectMapper = objectMapper;
+        this.workflowRunnerService = workflowRunnerService;
+        this.useWorkflow = useWorkflow;
     }
 
     /**
@@ -117,6 +136,22 @@ public class OptReportService {
         // surface a clean 404 instead of letting a downstream FK error escape.
         AgentEntity targetAgent = agentRepository.findById(agentId)
                 .orElseThrow(() -> new IllegalArgumentException("Target agent not found: id=" + agentId));
+
+        // Sprint 3 soft-point ①: DSL-workflow route (flag off by default → legacy
+        // path below runs unchanged). The target-agent pre-check above is shared so
+        // both routes 404 identically on a bad agentId.
+        if (useWorkflow) {
+            Map<String, Object> args = new LinkedHashMap<>();
+            args.put("agentId", agentId);
+            args.put("windowDays", windowDays);
+            String runId = workflowRunnerService.startRun(OPT_REPORT_WORKFLOW_NAME, args, SYSTEM_USER_ID);
+            FlywheelRunEntity run = runRepository.findById(runId)
+                    .orElseThrow(() -> new IllegalStateException(
+                            "workflow run row not found right after startRun: " + runId));
+            log.info("OptReportService.startReport[workflow]: runId={} agentId={} agentName={} windowDays={}",
+                    runId, agentId, targetAgent.getName(), windowDays);
+            return run;
+        }
 
         AgentEntity generator = agentRepository.findFirstByName(SystemAgentNames.REPORT_GENERATOR)
                 .orElseThrow(() -> new IllegalStateException(

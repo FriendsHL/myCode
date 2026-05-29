@@ -8,6 +8,7 @@ import com.skillforge.core.engine.LoopContext;
 import com.skillforge.core.engine.LoopResult;
 import com.skillforge.core.model.AgentDefinition;
 import com.skillforge.core.skill.SkillRegistry;
+import com.skillforge.workflow.engine.WorkflowSkillRegistryFactory;
 import com.skillforge.server.entity.AgentEntity;
 import com.skillforge.server.entity.SessionEntity;
 import com.skillforge.server.flywheel.run.FlywheelRunService;
@@ -66,6 +67,7 @@ public final class DefaultWorkflowAgentInvoker implements WorkflowAgentInvoker {
     private final SessionService sessionService;
     private final FlywheelRunService flywheelRunService;
     private final WorkflowSubAgentEngineFactory engineFactory;
+    private final WorkflowSkillRegistryFactory skillRegistryFactory;
     private final ObjectMapper objectMapper;
     private final SchemaValidator schemaValidator;
 
@@ -79,6 +81,7 @@ public final class DefaultWorkflowAgentInvoker implements WorkflowAgentInvoker {
                                        SessionService sessionService,
                                        FlywheelRunService flywheelRunService,
                                        WorkflowSubAgentEngineFactory engineFactory,
+                                       WorkflowSkillRegistryFactory skillRegistryFactory,
                                        ObjectMapper objectMapper,
                                        SchemaValidator schemaValidator,
                                        String runId,
@@ -89,6 +92,7 @@ public final class DefaultWorkflowAgentInvoker implements WorkflowAgentInvoker {
         this.sessionService = sessionService;
         this.flywheelRunService = flywheelRunService;
         this.engineFactory = engineFactory;
+        this.skillRegistryFactory = skillRegistryFactory;
         this.objectMapper = objectMapper;
         this.schemaValidator = schemaValidator;
         this.runId = runId;
@@ -125,7 +129,11 @@ public final class DefaultWorkflowAgentInvoker implements WorkflowAgentInvoker {
         lc.setExecutionMode("auto");
         lc.setMaxLoops(intOpt(opts, "maxLoops", DEFAULT_MAX_LOOPS));
 
-        AgentLoopEngine engine = engineFactory.buildWorkflowEngine(new SkillRegistry());
+        // B1: use the populated OPT-REPORT tool registry (was `new SkillRegistry()`
+        // — empty — in Sprint 1, which made any sub-agent tool_use fail). Shared,
+        // read-only across all sub-agents of every run (tools are stateless beans).
+        SkillRegistry registry = skillRegistryFactory.workflowRegistry();
+        AgentLoopEngine engine = engineFactory.buildWorkflowEngine(registry);
 
         // Schema enforcement (Task E). When opts carries a `schema`, validate the
         // agent's JSON output and retry (correction-suffixed prompt) up to

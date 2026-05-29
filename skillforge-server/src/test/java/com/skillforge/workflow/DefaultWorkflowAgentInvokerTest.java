@@ -14,6 +14,7 @@ import com.skillforge.server.flywheel.run.FlywheelRunStepEntity;
 import com.skillforge.server.repository.AgentRepository;
 import com.skillforge.server.service.AgentService;
 import com.skillforge.server.service.SessionService;
+import com.skillforge.workflow.engine.WorkflowSkillRegistryFactory;
 import com.skillforge.workflow.engine.WorkflowSubAgentEngineFactory;
 import com.skillforge.workflow.exception.SchemaViolationException;
 import com.skillforge.workflow.exception.WorkflowAgentNotFoundException;
@@ -51,6 +52,7 @@ class DefaultWorkflowAgentInvokerTest {
     @Mock private SessionService sessionService;
     @Mock private FlywheelRunService flywheelRunService;
     @Mock private WorkflowSubAgentEngineFactory engineFactory;
+    @Mock private WorkflowSkillRegistryFactory skillRegistryFactory;
     @Mock private AgentLoopEngine engine;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -62,7 +64,7 @@ class DefaultWorkflowAgentInvokerTest {
         SessionEntity anchor = new SessionEntity();
         anchor.setId("anchor-1");
         invoker = new DefaultWorkflowAgentInvoker(agentRepository, agentService, sessionService,
-                flywheelRunService, engineFactory, objectMapper, new SchemaValidator(),
+                flywheelRunService, engineFactory, skillRegistryFactory, objectMapper, new SchemaValidator(),
                 "run-1", anchor, 7L);
     }
 
@@ -83,6 +85,7 @@ class DefaultWorkflowAgentInvokerTest {
         when(sessionService.createSubSession(any(), eq(42L), eq("run-1"))).thenReturn(sub);
 
         when(flywheelRunService.appendStep(eq("run-1"), any(), any(), any())).thenReturn("step-3");
+        when(skillRegistryFactory.workflowRegistry()).thenReturn(new SkillRegistry());
         when(engineFactory.buildWorkflowEngine(any(SkillRegistry.class))).thenReturn(engine);
 
         LoopResult result = new LoopResult();
@@ -131,6 +134,7 @@ class DefaultWorkflowAgentInvokerTest {
         sub.setId("sub-9");
         when(sessionService.createSubSession(any(), eq(42L), eq("run-1"))).thenReturn(sub);
         when(flywheelRunService.appendStep(eq("run-1"), any(), any(), any())).thenReturn("step-3");
+        when(skillRegistryFactory.workflowRegistry()).thenReturn(new SkillRegistry());
         when(engineFactory.buildWorkflowEngine(any(SkillRegistry.class))).thenReturn(engine);
         when(engine.run(any(), any(), any(), any(), any(), any()))
                 .thenThrow(new RuntimeException("boom"));
@@ -161,6 +165,7 @@ class DefaultWorkflowAgentInvokerTest {
         sub.setId("sub-9");
         when(sessionService.createSubSession(any(), eq(42L), eq("run-1"))).thenReturn(sub);
         when(flywheelRunService.appendStep(eq("run-1"), any(), any(), any())).thenReturn("step-3");
+        when(skillRegistryFactory.workflowRegistry()).thenReturn(new SkillRegistry());
         when(engineFactory.buildWorkflowEngine(any(SkillRegistry.class))).thenReturn(engine);
     }
 

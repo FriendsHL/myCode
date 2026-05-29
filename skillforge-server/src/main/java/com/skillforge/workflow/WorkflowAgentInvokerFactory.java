@@ -6,6 +6,7 @@ import com.skillforge.server.flywheel.run.FlywheelRunService;
 import com.skillforge.server.repository.AgentRepository;
 import com.skillforge.server.service.AgentService;
 import com.skillforge.server.service.SessionService;
+import com.skillforge.workflow.engine.WorkflowSkillRegistryFactory;
 import com.skillforge.workflow.engine.WorkflowSubAgentEngineFactory;
 import com.skillforge.workflow.schema.SchemaValidator;
 import org.springframework.stereotype.Component;
@@ -23,6 +24,7 @@ public class WorkflowAgentInvokerFactory {
     private final SessionService sessionService;
     private final FlywheelRunService flywheelRunService;
     private final WorkflowSubAgentEngineFactory engineFactory;
+    private final WorkflowSkillRegistryFactory skillRegistryFactory;
     private final ObjectMapper objectMapper;
     private final SchemaValidator schemaValidator;
 
@@ -31,6 +33,7 @@ public class WorkflowAgentInvokerFactory {
                                        SessionService sessionService,
                                        FlywheelRunService flywheelRunService,
                                        WorkflowSubAgentEngineFactory engineFactory,
+                                       WorkflowSkillRegistryFactory skillRegistryFactory,
                                        ObjectMapper objectMapper,
                                        SchemaValidator schemaValidator) {
         this.agentRepository = agentRepository;
@@ -38,6 +41,7 @@ public class WorkflowAgentInvokerFactory {
         this.sessionService = sessionService;
         this.flywheelRunService = flywheelRunService;
         this.engineFactory = engineFactory;
+        this.skillRegistryFactory = skillRegistryFactory;
         this.objectMapper = objectMapper;
         this.schemaValidator = schemaValidator;
     }
@@ -45,6 +49,7 @@ public class WorkflowAgentInvokerFactory {
     public WorkflowAgentInvoker create(String runId, SessionEntity anchorSession, Long userId) {
         return new DefaultWorkflowAgentInvoker(
                 agentRepository, agentService, sessionService, flywheelRunService,
-                engineFactory, objectMapper, schemaValidator, runId, anchorSession, userId);
+                engineFactory, skillRegistryFactory, objectMapper, schemaValidator,
+                runId, anchorSession, userId);
     }
 }

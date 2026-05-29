@@ -43,6 +43,15 @@ spring:
     ignore-migration-patterns: "*:missing"
     validate-on-migrate: false
 
+# AUTOEVOLVING V1 Sprint 3 (Task F, soft-point ①): route OPT-REPORT through the
+# `opt-report` DSL workflow instead of the agent-driven report-generator path.
+# Default false → legacy OPT-REPORT-V1 path runs byte-for-byte unchanged (zero
+# regression). Dogfood flips it true to exercise the DSL port. Read by
+# OptReportService.startReport via @Value("${flywheel.opt-report.use-workflow:false}").
+flywheel:
+  opt-report:
+    use-workflow: false
+
 # SkillForge configuration
 skillforge:
   websearch:

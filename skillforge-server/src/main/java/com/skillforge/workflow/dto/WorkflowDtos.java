@@ -33,12 +33,20 @@ public final class WorkflowDtos {
             String updatedAt) {
     }
 
-    /** A step row inside {@code GET /api/workflows/runs/{runId}}. */
+    /**
+     * A step row inside {@code GET /api/workflows/runs/{runId}}.
+     *
+     * <p>{@code phase} (Sprint 3 B2) is the {@code meta.phases[]} title the step
+     * belongs to (e.g. {@code "Load"} / {@code "Annotate"}), parsed from the
+     * step's {@code step_input_json} — the FE DAG groups agent nodes by it. It is
+     * null for legacy / non-workflow steps that never recorded a phase.
+     */
     public record WorkflowStepDto(
             Integer stepIndex,
             String stepKind,
             String status,
             String agentSlug,
+            String phase,
             String createdAt,
             String updatedAt) {
     }

@@ -19,6 +19,11 @@ import OptReportsPage from './OptReports';
 // Static `import` was pulling those deps into the main Insights chunk even
 // for users who never visit the tab.
 const FlywheelObservability = React.lazy(() => import('./FlywheelObservability'));
+// AUTOEVOLVING V1 Sprint 3 — lazy-load the workflow runs panel so its reactflow
+// + dagre deps only download when the operator opens the Workflows tab.
+const WorkflowRunsPanel = React.lazy(
+  () => import('../components/workflow/WorkflowRunsPanel'),
+);
 import TabBar from '../components/TabBar';
 import Dropdown from '../components/ui/Dropdown';
 import '../components/insights/insights.css';
@@ -28,7 +33,7 @@ import '../components/insights/insights.css';
  * outside this allowlist in the `?tab=` URL param falls back to the default
  * `patterns` tab (no silent typo confusion).
  */
-const TAB_KEYS = ['patterns', 'optimization', 'behavior-rules', 'dynamic-sim', 'flywheel', 'reports'] as const;
+const TAB_KEYS = ['patterns', 'optimization', 'behavior-rules', 'dynamic-sim', 'flywheel', 'reports', 'workflows'] as const;
 type TabKey = (typeof TAB_KEYS)[number];
 
 function normalizeTab(raw: string | null): TabKey {
@@ -62,6 +67,7 @@ const INSIGHTS_TABS = [
   { key: 'dynamic-sim', label: 'Dynamic Sim' },
   { key: 'flywheel', label: 'Optimization Loop' },
   { key: 'reports', label: 'Reports' },
+  { key: 'workflows', label: 'Workflows' },
 ];
 
 const Insights: React.FC = () => {
@@ -260,6 +266,27 @@ const Insights: React.FC = () => {
         <TabBar tabs={INSIGHTS_TABS} activeTab={activeTab} onSwitch={onTabSwitch} />
         <div style={{ flex: 1, minHeight: 0, overflow: 'auto', scrollbarGutter: 'stable' }}>
           <OptReportsPage />
+        </div>
+      </div>
+    );
+  }
+
+  if (activeTab === 'workflows') {
+    // AUTOEVOLVING V1 Sprint 3 — DSL workflow runs DAG viewer. Read-only:
+    // browse runs + inspect each run's phase/agent DAG with live status.
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - var(--header-height, 44px))' }}>
+        <TabBar tabs={INSIGHTS_TABS} activeTab={activeTab} onSwitch={onTabSwitch} />
+        <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+          <Suspense
+            fallback={
+              <div style={{ padding: 24, color: 'var(--fg-3)', fontSize: 13 }}>
+                Loading Workflows…
+              </div>
+            }
+          >
+            <WorkflowRunsPanel />
+          </Suspense>
         </div>
       </div>
     );

@@ -4,6 +4,10 @@ import com.skillforge.workflow.exception.WorkflowMetaException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -47,6 +51,26 @@ class WorkflowDefinitionRegistryTest {
         // sourceHash stable for identical source.
         assertThat(def.sourceHash()).isNotBlank();
         assertThat(registry.parse("x.js", VALID).sourceHash()).isEqualTo(def.sourceHash());
+    }
+
+    @Test
+    @DisplayName("parses the real opt-report.workflow.js: 4 phases Load/Annotate/Aggregate/Approve")
+    void parsesRealOptReportWorkflow() throws Exception {
+        String source;
+        try (InputStream in = getClass().getResourceAsStream("/workflows/opt-report.workflow.js")) {
+            assertThat(in).as("opt-report.workflow.js on classpath").isNotNull();
+            source = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
+        WorkflowDefinition def = registry.parse("opt-report.workflow.js", source);
+
+        assertThat(def.name()).isEqualTo("opt-report");
+        assertThat(def.phases().stream().map(WorkflowDefinition.WorkflowPhase::title).toList())
+                .containsExactly("Load", "Annotate", "Aggregate", "Approve");
+        // jsSource is meta-free + export-free so WorkflowEvaluator can run it.
+        assertThat(def.jsSource()).doesNotContain("export");
+        assertThat(def.jsSource()).contains("agentSlug: 'opt-report-orchestrator'");
+        assertThat(def.jsSource()).contains("agentSlug: 'opt-report-aggregator'");
+        assertThat(def.jsSource()).contains("humanApprove(summary)");
     }
 
     @Test
