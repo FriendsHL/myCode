@@ -1422,18 +1422,18 @@ public class AgentLoopEngine {
     }
 
     /**
-     * 根据 AgentDefinition 的 modelId 解析要使用的 LlmProvider。
-     * <p>
-     * 支持两种格式:
+     * 根据 AgentDefinition 的 modelId 解析要使用的 LlmProvider，并通过 {@code resolvedModel[0]}
+     * 回填实际 model name。支持两种格式:
      * <ul>
-     *   <li>"deepseek:deepseek-chat" — 使用名为 "deepseek" 的 provider，覆盖模型为 "deepseek-chat"</li>
-     *   <li>"gpt-4o" — 使用默认 provider</li>
+     *   <li>{@code "deepseek:deepseek-chat"} — 使用名为 "deepseek" 的 provider，model 覆盖为
+     *       "deepseek-chat"。若该 provider 未配置（API key 为空 → 启动时被跳过），
+     *       <b>fail-fast 抛 {@link IllegalStateException}</b>，而不是静默回退到默认 provider
+     *       （静默回退会把带前缀的 model 名丢给默认 provider，产生误导性下游错误）。</li>
+     *   <li>{@code "gpt-4o"}（无 {@code "provider:"} 前缀）— 使用默认 provider，model 名原样透传。</li>
      * </ul>
+     * package-private for focused unit testing ({@code AgentLoopEngineResolveProviderTest}).
      */
-    /**
-     * 解析 provider 和实际 model name。返回长度为 2 的数组: [0]=resolvedModelName, provider 通过返回值。
-     */
-    private LlmProvider resolveProvider(AgentDefinition agentDef, String[] resolvedModel) {
+    LlmProvider resolveProvider(AgentDefinition agentDef, String[] resolvedModel) {
         String modelId = agentDef.getModelId();
 
         if (modelId != null && modelId.contains(":")) {
@@ -1443,11 +1443,23 @@ public class AgentLoopEngine {
             String modelName = modelId.substring(colonIndex + 1);
 
             LlmProvider provider = llmProviderFactory.getProvider(providerName);
-            if (provider != null) {
-                resolvedModel[0] = modelName;
-                return provider;
+            if (provider == null) {
+                // An explicitly-named provider that isn't configured must fail loudly —
+                // NOT silently fall back to the default provider. The old behaviour fell
+                // through and handed the default provider the *prefixed* model id
+                // (e.g. "claude:claude-sonnet-4-20250514"), which the default provider's
+                // gateway rejects with a misleading downstream error (xiaomi-mimo returns
+                // HTTP 401 "Invalid API Key" for an unknown model name, masking the real
+                // cause). Surface the actual problem: the named provider has no API key /
+                // isn't wired. Bare model ids (no "provider:" prefix) still use the
+                // default provider — that path is below and unchanged.
+                throw new IllegalStateException(
+                        "LLM provider '" + providerName + "' for model '" + modelId
+                        + "' is not configured (missing its API key env var?). "
+                        + "Configure the provider or change the agent's model to a configured provider.");
             }
-            log.warn("Provider '{}' not found, falling back to default provider '{}'", providerName, defaultProviderName);
+            resolvedModel[0] = modelName;
+            return provider;
         }
 
         resolvedModel[0] = modelId;

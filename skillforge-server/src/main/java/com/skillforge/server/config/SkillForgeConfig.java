@@ -1088,9 +1088,12 @@ public class SkillForgeConfig {
                         modelConfig.getContextWindowTokens());
             } catch (IllegalStateException e) {
                 // API key missing for this provider — skip registration so the app still starts.
-                // Agents that pick this provider's models will fall back to the default provider
-                // (see AgentLoopEngine.resolveProvider). Configure the corresponding env var
-                // to enable this provider.
+                // An agent whose modelId carries this provider's "provider:" prefix will then
+                // fail fast at call time with a clear error (see AgentLoopEngine.resolveProvider):
+                // we do NOT silently fall back to the default provider, because that handed the
+                // default provider a foreign prefixed model name and surfaced as a misleading
+                // downstream 401. Configure the corresponding env var, or point the agent at a
+                // configured provider, to fix it.
                 log.warn("Skipped LLM provider '{}': {}", name, e.getMessage());
             }
         }
