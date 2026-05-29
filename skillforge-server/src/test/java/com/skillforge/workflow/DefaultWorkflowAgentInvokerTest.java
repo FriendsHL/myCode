@@ -230,4 +230,51 @@ class DefaultWorkflowAgentInvokerTest {
                 .isInstanceOf(SchemaViolationException.class);
         verify(engine, times(3)).run(any(), any(), any(), any(), any(), any());
     }
+
+    // ── Item A: fault-tolerant JSON extraction (prose / code fences) ──
+
+    @Test
+    @DisplayName("Item A: ```json fenced JSON parses on the first attempt (no retry)")
+    void parsesJsonFromCodeFence() {
+        stubWorker(new AgentDefinition());
+        when(engine.run(any(), any(), any(), any(), any(), any()))
+                .thenReturn(resp("```json\n{\"x\":\"hi\"}\n```"));
+
+        Object out = invoker.invoke("say hi", Map.of("agentSlug", "worker", "schema", SCHEMA), 0);
+
+        assertThat(((Map<?, ?>) out).get("x")).isEqualTo("hi");
+        verify(engine, times(1)).run(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("Item A: JSON embedded in prose is extracted; braces inside string literals don't break balance")
+    void parsesJsonEmbeddedInProse() {
+        stubWorker(new AgentDefinition());
+        // The value contains literal { } which must NOT throw off bracket counting.
+        when(engine.run(any(), any(), any(), any(), any(), any()))
+                .thenReturn(resp("Here is the result: {\"x\":\"a {nested} brace\"}. Done."));
+
+        Object out = invoker.invoke("say hi", Map.of("agentSlug", "worker", "schema", SCHEMA), 0);
+
+        assertThat(((Map<?, ?>) out).get("x")).isEqualTo("a {nested} brace");
+        verify(engine, times(1)).run(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("Item A: top-level JSON array is recovered from a fenced + prose-wrapped response")
+    void parsesJsonArray() {
+        stubWorker(new AgentDefinition());
+        Map<String, Object> arraySchema = Map.of("type", "array");
+        when(engine.run(any(), any(), any(), any(), any(), any()))
+                .thenReturn(resp("Sure! ```json\n[1, 2, 3]\n``` that's all."));
+
+        Object out = invoker.invoke("go", Map.of("agentSlug", "worker", "schema", arraySchema), 0);
+
+        assertThat(out).isInstanceOf(List.class);
+        List<?> list = (List<?>) out;
+        assertThat(list).hasSize(3);
+        assertThat(list.get(0)).isEqualTo(1);
+        assertThat(list.get(2)).isEqualTo(3);
+        verify(engine, times(1)).run(any(), any(), any(), any(), any(), any());
+    }
 }

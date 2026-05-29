@@ -291,6 +291,44 @@ class WorkflowControllerTest {
     }
 
     @Test
+    @DisplayName("B-BE: legacy null-stepIndex batch rows are filtered out of steps[]; gate (with stepIndex) kept")
+    void getRunDetail_filtersGhostNullStepIndexRows() throws Exception {
+        FlywheelRunEntity run = new FlywheelRunEntity();
+        run.setId("run-10");
+        run.setLoopKind("workflow");
+        run.setStatus("paused");
+        run.setInputJson("{\"workflow_name\":\"opt-report\"}");
+        when(flywheelRunService.findById("run-10")).thenReturn(Optional.of(run));
+
+        // Real workflow gate step — has a V127 stepIndex → kept.
+        FlywheelRunStepEntity gate = new FlywheelRunStepEntity();
+        gate.setId("step-1");
+        gate.setRunId("run-10");
+        gate.setStepIndex(2);
+        gate.setStepKind(FlywheelRunStepEntity.STEP_KIND_HUMAN_APPROVE);
+        gate.setStatus(FlywheelRunStepEntity.STATUS_PENDING);
+        gate.setStepInputJson("{\"stepKind\":\"human_approve\",\"stepIndex\":2}");
+
+        // Legacy RecordBatchAnnotationsTool batch row — runId == workflow runId but
+        // NO stepIndex (null) → must be filtered (no phantom DAG node).
+        FlywheelRunStepEntity ghost = new FlywheelRunStepEntity();
+        ghost.setId("step-ghost");
+        ghost.setRunId("run-10");
+        ghost.setStepIndex(null);
+        ghost.setStepKind(FlywheelRunStepEntity.STEP_KIND_SUBAGENT_DISPATCH);
+        ghost.setStatus(FlywheelRunStepEntity.STATUS_COMPLETED);
+        ghost.setStepInputJson("{\"sessionIds\":[\"s1\"]}");
+
+        when(flywheelRunService.listStepsByRunId("run-10")).thenReturn(List.of(gate, ghost));
+
+        mvc.perform(get("/api/workflows/runs/run-10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.steps.length()").value(1))
+                .andExpect(jsonPath("$.steps[0].stepIndex").value(2))
+                .andExpect(jsonPath("$.steps[0].stepKind").value("human_approve"));
+    }
+
+    @Test
     @DisplayName("Sprint 4 W1: payload is null for a step whose step_input_json has none")
     void getRunDetail_nullPayloadWhenAbsent() throws Exception {
         FlywheelRunEntity run = new FlywheelRunEntity();

@@ -112,6 +112,22 @@ public final class HostHumanApprove extends BaseFunction {
         throw new WorkflowPausedException(runId, stepRunId, stepIndex);
     }
 
+    /**
+     * The most-recent {@code phase()} title, or {@code null} when none has run.
+     * Reads the last element of the context's phase list under the list's own
+     * monitor so the {@code isEmpty()}+{@code get()} pair is atomic against the
+     * synchronizedList (no torn read if another thread were ever to append).
+     */
+    private String currentPhase() {
+        java.util.List<String> phases = ctx.getPhases();
+        if (phases == null) {
+            return null;
+        }
+        synchronized (phases) {
+            return phases.isEmpty() ? null : phases.get(phases.size() - 1);
+        }
+    }
+
     private String buildStepInput(Object payload, int stepIndex) {
         ObjectMapper om = ctx.getObjectMapper();
         if (om == null) {
@@ -123,6 +139,13 @@ public final class HostHumanApprove extends BaseFunction {
             ObjectNode node = om.createObjectNode();
             node.put("stepKind", FlywheelRunStepEntity.STEP_KIND_HUMAN_APPROVE);
             node.put("stepIndex", stepIndex);
+            // Record the current phase (the most-recent phase() title) so the FE
+            // DAG groups this gate under its phase (e.g. 'Approve') instead of the
+            // "(unphased)" column. Null when no phase() has run yet — omit the key.
+            String phase = currentPhase();
+            if (phase != null) {
+                node.put("phase", phase);
+            }
             node.set("payload", om.valueToTree(payload));
             return om.writeValueAsString(node);
         } catch (Exception e) {

@@ -182,6 +182,17 @@ public class WorkflowController {
         List<FlywheelRunStepEntity> steps = flywheelRunService.listStepsByRunId(runId);
         List<WorkflowStepDto> stepDtos = new ArrayList<>(steps.size());
         for (FlywheelRunStepEntity s : steps) {
+            // Two distinct step-tracking mechanisms collide on t_flywheel_run_step:
+            // (1) DSL-workflow orchestration steps written by HostHumanApprove /
+            //     DefaultWorkflowAgentInvoker.appendStep — these always carry the
+            //     V127 deterministic stepIndex (incl. human_approve gate steps);
+            // (2) legacy RecordBatchAnnotationsTool batch-tracking rows, inserted
+            //     with runId == the workflow runId but NO stepIndex (null).
+            // Only (1) are real DAG nodes; skip (2) so the FE DAG doesn't render a
+            // phantom phase=null node.
+            if (s.getStepIndex() == null) {
+                continue;
+            }
             stepDtos.add(toStepDto(s));
         }
 

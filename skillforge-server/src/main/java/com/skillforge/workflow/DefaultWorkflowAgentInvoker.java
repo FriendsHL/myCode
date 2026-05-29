@@ -216,15 +216,16 @@ public final class DefaultWorkflowAgentInvoker implements WorkflowAgentInvoker {
         return objectMapper.valueToTree(schema);
     }
 
+    /**
+     * Best-effort JSON extraction from a model response. Delegates to the shared
+     * {@link WorkflowJsonExtractor} so the live {@code agent()} path and the
+     * journal-replay path ({@code HostAgent.cachedAgentResult}) accept the
+     * IDENTICAL set of raw strings — see {@link WorkflowJsonExtractor} javadoc
+     * for why parity matters. A {@code null} return still drives the existing
+     * "output is not valid JSON" schema retry.
+     */
     private JsonNode tryParseJson(String resp) {
-        if (resp == null || resp.isBlank()) {
-            return null;
-        }
-        try {
-            return objectMapper.readTree(resp);
-        } catch (Exception e) {
-            return null;
-        }
+        return WorkflowJsonExtractor.tolerantReadTree(resp, objectMapper);
     }
 
     private static String retrySuffix(List<String> violations) {

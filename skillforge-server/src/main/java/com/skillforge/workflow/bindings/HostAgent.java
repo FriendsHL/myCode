@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.skillforge.workflow.WorkflowAgentInvoker;
 import com.skillforge.workflow.WorkflowContext;
+import com.skillforge.workflow.WorkflowJsonExtractor;
 import com.skillforge.workflow.journal.JournalCache;
 import org.mozilla.javascript.BaseFunction;
 import org.mozilla.javascript.Context;
@@ -124,14 +125,20 @@ public final class HostAgent extends BaseFunction {
         if (om == null) {
             throw new IllegalStateException("journal-replay schema parse requires an ObjectMapper");
         }
-        try {
-            JsonNode parsed = om.readTree(finalResponse);
-            return om.convertValue(parsed, Object.class);
-        } catch (Exception e) {
+        // PARITY (critical): use the SAME tolerant extraction as the live agent()
+        // path (DefaultWorkflowAgentInvoker.tryParseJson). The journal stores the
+        // raw finalResponse — which for reasoning models is "prose + {json}" or a
+        // ```json fence. A strict readTree here would throw on a response the live
+        // run accepted (extracted JSON → schema passed → step completed), breaking
+        // approve→resume. tolerantReadTree guarantees the same raw string yields
+        // the same JSON node on both paths.
+        JsonNode parsed = WorkflowJsonExtractor.tolerantReadTree(finalResponse, om);
+        if (parsed == null) {
             throw new IllegalStateException(
                     "journal-replay parse failed for agent() stepIndex=" + stepIndex
-                            + " (runId=" + ctx.getRunId() + "): " + e.getMessage(), e);
+                            + " (runId=" + ctx.getRunId() + "): no JSON recoverable from cached finalResponse");
         }
+        return om.convertValue(parsed, Object.class);
     }
 
     private Map<String, Object> extractOpts(Object[] args) {
