@@ -1244,4 +1244,59 @@ public class SkillForgeConfig {
         executor.allowCoreThreadTimeOut(false);
         return executor;
     }
+
+    /**
+     * AUTOEVOLVING V1 — workflow JS-body execution pool. Runs the (single-threaded
+     * per run) workflow script body {@code WorkflowRunnerService.runWorkflowBody}.
+     * SEPARATE from {@code workflowSubAgentExecutor}: the workflow thread
+     * barrier-joins on sub-agent futures submitted to that other pool, so they must
+     * not share a pool (nested-pool deadlock — same rationale as eval's
+     * evalOrchestratorExecutor vs evalLoopExecutor split). One thread per concurrent
+     * workflow run; queue absorbs bursts and overflow aborts (caller sees 429).
+     */
+    @Bean(name = "workflowExecutor", destroyMethod = "shutdown")
+    public ThreadPoolExecutor workflowExecutor() {
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(
+                2, 16,
+                60L, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(64),
+                r -> {
+                    Thread t = new Thread(r, "workflow-run-" + System.nanoTime());
+                    t.setDaemon(true);
+                    return t;
+                },
+                new ThreadPoolExecutor.AbortPolicy());
+        executor.allowCoreThreadTimeOut(true);
+        return executor;
+    }
+
+    /**
+     * AUTOEVOLVING V1 — workflow sub-agent execution pool. Runs the blocking
+     * {@code AgentLoopEngine.run(...)} for {@code agent()} primitives offloaded by
+     * {@code HostParallel} (plan §2.1). SEPARATE from the workflow-JS pool to avoid
+     * nested-pool deadlock (same rationale as eval's evalOrchestratorExecutor vs
+     * evalLoopExecutor split): the single workflow thread barrier-joins on futures
+     * submitted here, so the runners must never compete for the workflow thread's
+     * own pool.
+     *
+     * <p>Concurrency cap target {@code min(16, cores-2)} (plan §2.2) sized off
+     * available processors; floor of 2 so a 1-2 core box still parallelises.
+     */
+    @Bean(name = "workflowSubAgentExecutor", destroyMethod = "shutdown")
+    public ThreadPoolExecutor workflowSubAgentExecutor() {
+        int cores = Runtime.getRuntime().availableProcessors();
+        int max = Math.max(2, Math.min(16, cores - 2));
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(
+                max, max,
+                60L, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(256),
+                r -> {
+                    Thread t = new Thread(r, "wf-subagent-" + System.nanoTime());
+                    t.setDaemon(true);
+                    return t;
+                },
+                new ThreadPoolExecutor.AbortPolicy());
+        executor.allowCoreThreadTimeOut(true);
+        return executor;
+    }
 }

@@ -122,6 +122,12 @@
             <artifactId>spring-boot-testcontainers</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- AUTOEVOLVING V1: Rhino JS engine for workflow DSL sandbox (Task A spike) -->
+        <dependency>
+            <groupId>org.mozilla</groupId>
+            <artifactId>rhino</artifactId>
+            <version>1.7.14</version>
+        </dependency>
     </dependencies>
 
     <build>
