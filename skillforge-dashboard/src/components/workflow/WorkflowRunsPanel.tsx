@@ -134,6 +134,16 @@ const WorkflowRunsPanel: React.FC = () => {
     return def.phases.map((p) => p.title);
   }, [detail, definitionsByName]);
 
+  // Stable per-detail-run identity — passed into every agent node's `data`, so
+  // it must not change on unrelated re-renders or the DAG useMemo rebuilds all
+  // nodes. `detail` is only non-null when the DAG renders, so the '' fallback
+  // never actually reaches a click.
+  const detailRunId = detail?.runId;
+  const handleStepClick = useCallback(
+    (s: WorkflowStep) => setSelectedStep({ runId: detailRunId ?? '', step: s }),
+    [detailRunId],
+  );
+
   // ── WS live updates (frontend.md footgun #2: cleanup MUST close) ──
   useEffect(() => {
     if (!userId) return;
@@ -270,7 +280,7 @@ const WorkflowRunsPanel: React.FC = () => {
               steps={detail.steps}
               runStatus={detail.status}
               phaseOrder={phaseOrder}
-              onStepClick={(s) => setSelectedStep({ runId: detail.runId, step: s })}
+              onStepClick={handleStepClick}
             />
 
             <WorkflowStepDrawer

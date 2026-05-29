@@ -41,11 +41,19 @@ export interface WorkflowNodeData {
   /** True when this node has no inbound edge (suppresses the target handle). */
   isRoot?: boolean;
   /**
-   * The backing step for `agent`-kind nodes — threaded so the DAG's
-   * `onNodeClick` can open the step drawer without a separate index lookup.
-   * Absent on `phase` header nodes (they aggregate multiple steps).
+   * The backing step for `agent`-kind nodes — threaded so a click can open the
+   * step drawer without a separate index lookup. Absent on `phase` header nodes
+   * (they aggregate multiple steps).
    */
   step?: WorkflowStep;
+  /**
+   * Click handler threaded into the node so the click is handled by the node's
+   * own DOM `onClick` rather than React Flow's `onNodeClick` — the latter gets
+   * swallowed by RF's pan/drag gesture detection when the pointer moves even a
+   * pixel between down/up (known RF footgun → "intermittently won't open").
+   * Absent / no-op on phase headers.
+   */
+  onStepClick?: (step: WorkflowStep) => void;
 }
 
 const STATUS_LABEL: Record<WorkflowNodeStatus, string> = {
@@ -62,13 +70,26 @@ const STATUS_LABEL: Record<WorkflowNodeStatus, string> = {
  * Purely presentational — the parent WorkflowDag owns nodes + edges.
  */
 const WorkflowNode: React.FC<NodeProps<WorkflowNodeData>> = ({ data }) => {
-  const { kind, label, status, sublabel, isApprovalGate, isRoot } = data;
+  const { kind, label, status, sublabel, isApprovalGate, isRoot, step, onStepClick } = data;
+
+  const handleClick = (e: React.MouseEvent) => {
+    // Guard: phase headers carry no step → inert (no error).
+    if (!step) return;
+    // Stop the click from also reaching React Flow's pane → onNodeClick, which
+    // would double-invoke onStepClick. The DOM onClick is the authoritative
+    // path; RF's onNodeClick stays only as a no-op fallback.
+    e.stopPropagation();
+    onStepClick?.(step);
+  };
 
   return (
     <div
-      className={`wf-node wf-node--${kind} wf-node--${status}`}
+      // `nodrag` (RF convention) keeps the pane from treating a click on this
+      // node as a pan/drag, so the DOM onClick fires reliably.
+      className={`wf-node wf-node--${kind} wf-node--${status} nodrag`}
       data-status={status}
       data-testid={`wf-node-${kind}-${label}`}
+      onClick={handleClick}
     >
       {!isRoot && (
         <Handle

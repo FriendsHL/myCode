@@ -112,6 +112,7 @@ const WorkflowDag: React.FC<WorkflowDagProps> = ({
             isApprovalGate: step.stepKind === STEP_KIND_HUMAN_APPROVE,
             isRoot: i === 0,
             step,
+            onStepClick,
           },
           draggable: false,
           connectable: false,
@@ -183,6 +184,7 @@ const WorkflowDag: React.FC<WorkflowDagProps> = ({
             isApprovalGate: step.stepKind === STEP_KIND_HUMAN_APPROVE,
             isRoot: true, // fed by its phase header via a vertical edge, no left handle needed
             step,
+            onStepClick,
           },
           draggable: false,
           connectable: false,
@@ -199,7 +201,7 @@ const WorkflowDag: React.FC<WorkflowDagProps> = ({
     });
 
     return { nodes: builtNodes, edges: builtEdges, isEmpty: false };
-  }, [steps, runStatus, phaseOrder]);
+  }, [steps, runStatus, phaseOrder, onStepClick]);
 
   // Open the drawer when an agent / gate node is clicked. Phase headers carry
   // no `step` in their data, so they're inert. onNodeClick fires even with
