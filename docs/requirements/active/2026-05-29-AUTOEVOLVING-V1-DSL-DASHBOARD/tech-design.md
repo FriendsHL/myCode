@@ -1,6 +1,15 @@
 # Tech Design — AUTOEVOLVING V1
 
-> 状态：V0 draft，等 PRD ratify Q1-Q5 后深化
+> 状态：**Sprint 1 已实现 ship（commit `54941c3`，2026-05-29）**。以下设计文档是 spike 前草案，实际实现见 `com.skillforge.workflow` 包代码 + delivery-index。
+>
+> ⚠️ **Plan/spike 阶段修正的 3 处草案 bug（实现已用正确版）**：
+> 1. §7 `chatService.runSubAgentForWorkflow(...)` **不存在** → 实际用 `AgentLoopEngine.run(def, prompt, null, sessionId, userId, lc)` 同步路径（复刻 ScenarioRunnerTool），见 `DefaultWorkflowAgentInvoker`
+> 2. §6 `cx.initStandardObjects()` **错** → 实际用 `initSafeStandardObjects()`（不含 Java 桥接），见 `L1SandboxFactory`
+> 3. §9 JournalCache 按 `created_at` 排序 **错位**（parallel 完成顺序非确定）→ stepIndex 在 invoke 时（workflow 单线程）确定性分配；Sprint 2 journal-replay 加 DB `step_index` 列
+>
+> **其它 Sprint 1 实现要点**（草案未覆盖 / 与草案不同）：humanApprove 用 **journal-replay**（非草案的 park-thread，Q3×Q4 ratify）但 Sprint 2 才实现；offload 并发模型详见 `/tmp/plan-v1-sprint1-r1.md` §2；Rhino continuation 不可用于 parallel（GitHub #1444 arrow function 限制）。
+>
+> 原 V0 draft 内容保留如下作历史参考。
 
 ## 1. 整体架构
 

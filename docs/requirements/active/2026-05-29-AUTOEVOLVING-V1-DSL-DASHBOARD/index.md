@@ -1,9 +1,9 @@
 # AUTOEVOLVING V1 — DSL workflow engine + autoEvolving dashboard
 
 > **创建**：2026-05-29
-> **状态**：prd-draft，待 user 拍板启动
+> **状态**：**Sprint 1 已 ship（commit `54941c3`）** — DSL workflow engine 基础（Rhino + L1 sandbox + 6 原语 + offload 并发 + V126）。Sprint 2-4 待续。
 > **父需求包**：[AUTOEVOLVING-MASTER](../2026-05-28-AUTOEVOLVING-MASTER/) (V1 子需求)
-> **估时**：~4.5 周（4 sprint）
+> **估时**：~4.5 周（4 sprint）；Sprint 1 ✅ / Sprint 2（humanApprove journal-replay + schema + Controller）/ Sprint 3（OPT-REPORT 改造 demo + DAG viz）/ Sprint 4（dashboard /autoevolving + 3 信号源面板）
 
 ## 30 秒摘要
 
