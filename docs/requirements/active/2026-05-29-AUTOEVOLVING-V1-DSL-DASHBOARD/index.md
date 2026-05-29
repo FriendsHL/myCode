@@ -50,18 +50,32 @@ V1 双核心交付：
 | **D6** | OPT-REPORT 改造方式 | 提供 DSL workflow 实现 + **保留 agent-driven fallback**（生产 OPT-REPORT-V1 0 regression）|
 | **D7** | autoResearch 数据接入 | V1 不接入（M3 ratify），dashboard 留 placeholder「AUTORESEARCH V1 to ship」 |
 
-## Q 待澄清
+## Q 决策（user 2026-05-29 拍）
 
-| # | Q | 默认提案 | 等 user 拍 |
-|---|---|---|---|
-| **Q1** | DSL workflow 文件存哪 | `skillforge-server/src/main/resources/workflows/*.workflow.js`（V1 仓库内）→ V3+ 加 DB 存储（dashboard 编辑器） | ⏸️ |
-| **Q2** | workflow run 失败时 retry 策略 | 单 workflow 总 timeout 30min；agent() 调用失败重试 1 次；schema 验证失败重试 3 次（同 Claude Code Workflow） | ⏸️ |
-| **Q3** | journal/resume 范围 | V1 简化版：完成的 agent() 调用缓存 result，挂掉重跑时跳过；不做 partial state 持久化（V2+ 完整版） | ⏸️ |
-| **Q4** | humanApprove 简化版形态 | V1 = 暂停 workflow + 推 WS + dashboard 显 review 卡 + user click approve/reject → resume；不做 UI template / multi-reviewer / timeout reject（V2 完整版） | ⏸️ |
-| **Q5** | DSL workflow 默认权限 | V1 admin only 触发；agent 写 workflow 受 Iron Law 人审（先写 review 队列等 user 看，后才注册）；V2 加细粒度 RBAC | ⏸️ |
+| # | Q | 决策 |
+|---|---|---|
+| **Q1** | DSL workflow 文件存哪 + 谁能写 | ✅ **仓库文件 + agent 写走 review 队列**：`.workflow.js` 存 `skillforge-server/src/main/resources/workflows/`，hot-reload。agent 写的新 workflow 先进 review 队列（status=pending），admin dashboard approve 后才注册可跑（Iron Law gate）。V3+ 加 DB 存储 + 编辑器 |
+| **Q2** | workflow run 失败 retry 策略 | ✅ 默认提案：单 workflow 总 timeout 30min；agent() 调用失败重试 1 次（网络错）；schema 验证失败重试 3 次（同 Claude Code Workflow） |
+| **Q3** | crash 时是否 resume | ✅ **异常情况（crash/OOM/server 重启 in agent()）不 resume，挂了重跑**（旧 run 标 failed，user 手动重新触发 = 新 run 从头）。**但 human-in-the-loop 暂停需要 resume**（见下） |
+| **Q4** | humanApprove 形态 + resume | ✅ **暂停 + 推 WS + dashboard 默认 review 卡 + approve/reject → resume**。**用 journal-replay 持久化**（扛 server 重启 + 人等多久都行）。不做 uiTemplate / multi-reviewer（V2 完整版） |
+| **Q5** | workflow 触发权限 | ✅ **admin only 触发 + agent 写走人审**。V2 加细粒度 RBAC |
+
+### Q3 × Q4 交互决策（关键实现选型）
+
+两种 resume 语义**分开处理**：
+
+| 场景 | 机制 | server 重启时 |
+|---|---|---|
+| **正常 agent() 完成** | result 持久化 `t_flywheel_run_step.step_output_json`（V1 就做）| — |
+| **humanApprove 暂停** | 抛 `WorkflowPausedException` 退出线程 + 持久化 paused state（**不 park 线程**）。人点 approve（即使隔天 / 中间 server 重启过）→ 重跑 workflow + **journal cache 跳过已完成 agent()** → 跑到 humanApprove 拿 decision 继续 | ✅ 能 resume（状态在 DB） |
+| **crash / OOM（非 humanApprove）** | 不自动 resume。旧 run 标 failed，user 手动重新触发 = 新 run 从头跑（不读 journal）| 挂了重跑 |
+
+**关键**：journal cache V1 就要做（**只用于 humanApprove resume**），不是 V2。它不用于 crash recovery —— crash 后 user 重新触发是新 run 从头。
+
+**好处 vs park-thread**：human-in-the-loop 等待不占线程（状态在 DB）+ 扛 server 重启/部署 + 人隔多久来点都行。
 
 ## 接下来
 
-1. user 拍 Q1-Q5
-2. 起 Plan pipeline（Full pipeline 触红灯：跨 server / dashboard / 多模块 + 新 schema + sandbox 设计）
+1. ✅ Q1-Q5 已拍
+2. 起 Plan pipeline（Full pipeline 触红灯：跨 server / dashboard / 多模块 + Rhino sandbox 设计 + humanApprove park 线程模型）
 3. Sprint 1 启动

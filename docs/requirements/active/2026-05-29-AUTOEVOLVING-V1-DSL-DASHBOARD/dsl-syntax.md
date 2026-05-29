@@ -387,8 +387,8 @@ opt-report [running] runId=abc-123
 | `workflow(name, args)` 嵌套 | 一层 | V1 不实现，V2 加 |
 | `humanApprove` | 没有 | ✅ SkillForge 独家 |
 | `worktree` 隔离 | 有 | 不实现（SkillForge 跑 sub-agent 不动 fs） |
-| `resumeFromRunId` | 有 | V1 简化版（journal cache by stepRunId） |
-| journal/resume range | 完整 | V1 仅 agent() 调用 result 缓存 |
+| `resumeFromRunId` | crash recovery + 改脚本续跑 | V1 仅 humanApprove resume（journal-replay）；crash 不自动 resume（挂了重跑） |
+| journal/resume range | 完整 | V1 journal cache 仅服务 humanApprove resume；crash recovery 推 V2 |
 
 ## 15. 等 V2-V5 加的能力
 

@@ -80,20 +80,23 @@
 - **FR-2.6** Rhino 内存上限：单 workflow 堆 ≤ 256MB
 - **FR-2.7** 安全审计：Sprint 1 末做 prompt injection 测试（让 agent 写恶意 workflow 验证沙箱兜底）
 
-### FR-3 humanApprove 原语（简化版）
+### FR-3 humanApprove 原语（journal-replay resume）
 
-- **FR-3.1** `ctx.humanApprove(payload)` 调用后 workflow 暂停，runId 状态写 `paused_for_human_approve`
+- **FR-3.1** `ctx.humanApprove(payload)` 调用后 workflow **抛 `WorkflowPausedException` 退出线程**（不 park），runId 状态写 `paused_for_human_approve` + 持久化 paused step
 - **FR-3.2** Payload 推 WS event `workflow_human_approve_required` → dashboard 显 review card
 - **FR-3.3** Dashboard review card: 显 payload JSON + approve / reject 按钮
-- **FR-3.4** User click → BE 写 `t_flywheel_run_step` 状态 + 触发 workflow resume
-- **FR-3.5** V1 暂不做：UI template / multi-reviewer / timeout-reject / multi-approve（V2 完整版）
+- **FR-3.4** User click（即使隔天 / 中间 server 重启过）→ BE 写 decision 到 `t_flywheel_run_step` → **重跑 workflow** + journal cache 跳过已完成 agent() → 跑到 `humanApprove()` 处这次拿到 decision 继续往下
+- **FR-3.5** 状态在 DB，**不占线程**（vs park-thread）+ **扛 server 重启/部署** + 人等多久来点都行
+- **FR-3.6** humanApprove 可选 timeout（默认无限等；可配 N 天没点自动 reject）
+- **FR-3.7** V1 暂不做：UI template / multi-reviewer / multi-approve（V2 完整版）
 
-### FR-4 Journal + Resume（简化版）
+### FR-4 Journal cache（仅用于 humanApprove resume，Q3 ratify）
 
-- **FR-4.1** 每个完成的 `agent()` 调用 result 缓存到 `t_flywheel_run_step.step_output_json`（V125 schema 复用）
-- **FR-4.2** workflow 挂掉 / 主动 stop / OOM 重跑时，按 stepRunId 顺序读 cache，跳过已完成的 agent()
-- **FR-4.3** Resume 仅按 stepRunId 缓存命中跳过；JS 控制流（if/while branch）必须确定性
-- **FR-4.4** V1 不做：partial JS state 持久化 / multi-phase checkpoint
+- **FR-4.1** 每个完成的 `agent()` 调用 result 写 `t_flywheel_run_step.step_output_json`（V125 复用）
+- **FR-4.2** **humanApprove resume 时**：重跑 workflow，HostAgent 调用前按 stepRunId 顺序查 journal cache，命中（status=completed）则跳过实际 LLM 调用直接返 cached result → 跑到 humanApprove 拿 decision 继续
+- **FR-4.3** Resume 要求 JS 控制流确定性（同 args + 沙箱禁 Date.now/random 保证）
+- **FR-4.4** **crash / OOM / server 重启（非 humanApprove）→ 不自动 resume**：旧 run 标 failed，user 手动重新触发 = **新 run 从头跑**（不读 journal cache）
+- **FR-4.5** V2 才做：crash-recovery 自动 resume / partial JS state 持久化 / multi-phase checkpoint
 
 ### FR-5 ConsolidationLock（防 workflow 并发）
 
@@ -139,7 +142,7 @@
 - **AC-2** L1 sandbox 工作：单测覆盖 workflow 写 `require('fs')` / `eval(...)` / `new java.io.File(...)` / `while(true){}` 全部被沙箱拦
 - **AC-3** 6 原语 host binding 工作：单测每个原语 happy path + 边缘条件覆盖
 - **AC-4** Schema 强制工作：sub-agent 输出违反 schema 时自动重试 3 次 + 最终失败抛 SchemaViolationException + 写 t_llm_span
-- **AC-5** Journal/resume：单 workflow 跑到 phase 3 时主动 stop → 重跑时跳过 phase 1+2 已完成 agent()
+- **AC-5** humanApprove journal-replay：触发 workflow → 跑到 humanApprove → 抛 WorkflowPausedException 退出线程 + WS push → **重启 server** → user click approve → 重跑 workflow + journal cache 跳过已完成 agent() → 拿 decision 继续 + status=completed（证明扛 server 重启）；另测 crash 非-humanApprove 时不自动 resume（旧 run failed + 新触发从头）
 - **AC-6** ConsolidationLock：同 workflow 双触发 → 第二次 HTTP 409
 - **AC-7** humanApprove：触发 workflow → 跑到 humanApprove → WS push 到 dashboard → click approve → workflow resume + status=completed
 - **AC-8** OPT-REPORT DSL workflow：feature flag 开启时 → 跑出跟 agent-driven 等价的 summary_json（content_md 可有差异，但 topIssues 数量 + ID 一致）

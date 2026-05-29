@@ -304,7 +304,7 @@ public class HostParallel extends BaseFunction {
 }
 ```
 
-## 8. humanApprove 实现
+## 8. humanApprove 实现（journal-replay 模式，Q3+Q4 ratify）
 
 ```java
 public class HostHumanApprove extends BaseFunction {
@@ -312,56 +312,84 @@ public class HostHumanApprove extends BaseFunction {
     public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
         Object payload = Context.jsToJava(args[0], Object.class);
 
-        // 1. 写 step 暂停状态
+        // resume 路径: 如果这个 humanApprove step 已有 decision (人之前点过), 直接返回继续
+        Optional<Decision> existing = journalCache.getApproveDecision(currentRunId, tracker.nextStepIndex());
+        if (existing.isPresent()) {
+            return cx.javaToJS(existing.get(), scope);   // 继续往下 (journal-replay 命中)
+        }
+
+        // 首次到达: 写 paused step + 退出线程 (不 park)
         String stepRunId = flywheelRunService.appendStep(currentRunId,
             ctx.json(Map.of("kind", "human_approve", "payload", payload)));
         flywheelRunService.transitionStepStatus(stepRunId, "paused_for_human_approve", null, null);
-
-        // 2. 更新 run status
         flywheelRunService.pauseRun(currentRunId, "human_approve_required");
+        wsBroadcaster.broadcastHumanApproveRequired(currentRunId, stepRunId, payload);
 
-        // 3. WS 推 dashboard
-        wsBroadcaster.broadcastHumanApproveRequired(currentRunId, payload);
-
-        // 4. 阻塞等 user click (实际是抛 WorkflowPausedException, Java 主线程退出 Rhino;
-        //    user click 时 BE 重新跑 workflow 从 stepRunId 续, 走 JournalCache 跳过已完成 agent())
+        // 抛异常退出 Rhino 线程 (状态全在 DB, 不占线程, 扛 server 重启)
         throw new WorkflowPausedException(currentRunId, stepRunId);
     }
 }
 ```
 
-User click approve/reject → REST endpoint → 写 step result → 触发 workflow resume → JournalCache 跳过 humanApprove 这个 step → workflow JS 继续走（拿到 ctx.lastStepResult()）。
+**Resume 流程**（人点 approve，即使隔天 / 中间 server 重启过）：
 
-## 9. Journal Cache 实现
+```
+POST /api/workflows/runs/{runId}/approve {decision: 'approved', reason}
+  ↓ BE 写 decision 到 t_flywheel_run_step (那个 paused step)
+  ↓ WorkflowRunnerService.resume(runId)
+  ↓ 重新 new Rhino context + 重跑 workflow JS from top
+  ↓ 每个 agent() 调用 → journalCache 命中已完成的 → 跳过实际 LLM 调用直接返 cached result
+  ↓ 跑到 humanApprove() → journalCache.getApproveDecision 命中 → 返 decision 继续往下
+  ↓ 继续跑剩余 phase → 完成 → markCompleted
+```
+
+**关键**：humanApprove resume 靠 **journal-replay**（重跑 + cache 跳过），不是 park 线程。好处：
+- 不占线程（人等多久都行）
+- 扛 server 重启 / 部署（状态全在 DB）
+
+## 9. Journal Cache（仅用于 humanApprove resume）
+
+V1 journal cache **只服务 humanApprove resume**，不做 crash-recovery（Q3「异常挂了重跑」）：
 
 ```java
 @Service
 public class JournalCache {
 
-    public Optional<Object> getCached(String runId, int stepIndex) {
-        // 按 stepIndex 找 t_flywheel_run_step (按 createdAt ASC 排)
-        // 如果 status=completed && step_output_json != null → 返 cached
-        // 否则空 (该 step 还没跑过)
-        return flywheelRunStepRepository.findByRunIdOrderByCreatedAtAsc(runId)
-            .stream()
-            .filter(s -> s.getStepKind().equals("workflow_node"))
-            .skip(stepIndex)
-            .findFirst()
+    // humanApprove resume 时, agent() 调用前查: 这个 stepIndex 是否已完成?
+    public Optional<Object> getCachedAgentResult(String runId, int stepIndex) {
+        return stepsByRunIdOrdered(runId)
+            .filter(s -> "workflow_node".equals(s.getStepKind()))
+            .skip(stepIndex).findFirst()
             .filter(s -> "completed".equals(s.getStatus()))
             .map(s -> Json.parse(s.getStepOutputJson()));
     }
+
+    // humanApprove 重放时拿之前人点的 decision
+    public Optional<Decision> getApproveDecision(String runId, int stepIndex) {
+        return stepsByRunIdOrdered(runId)
+            .filter(s -> "human_approve".equals(s.getStepKind()))
+            .skip(/* approve step index */).findFirst()
+            .filter(s -> "completed".equals(s.getStatus()))
+            .map(s -> Json.parse(s.getStepOutputJson(), Decision.class));
+    }
 }
 
-// HostAgent 调用前检查
+// HostAgent 调用前 (仅 resume run 走 cache; 首次 run isResuming=false 不查)
 public class HostAgent {
     public Object call(...) {
         int stepIndex = tracker.nextStepIndex();
-        Optional<Object> cached = journalCache.getCached(currentRunId, stepIndex);
-        if (cached.isPresent()) return cached.get();   // skip
-        // ... 正常调
+        if (ctx.isResuming()) {
+            Optional<Object> cached = journalCache.getCachedAgentResult(currentRunId, stepIndex);
+            if (cached.isPresent()) return cached.get();   // skip 实际 LLM 调用
+        }
+        // ... 正常调 (写 step result, observability + 下次 resume 用)
     }
 }
 ```
+
+**crash / OOM / server 重启（非 humanApprove）→ 不自动 resume**：旧 run 标 failed，user 手动重新触发 = 新 runId 从头跑（`isResuming=false`，不读 journal cache）。
+
+V2 才加：crash-recovery 自动 resume（startup sweeper 扫 running 状态 run 自动续）。
 
 ## 10. Dashboard `/autoevolving` FE 设计
 
