@@ -11,6 +11,7 @@ import SignalPanels from '../components/autoevolving/SignalPanels';
 import AnomalyPanel from '../components/autoevolving/AnomalyPanel';
 import { usePendingApprovals } from '../hooks/usePendingApprovals';
 import '../components/autoevolving/autoevolving.css';
+import EvolveTrajectoryPanel from '../components/evolve/EvolveTrajectoryPanel';
 
 // Lazy-load the workflow runs panel so its react-flow dependency stays in a
 // split chunk (matches Insights.tsx; avoids bundling react-flow into the main
@@ -154,6 +155,8 @@ const AutoEvolving: React.FC = () => {
       </section>
 
       <AnomalyPanel anomalies={recentAnomalies} loading={overviewLoading} />
+
+      <EvolveTrajectoryPanel />
 
       <TriggerWorkflowModal
         open={triggerOpen}

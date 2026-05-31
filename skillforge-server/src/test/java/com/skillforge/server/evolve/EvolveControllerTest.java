@@ -5,6 +5,9 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.skillforge.server.bootstrap.SystemAgentNames;
 import com.skillforge.server.entity.AgentEntity;
 import com.skillforge.server.entity.SessionEntity;
+import com.skillforge.server.evolve.dto.EvolveIterationDto;
+import com.skillforge.server.evolve.dto.EvolveRunDetailDto;
+import com.skillforge.server.evolve.dto.EvolveRunSummaryDto;
 import com.skillforge.server.flywheel.run.FlywheelRunEntity;
 import com.skillforge.server.flywheel.run.FlywheelRunService;
 import com.skillforge.server.repository.AgentRepository;
@@ -18,6 +21,10 @@ import org.springframework.http.converter.json.MappingJackson2HttpMessageConvert
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.servlet.config.annotation.EnableWebMvc;
+
+import java.time.Instant;
+import java.util.List;
+import java.util.Optional;
 
 import java.util.Optional;
 
@@ -57,6 +64,7 @@ class EvolveControllerTest {
     private FlywheelRunService flywheelRunService;
     private SessionService sessionService;
     private ChatService chatService;
+    private EvolveReadService evolveReadService;
     private EvolveController controller;
     private MockMvc mvc;
 
@@ -66,13 +74,14 @@ class EvolveControllerTest {
         flywheelRunService = mock(FlywheelRunService.class);
         sessionService = mock(SessionService.class);
         chatService = mock(ChatService.class);
+        evolveReadService = mock(EvolveReadService.class);
 
         ObjectMapper objectMapper = new ObjectMapper()
                 .findAndRegisterModules()
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
         controller = new EvolveController(agentRepository, flywheelRunService,
-                sessionService, chatService);
+                sessionService, chatService, evolveReadService);
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setMessageConverters(new MappingJackson2HttpMessageConverter(objectMapper))
                 .build();
@@ -190,6 +199,93 @@ class EvolveControllerTest {
         verify(flywheelRunService, never()).startRun(any(), any(), any(), anyLong(), anyInt());
         verify(sessionService, never()).createSession(anyLong(), anyLong());
         verify(chatService, never()).chatAsync(anyString(), anyString(), anyLong());
+    }
+
+    // ─── Module D read endpoint tests ──────────────────────────────────────
+
+    @Test
+    @DisplayName("GET /agents/{id}/runs → 200 envelope {items:[...]} with iterationCount and finalDelta")
+    void listRuns_happyPath_returnsEnvelope() throws Exception {
+        Instant now = Instant.parse("2026-05-31T10:00:00Z");
+        List<EvolveRunSummaryDto> items = List.of(
+                new EvolveRunSummaryDto("run-1", "completed", now, now, 3, 2.4),
+                new EvolveRunSummaryDto("run-2", "running",   now, now, 1, null));
+        when(evolveReadService.listRunsForAgent(7L, 20)).thenReturn(items);
+
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/api/evolve/agents/7/runs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items").isArray())
+                .andExpect(jsonPath("$.items.length()").value(2))
+                .andExpect(jsonPath("$.items[0].evolveRunId").value("run-1"))
+                .andExpect(jsonPath("$.items[0].status").value("completed"))
+                .andExpect(jsonPath("$.items[0].iterationCount").value(3))
+                .andExpect(jsonPath("$.items[0].finalDelta").value(2.4))
+                .andExpect(jsonPath("$.items[1].evolveRunId").value("run-2"))
+                .andExpect(jsonPath("$.items[1].iterationCount").value(1))
+                .andExpect(jsonPath("$.items[1].finalDelta").doesNotExist());
+    }
+
+    @Test
+    @DisplayName("GET /agents/{id}/runs?limit=5 → forwards clamped limit to service")
+    void listRuns_customLimit_forwardedToService() throws Exception {
+        when(evolveReadService.listRunsForAgent(7L, 5)).thenReturn(List.of());
+
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/api/evolve/agents/7/runs").param("limit", "5"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items").isArray())
+                .andExpect(jsonPath("$.items.length()").value(0));
+
+        verify(evolveReadService).listRunsForAgent(7L, 5);
+    }
+
+    @Test
+    @DisplayName("GET /runs/{evolveRunId} → 200 single object with iterations ordered by step_index")
+    void getRunDetail_happyPath_returnsSingleObject() throws Exception {
+        Instant now = Instant.parse("2026-05-31T10:00:00Z");
+        EvolveIterationDto iter1 = new EvolveIterationDto(
+                1, "prompt", "Tightened greeting", "cand-a",
+                72.5, 74.9, 2.4, true, "ab-xyz", now);
+        EvolveIterationDto iter2 = new EvolveIterationDto(
+                2, "skill",  "Reduced latency",  "cand-b",
+                74.9, 73.1, -1.8, false, null, now);
+        EvolveRunDetailDto detail = new EvolveRunDetailDto(
+                "run-1", 7L, "my-agent", "completed", now, now,
+                List.of(iter1, iter2));
+        when(evolveReadService.getRunDetail("run-1")).thenReturn(Optional.of(detail));
+
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/api/evolve/runs/run-1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.evolveRunId").value("run-1"))
+                .andExpect(jsonPath("$.agentId").value(7))
+                .andExpect(jsonPath("$.agentName").value("my-agent"))
+                .andExpect(jsonPath("$.status").value("completed"))
+                .andExpect(jsonPath("$.iterations").isArray())
+                .andExpect(jsonPath("$.iterations.length()").value(2))
+                .andExpect(jsonPath("$.iterations[0].iteration").value(1))
+                .andExpect(jsonPath("$.iterations[0].surface").value("prompt"))
+                .andExpect(jsonPath("$.iterations[0].changeDesc").value("Tightened greeting"))
+                .andExpect(jsonPath("$.iterations[0].candidateId").value("cand-a"))
+                .andExpect(jsonPath("$.iterations[0].baselineScore").value(72.5))
+                .andExpect(jsonPath("$.iterations[0].candidateScore").value(74.9))
+                .andExpect(jsonPath("$.iterations[0].delta").value(2.4))
+                .andExpect(jsonPath("$.iterations[0].kept").value(true))
+                .andExpect(jsonPath("$.iterations[0].abRunId").value("ab-xyz"))
+                .andExpect(jsonPath("$.iterations[1].iteration").value(2))
+                .andExpect(jsonPath("$.iterations[1].kept").value(false))
+                .andExpect(jsonPath("$.iterations[1].abRunId").doesNotExist());
+    }
+
+    @Test
+    @DisplayName("GET /runs/{evolveRunId} → 404 when run not found or not an evolve run")
+    void getRunDetail_notFound_returns404() throws Exception {
+        when(evolveReadService.getRunDetail("no-such-run")).thenReturn(Optional.empty());
+
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/api/evolve/runs/no-such-run"))
+                .andExpect(status().isNotFound());
     }
 
     // ─── helpers ──────────────────────────────────────────────────────────

@@ -1,0 +1,157 @@
+/**
+ * EvolveTrajectoryChart — rendering tests.
+ *
+ * echarts-for-react renders a canvas/div; we mock it to avoid
+ * canvas-in-jsdom issues while still testing option construction logic.
+ */
+import React from 'react';
+import { describe, it, expect, vi, beforeAll } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import type { EvolveRunDetail, EvolveIteration } from '../../../api/evolve';
+
+// ── Mock echarts-for-react so tests don't need a real canvas ─────────────────
+vi.mock('echarts-for-react', () => {
+  const ReactECharts = (props: {
+    option: object;
+    style?: React.CSSProperties;
+    'data-testid'?: string;
+  }) => (
+    <div
+      data-testid="echarts-mock"
+      data-option={JSON.stringify(props.option)}
+      style={props.style}
+    />
+  );
+  ReactECharts.displayName = 'ReactECharts';
+  return { default: ReactECharts };
+});
+
+import EvolveTrajectoryChart from '../EvolveTrajectoryChart';
+
+// ── Fixtures ─────────────────────────────────────────────────────────────────
+
+function makeIteration(overrides: Partial<EvolveIteration> = {}): EvolveIteration {
+  return {
+    iteration: 1,
+    surface: 'prompt',
+    changeDesc: 'Improved instruction clarity',
+    candidateId: 'cand-001',
+    baselineScore: 0.70,
+    candidateScore: 0.76,
+    delta: 0.06,
+    kept: true,
+    abRunId: 'ab-001',
+    createdAt: '2026-05-31T10:00:00Z',
+    ...overrides,
+  };
+}
+
+function makeDetail(overrides: Partial<EvolveRunDetail> = {}): EvolveRunDetail {
+  return {
+    evolveRunId: 'run-001',
+    agentId: 42,
+    agentName: 'main-assistant',
+    status: 'completed',
+    createdAt: '2026-05-31T09:00:00Z',
+    updatedAt: '2026-05-31T09:45:00Z',
+    iterations: [
+      makeIteration({ iteration: 1, candidateScore: 0.72, kept: true }),
+      makeIteration({ iteration: 2, candidateScore: 0.78, kept: false }),
+      makeIteration({ iteration: 3, candidateScore: 0.83, kept: true }),
+    ],
+    ...overrides,
+  };
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+beforeAll(() => {
+  // CSS variables are not resolved in jsdom — suppress the expected warnings
+});
+
+describe('EvolveTrajectoryChart', () => {
+  it('renders empty state when runs array is empty', () => {
+    render(<EvolveTrajectoryChart runs={[]} />);
+    expect(screen.getByTestId('evolve-trajectory-chart-empty')).toBeInTheDocument();
+    expect(screen.queryByTestId('echarts-mock')).not.toBeInTheDocument();
+  });
+
+  it('renders echarts when runs are provided', () => {
+    render(<EvolveTrajectoryChart runs={[makeDetail()]} />);
+    const chart = screen.getByTestId('echarts-mock');
+    expect(chart).toBeInTheDocument();
+  });
+
+  it('produces exactly one series per run', () => {
+    const runs = [
+      makeDetail({ evolveRunId: 'run-001' }),
+      makeDetail({ evolveRunId: 'run-002', agentName: 'other-agent' }),
+    ];
+    render(<EvolveTrajectoryChart runs={runs} />);
+    const chart = screen.getByTestId('echarts-mock');
+    const option = JSON.parse(chart.getAttribute('data-option') ?? '{}') as {
+      series: unknown[];
+    };
+    expect(option.series).toHaveLength(2);
+  });
+
+  it('series data points map iteration → candidateScore', () => {
+    const detail = makeDetail({
+      iterations: [
+        makeIteration({ iteration: 1, candidateScore: 0.72 }),
+        makeIteration({ iteration: 2, candidateScore: 0.80 }),
+      ],
+    });
+    render(<EvolveTrajectoryChart runs={[detail]} />);
+    const option = JSON.parse(
+      screen.getByTestId('echarts-mock').getAttribute('data-option') ?? '{}',
+    ) as { series: Array<{ data: Array<{ value: [number, number] }> }> };
+    const pts = option.series[0].data;
+    expect(pts[0].value).toEqual([1, 0.72]);
+    expect(pts[1].value).toEqual([2, 0.80]);
+  });
+
+  it('stores iterMeta on each data point (for tooltip)', () => {
+    const iter = makeIteration({
+      iteration: 1,
+      surface: 'skill',
+      changeDesc: 'Rewrote tool description',
+      kept: false,
+    });
+    render(<EvolveTrajectoryChart runs={[makeDetail({ iterations: [iter] })]} />);
+    const option = JSON.parse(
+      screen.getByTestId('echarts-mock').getAttribute('data-option') ?? '{}',
+    ) as {
+      series: Array<{
+        data: Array<{ iterMeta: EvolveIteration }>;
+      }>;
+    };
+    const meta = option.series[0].data[0].iterMeta;
+    expect(meta.surface).toBe('skill');
+    expect(meta.changeDesc).toBe('Rewrote tool description');
+    expect(meta.kept).toBe(false);
+  });
+
+  it('shows legend when multiple runs are provided', () => {
+    const runs = [makeDetail({ evolveRunId: 'run-001' }), makeDetail({ evolveRunId: 'run-002' })];
+    render(<EvolveTrajectoryChart runs={runs} />);
+    const option = JSON.parse(
+      screen.getByTestId('echarts-mock').getAttribute('data-option') ?? '{}',
+    ) as { legend: { show: boolean } };
+    expect(option.legend.show).toBe(true);
+  });
+
+  it('hides legend for a single run', () => {
+    render(<EvolveTrajectoryChart runs={[makeDetail()]} />);
+    const option = JSON.parse(
+      screen.getByTestId('echarts-mock').getAttribute('data-option') ?? '{}',
+    ) as { legend: { show: boolean } };
+    expect(option.legend.show).toBe(false);
+  });
+
+  it('respects custom height prop', () => {
+    render(<EvolveTrajectoryChart runs={[makeDetail()]} height={500} />);
+    const chart = screen.getByTestId('echarts-mock');
+    expect(chart).toHaveStyle({ height: '500px' });
+  });
+});

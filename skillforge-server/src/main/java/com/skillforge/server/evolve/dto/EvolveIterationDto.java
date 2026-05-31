@@ -1,0 +1,36 @@
+package com.skillforge.server.evolve.dto;
+
+import java.time.Instant;
+
+/**
+ * AUTOEVOLVE-AGENT-FLYWHEEL Module D (FR-D1) — one iteration row for the
+ * {@code GET /api/evolve/runs/{evolveRunId}} detail response.
+ *
+ * <p>Field names match the payload written by {@code RecordIterationTool} into
+ * {@code step_output_json} (and therefore what the orchestrator sends via
+ * {@code FlywheelRunService.appendEvolveIterationStep}):
+ * <ul>
+ *   <li>{@code iteration}      — 1-based index (int)</li>
+ *   <li>{@code surface}        — "prompt" / "skill" / "behavior_rule"</li>
+ *   <li>{@code changeDesc}     — short description of what changed</li>
+ *   <li>{@code candidateId}    — the candidate evaluated this turn</li>
+ *   <li>{@code baselineScore}  — nullable Double</li>
+ *   <li>{@code candidateScore} — nullable Double</li>
+ *   <li>{@code delta}          — nullable Double (candidateScore - baselineScore)</li>
+ *   <li>{@code kept}           — whether the candidate was kept (not promoted)</li>
+ *   <li>{@code abRunId}        — optional A/B run traceability id</li>
+ *   <li>{@code createdAt}      — ISO-8601 instant of the step row</li>
+ * </ul>
+ */
+public record EvolveIterationDto(
+        int iteration,
+        String surface,
+        String changeDesc,
+        String candidateId,
+        Double baselineScore,
+        Double candidateScore,
+        Double delta,
+        boolean kept,
+        String abRunId,
+        Instant createdAt
+) {}

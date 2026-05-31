@@ -1,0 +1,236 @@
+/*
+ * AUTOEVOLVE-AGENT-FLYWHEEL Module D — trajectory panel styles.
+ * Scoped to .etraj-* / .erl-* / .etc-*
+ * Linear / Raycast dark-precision idiom (design.md): scale contrast,
+ * semantic colour, designed hover/focus states, 8px grid rhythm.
+ */
+
+/* ───────────────── trajectory panel wrapper ─────────────────────────────── */
+
+.etraj-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md, 10px);
+  background: var(--bg-surface, #ffffff);
+  overflow: hidden;
+}
+
+.etraj-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.etraj-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+
+.etraj-subtitle {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
+.etraj-body {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 0;
+  min-height: 380px;
+}
+
+@media (max-width: 768px) {
+  .etraj-body {
+    grid-template-columns: 1fr;
+  }
+}
+
+.etraj-sidebar {
+  border-right: 1px solid var(--border-subtle);
+  padding: 8px;
+  overflow-y: auto;
+  max-height: 420px;
+}
+
+.etraj-chart-area {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.etraj-agent-select {
+  padding: 8px 16px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.etraj-agent-label {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.etraj-agent-input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 13px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-sm, 6px);
+  color: var(--text-primary);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.etraj-agent-input:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 3px var(--accent-muted, rgba(217,99,58,0.12));
+}
+
+.etraj-load-btn {
+  flex-shrink: 0;
+  padding: 5px 14px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-primary);
+  background: transparent;
+  border: 1px solid var(--accent-primary);
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.etraj-load-btn:hover {
+  background: var(--accent-muted, rgba(217,99,58,0.10));
+}
+
+.etraj-load-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.etraj-error {
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 8%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-error) 22%, transparent);
+}
+
+/* ───────────────── run list ─────────────────────────────────────────────── */
+
+.erl-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.erl-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+  font: inherit;
+}
+
+.erl-row:hover {
+  background: var(--bg-hover, #eceae3);
+  border-color: var(--border-subtle);
+}
+
+.erl-row--selected {
+  background: var(--accent-muted, rgba(217,99,58,0.10));
+  border-color: var(--accent-primary);
+}
+
+.erl-row-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.erl-status-dot {
+  font-size: 9px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.erl-run-id {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.erl-delta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.erl-row-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.erl-iter-count {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.erl-date {
+  font-size: 10px;
+  color: var(--text-muted, #8a8780);
+  font-family: var(--font-mono);
+}
+
+.erl-loading,
+.erl-empty {
+  padding: 16px 8px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+
+/* ───────────────── chart empty state ────────────────────────────────────── */
+
+.etc-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 260px;
+  font-size: 13px;
+  color: var(--text-tertiary);
+}

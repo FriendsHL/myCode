@@ -3,6 +3,8 @@ package com.skillforge.server.evolve;
 import com.skillforge.server.bootstrap.SystemAgentNames;
 import com.skillforge.server.entity.AgentEntity;
 import com.skillforge.server.entity.SessionEntity;
+import com.skillforge.server.evolve.dto.EvolveRunDetailDto;
+import com.skillforge.server.evolve.dto.EvolveRunSummaryDto;
 import com.skillforge.server.flywheel.run.FlywheelRunEntity;
 import com.skillforge.server.flywheel.run.FlywheelRunService;
 import com.skillforge.server.repository.AgentRepository;
@@ -12,6 +14,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -20,6 +23,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -67,15 +71,18 @@ public class EvolveController {
     private final FlywheelRunService flywheelRunService;
     private final SessionService sessionService;
     private final ChatService chatService;
+    private final EvolveReadService evolveReadService;
 
     public EvolveController(AgentRepository agentRepository,
                             FlywheelRunService flywheelRunService,
                             SessionService sessionService,
-                            ChatService chatService) {
+                            ChatService chatService,
+                            EvolveReadService evolveReadService) {
         this.agentRepository = agentRepository;
         this.flywheelRunService = flywheelRunService;
         this.sessionService = sessionService;
         this.chatService = chatService;
+        this.evolveReadService = evolveReadService;
     }
 
     /**
@@ -169,6 +176,98 @@ public class EvolveController {
         // orchestrator will drive it in the background (mirrors FlywheelController
         // .runLoop's accepted() pattern).
         return ResponseEntity.accepted().body(body);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Module D — read API (FR-D1 / FR-D3 / FR-D4)
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * FR-D4 — list evolve runs for a given agent, newest-first.
+     *
+     * <p>Returns an {@code {items: [...]} } envelope (footgun #6b: FE must NOT
+     * treat the response as a bare array).
+     *
+     * <p>Response shape:
+     * <pre>
+     * {
+     *   "items": [
+     *     {
+     *       "evolveRunId":    "...",
+     *       "status":         "completed",
+     *       "createdAt":      "2026-05-31T10:00:00Z",
+     *       "updatedAt":      "2026-05-31T12:00:00Z",
+     *       "iterationCount": 5,
+     *       "finalDelta":     2.4
+     *     },
+     *     ...
+     *   ]
+     * }
+     * </pre>
+     *
+     * @param agentId target agent id; 400 if &lt;= 0.
+     * @param limit   max runs to return (default 20, clamped to [1, 100]).
+     */
+    @GetMapping("/agents/{agentId}/runs")
+    public ResponseEntity<?> listRuns(
+            @PathVariable("agentId") Long agentId,
+            @RequestParam(value = "limit", required = false, defaultValue = "20") int limit) {
+        if (agentId == null || agentId <= 0L) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "agentId must be a positive long; got " + agentId);
+        }
+        List<EvolveRunSummaryDto> items = evolveReadService.listRunsForAgent(agentId, limit);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("items", items);
+        return ResponseEntity.ok(body);
+    }
+
+    /**
+     * FR-D3 — full detail for a single evolve run, including all recorded
+     * iterations (trajectory).
+     *
+     * <p>Returns a single JSON object (NOT enveloped). 404 if the run is not
+     * found or its {@code loop_kind} is not {@code evolve}.
+     *
+     * <p>Response shape:
+     * <pre>
+     * {
+     *   "evolveRunId":  "...",
+     *   "agentId":      7,
+     *   "agentName":    "my-agent",
+     *   "status":       "completed",
+     *   "createdAt":    "2026-05-31T10:00:00Z",
+     *   "updatedAt":    "2026-05-31T12:30:00Z",
+     *   "iterations": [
+     *     {
+     *       "iteration":      1,
+     *       "surface":        "prompt",
+     *       "changeDesc":     "Tightened the system prompt greeting.",
+     *       "candidateId":    "cand-abc",
+     *       "baselineScore":  72.5,
+     *       "candidateScore": 74.9,
+     *       "delta":          2.4,
+     *       "kept":           true,
+     *       "abRunId":        "ab-xyz",
+     *       "createdAt":      "2026-05-31T10:05:00Z"
+     *     }
+     *   ]
+     * }
+     * </pre>
+     *
+     * @param evolveRunId the run UUID
+     */
+    @GetMapping("/runs/{evolveRunId}")
+    public ResponseEntity<?> getRunDetail(
+            @PathVariable("evolveRunId") String evolveRunId) {
+        if (evolveRunId == null || evolveRunId.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "evolveRunId is required");
+        }
+        EvolveRunDetailDto detail = evolveReadService.getRunDetail(evolveRunId)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "Evolve run not found or not an evolve run: " + evolveRunId));
+        return ResponseEntity.ok(detail);
     }
 
     private static int clampMaxIter(Integer raw) {

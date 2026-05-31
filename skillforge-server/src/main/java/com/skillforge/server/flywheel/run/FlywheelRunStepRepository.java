@@ -80,6 +80,24 @@ public interface FlywheelRunStepRepository extends JpaRepository<FlywheelRunStep
     long countByRunIdAndStepKind(String runId, String stepKind);
 
     /**
+     * AUTOEVOLVE-AGENT-FLYWHEEL Module D (FR-D1/FR-D4): all steps of a given
+     * {@code step_kind} for a run. Used by {@code EvolveReadService} to fetch
+     * all {@code evolve_iteration} steps for a run when computing
+     * {@code iterationCount} and {@code finalDelta} in the list endpoint.
+     */
+    List<FlywheelRunStepEntity> findByRunIdAndStepKind(String runId, String stepKind);
+
+    /**
+     * AUTOEVOLVE-AGENT-FLYWHEEL Module D (FR-D3): all {@code evolve_iteration}
+     * steps for a run, ordered by {@code step_index} ascending (= iteration
+     * number). {@code step_index} is the 1-based iteration counter written by
+     * {@code appendEvolveIterationStep}; ordering by it yields the chronological
+     * iteration trajectory for the detail endpoint.
+     */
+    List<FlywheelRunStepEntity> findByRunIdAndStepKindOrderByStepIndexAsc(
+            String runId, String stepKind);
+
+    /**
      * AUTOEVOLVE-AGENT-FLYWHEEL Module C (FR-C7 CRIT-1 fix): count
      * {@code evolve_iteration} steps across ALL evolve runs for a given
      * {@code agentId}. Used as the per-agent A/B budget counter in
