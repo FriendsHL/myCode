@@ -116,8 +116,16 @@ var summary = agent(
   { agentSlug: 'opt-report-aggregator', schema: SUMMARY_SCHEMA, phase: 'Aggregate' })
 
 // ── Approve (= 新增人工 gate, dsl-syntax §11 / prd FR-7.1) ──
+// AUTOEVOLVE-AGENT-FLYWHEEL: the agent-driven evolve orchestrator passes
+// args.autoApprove=true — the report is just an INPUT to the autonomous loop (the
+// human gate moves to the END of the evolve loop, where the operator adopts the
+// trajectory), so pausing here on humanApprove would deadlock the orchestrator (it
+// would wait for a report that never completes). A human-triggered run (no
+// autoApprove) keeps the manual gate.
 phase('Approve')
-var decision = humanApprove(summary)
+var decision = args.autoApprove
+  ? { approved: true, reviewerId: 'system:auto', reason: 'auto-approved (orchestrator-driven evolve loop)' }
+  : humanApprove(summary)
 
 return {
   status: decision && decision.approved ? 'approved' : 'rejected',

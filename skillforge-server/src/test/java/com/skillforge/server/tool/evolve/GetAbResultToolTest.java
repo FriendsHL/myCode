@@ -41,8 +41,9 @@ class GetAbResultToolTest {
 
     @BeforeEach
     void setUp() {
+        // small block timeout/interval so the RUNNING test doesn't wait 90s
         tool = new GetAbResultTool(promptAbRunRepository, skillAbRunRepository,
-                behaviorRuleAbRunRepository, objectMapper);
+                behaviorRuleAbRunRepository, objectMapper, 80L, 20L);
     }
 
     /** Helper: build input map with all required fields. */

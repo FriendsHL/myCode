@@ -139,6 +139,27 @@ public class WorkflowRunnerService {
      * @return the {@code t_flywheel_run} id
      * @throws WorkflowAlreadyRunningException a run for {@code def.name()} is already in flight
      */
+    /**
+     * Best-effort extraction of {@code args.agentId} (String "5" or Number 5) so a
+     * workflow run can be attributed to the agent it is about. Returns null when
+     * absent / unparseable / non-positive — caller falls back to the anchor agent.
+     */
+    static Long extractAgentId(Map<String, Object> args) {
+        if (args == null) {
+            return null;
+        }
+        Object raw = args.get("agentId");
+        if (raw == null) {
+            return null;
+        }
+        try {
+            long id = raw instanceof Number n ? n.longValue() : Long.parseLong(String.valueOf(raw).trim());
+            return id > 0 ? id : null;
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
     public String startRun(WorkflowDefinition def, Map<String, Object> args, Long userId) {
         String workflowName = def.name();
 
@@ -159,11 +180,20 @@ public class WorkflowRunnerService {
             inputJson.put("workflow_args", args == null ? Map.of() : args);
             inputJson.put("sourceHash", def.sourceHash());
 
+            // Attribute the run to the agent it is ABOUT when the args name one
+            // (e.g. opt-report's args.agentId = the target agent), falling back to
+            // the workflow anchor agent. Without this, an opt-report run produced by
+            // RunWorkflow carries the anchor agent's id, so downstream readers
+            // (GetOptReport's expectedAgentId pin, OptReportToEventBridge's
+            // event.agentId) would mis-attribute the report to the anchor agent.
+            Long argAgentId = extractAgentId(args);
+            Long runAgentId = argAgentId != null ? argAgentId : anchorAgent.getId();
+
             FlywheelRunEntity run = flywheelRunService.startRun(
                     LOOP_KIND_WORKFLOW,
                     FlywheelRunEntity.TRIGGER_SOURCE_USER_MANUAL,
                     inputJson,
-                    anchorAgent.getId(),
+                    runAgentId,
                     1);
             runId = run.getId();
 

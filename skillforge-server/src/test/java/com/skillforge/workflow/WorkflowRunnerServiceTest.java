@@ -203,4 +203,40 @@ class WorkflowRunnerServiceTest {
         verify(flywheelRunService).markError(eq("run-1"), anyString());
         assertThat(lock.isHeld("wf")).isFalse();
     }
+
+    @Test
+    @DisplayName("AUTOEVOLVE: extractAgentId parses String / Number agentId, null otherwise")
+    void extractAgentId_variants() {
+        assertThat(WorkflowRunnerService.extractAgentId(Map.of("agentId", "5"))).isEqualTo(5L);
+        assertThat(WorkflowRunnerService.extractAgentId(Map.of("agentId", 7))).isEqualTo(7L);
+        assertThat(WorkflowRunnerService.extractAgentId(Map.of("agentId", "0"))).isNull();   // non-positive
+        assertThat(WorkflowRunnerService.extractAgentId(Map.of("agentId", "x"))).isNull();   // unparseable
+        assertThat(WorkflowRunnerService.extractAgentId(Map.of("windowDays", 7))).isNull();  // absent
+        assertThat(WorkflowRunnerService.extractAgentId(null)).isNull();
+    }
+
+    @Test
+    @DisplayName("AUTOEVOLVE: run is attributed to args.agentId (the target), not the anchor agent")
+    void startRun_attributesRunToArgsAgentId() throws InterruptedException {
+        WorkflowDefinition def = new WorkflowDefinition("wf", "d", List.of(), "return ({ok:true});", "h");
+        when(registry.findByName("wf")).thenReturn(Optional.of(def));
+        AgentEntity anchor = new AgentEntity();
+        anchor.setId(3L);
+        anchor.setName("anchor-agent");
+        when(agentRepository.findFirstByName("anchor-agent")).thenReturn(Optional.of(anchor));
+        FlywheelRunEntity run = new FlywheelRunEntity();
+        run.setId("run-9");
+        // expect the run created with agentId=5 (from args), NOT 3 (anchor)
+        when(flywheelRunService.startRun(eq("workflow"), eq("user_manual"), any(), eq(5L), eq(1)))
+                .thenReturn(run);
+        SessionEntity sess = new SessionEntity();
+        sess.setId("sess-9");
+        when(sessionService.createSession(eq(5L), eq(3L))).thenReturn(sess);
+        lenient().when(invokerFactory.create(anyString(), any(), any())).thenReturn((p, o, i) -> "x");
+
+        service.startRun("wf", Map.of("agentId", "5"), 5L);
+        awaitBody();
+
+        verify(flywheelRunService).startRun(eq("workflow"), eq("user_manual"), any(), eq(5L), eq(1));
+    }
 }

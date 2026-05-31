@@ -1471,13 +1471,27 @@ public class SkillForgeConfig {
      * submitted here, so the runners must never compete for the workflow thread's
      * own pool.
      *
-     * <p>Concurrency cap target {@code min(16, cores-2)} (plan §2.2) sized off
-     * available processors; floor of 2 so a 1-2 core box still parallelises.
+     * <p>Concurrency cap: configurable via
+     * {@code skillforge.workflow.subagent-concurrency} (default 4). The CPU is
+     * NOT the binding constraint — the LLM provider's rate limit is: a workflow
+     * like opt-report fans out {@code parallel(batches.map(...))}
+     * session-batch-annotators, each making provider calls, so a CPU-sized cap
+     * ({@code min(16, cores-2)}) easily tripped the provider's HTTP 429 ("Too
+     * many requests"), which is fatal (LLM 429 is not retried). A modest default
+     * keeps the fan-out under typical provider limits; raise it after upgrading
+     * the provider tier, or lower it to 2 if a stricter tier still 429s. A value
+     * {@code <= 0} falls back to the legacy CPU-sized cap.
      */
     @Bean(name = "workflowSubAgentExecutor", destroyMethod = "shutdown")
-    public ThreadPoolExecutor workflowSubAgentExecutor() {
-        int cores = Runtime.getRuntime().availableProcessors();
-        int max = Math.max(2, Math.min(16, cores - 2));
+    public ThreadPoolExecutor workflowSubAgentExecutor(
+            @Value("${skillforge.workflow.subagent-concurrency:4}") int configured) {
+        int max;
+        if (configured > 0) {
+            max = configured;
+        } else {
+            int cores = Runtime.getRuntime().availableProcessors();
+            max = Math.max(2, Math.min(16, cores - 2));
+        }
         ThreadPoolExecutor executor = new ThreadPoolExecutor(
                 max, max,
                 60L, TimeUnit.SECONDS,
@@ -1489,6 +1503,8 @@ public class SkillForgeConfig {
                 },
                 new ThreadPoolExecutor.AbortPolicy());
         executor.allowCoreThreadTimeOut(true);
+        log.info("workflowSubAgentExecutor concurrency cap = {} (configured={}, "
+                + "skillforge.workflow.subagent-concurrency)", max, configured);
         return executor;
     }
 }

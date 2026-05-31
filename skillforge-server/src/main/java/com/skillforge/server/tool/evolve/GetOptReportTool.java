@@ -50,18 +50,44 @@ public class GetOptReportTool implements Tool {
 
     public static final String NAME = "GetOptReport";
 
+    /**
+     * Block up to this long waiting for the opt-report run to complete, re-checking
+     * every {@link #POLL_INTERVAL_MS}. A blocking call is essential: the orchestrator
+     * has a bounded agent-loop budget (maxLoops≈25), and an opt-report run takes
+     * minutes — tight-polling from the agent loop would exhaust the budget before
+     * the report finishes. One blocking call covers most of the wait in a single
+     * loop iteration. Bounded so the agent loop is never wedged forever; the
+     * orchestrator simply calls again to extend the wait.
+     */
+    static final long DEFAULT_BLOCK_TIMEOUT_MS = 90_000L;
+    static final long DEFAULT_POLL_INTERVAL_MS = 3_000L;
+
     private static final Logger log = LoggerFactory.getLogger(GetOptReportTool.class);
 
     private final FlywheelRunRepository runRepository;
     private final OptReportSummaryParser summaryParser;
     private final ObjectMapper objectMapper;
+    private final long blockTimeoutMs;
+    private final long pollIntervalMs;
 
     public GetOptReportTool(FlywheelRunRepository runRepository,
                             OptReportSummaryParser summaryParser,
                             ObjectMapper objectMapper) {
+        this(runRepository, summaryParser, objectMapper,
+                DEFAULT_BLOCK_TIMEOUT_MS, DEFAULT_POLL_INTERVAL_MS);
+    }
+
+    /** Test constructor — small timeout/interval so blocking-wait tests run fast. */
+    GetOptReportTool(FlywheelRunRepository runRepository,
+                     OptReportSummaryParser summaryParser,
+                     ObjectMapper objectMapper,
+                     long blockTimeoutMs,
+                     long pollIntervalMs) {
         this.runRepository = runRepository;
         this.summaryParser = summaryParser;
         this.objectMapper = objectMapper;
+        this.blockTimeoutMs = blockTimeoutMs;
+        this.pollIntervalMs = pollIntervalMs;
     }
 
     @Override
@@ -123,10 +149,18 @@ public class GetOptReportTool implements Tool {
             if (report == null) {
                 return SkillResult.validationError("opt-report not found: " + reportId);
             }
-            if (!FlywheelRunEntity.LOOP_KIND_OPT_REPORT.equals(report.getLoopKind())) {
+            // Accept an opt-report from EITHER producer:
+            //   - legacy OptReportService → loop_kind=opt_report
+            //   - RunWorkflow('opt-report') → loop_kind=workflow (the summary is
+            //     nested under `summary` in summary_json; OptReportSummaryParser
+            //     unwraps it). A non-opt-report workflow run simply parses to zero
+            //     topIssues below (harmless), so we don't need to inspect
+            //     workflow_name here.
+            String loopKind = report.getLoopKind();
+            if (!FlywheelRunEntity.LOOP_KIND_OPT_REPORT.equals(loopKind)
+                    && !FlywheelRunEntity.LOOP_KIND_WORKFLOW.equals(loopKind)) {
                 return SkillResult.validationError(
-                        "run " + reportId + " is not an opt-report (loop_kind="
-                                + report.getLoopKind() + ")");
+                        "run " + reportId + " is not an opt-report (loop_kind=" + loopKind + ")");
             }
 
             // expectedAgentId is REQUIRED + server-enforced (not just schema-advertised):
@@ -151,13 +185,36 @@ public class GetOptReportTool implements Tool {
                                 + " but expectedAgentId=" + expectedAgentId);
             }
 
-            if (!FlywheelRunEntity.STATUS_COMPLETED.equals(report.getStatus())) {
-                // Not terminal-success yet — the orchestrator should poll/wait
-                // (or the report failed). Surface as a non-validation error so the
-                // agent reasons about retry/wait rather than "fix your input".
+            // Block (bounded) until the report reaches a terminal state, re-reading
+            // the row every POLL_INTERVAL_MS. This keeps the orchestrator's agent
+            // loop at 1-2 iterations here instead of ~25 tight polls (which would
+            // blow its maxLoops budget while opt-report runs for minutes). Each
+            // findById is its own autocommit read, so it observes the workflow's
+            // markCompleted as soon as it commits.
+            long deadline = System.currentTimeMillis() + blockTimeoutMs;
+            while (!FlywheelRunEntity.STATUS_COMPLETED.equals(report.getStatus())
+                    && !FlywheelRunEntity.STATUS_ERROR.equals(report.getStatus())
+                    && System.currentTimeMillis() < deadline) {
+                try {
+                    Thread.sleep(pollIntervalMs);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+                report = runRepository.findById(reportId).orElse(report);
+            }
+            if (FlywheelRunEntity.STATUS_ERROR.equals(report.getStatus())) {
                 return SkillResult.error(
-                        "opt-report " + reportId + " is not completed yet (status="
-                                + report.getStatus() + "); wait for it to finish before reading issues");
+                        "opt-report " + reportId + " failed (status=error); it cannot be read. "
+                                + "Pick a different issue source or re-run the report.");
+            }
+            if (!FlywheelRunEntity.STATUS_COMPLETED.equals(report.getStatus())) {
+                // Still running after the bounded wait — tell the agent to call again
+                // to keep waiting (one more call = one more BLOCK_TIMEOUT window).
+                return SkillResult.error(
+                        "opt-report " + reportId + " is still running (status="
+                                + report.getStatus() + ") after waiting ~"
+                                + (blockTimeoutMs / 1000) + "s; call GetOptReport again to keep waiting");
             }
 
             String summaryJson = report.getSummaryJson();

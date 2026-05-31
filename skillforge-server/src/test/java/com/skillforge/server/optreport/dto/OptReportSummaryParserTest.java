@@ -19,6 +19,53 @@ class OptReportSummaryParserTest {
     }
 
     @Test
+    @DisplayName("AUTOEVOLVE: unwraps the nested workflow-return shape {status, summary:{topIssues}}")
+    void parse_nestedWorkflowReturnShape_unwrapsSummary() {
+        // RunWorkflow('opt-report') stores the workflow RETURN value as summary_json,
+        // so topIssues are nested under `summary`. The parser must unwrap it.
+        String json = """
+            {
+              "status": "approved",
+              "reviewerId": "system:auto",
+              "reason": "auto-approved (orchestrator-driven evolve loop)",
+              "batchesTotal": 3,
+              "summary": {
+                "totalSessions": 12,
+                "topIssues": [
+                  {
+                    "id": "issue-1",
+                    "title": "Monorepo nav fails",
+                    "severity": "high",
+                    "sessionCount": 4,
+                    "exampleSessionIds": ["sess-abc"],
+                    "suspectSurface": "behavior_rule",
+                    "confidence": 0.8,
+                    "suggestion": "Add a cd-check rule"
+                  }
+                ]
+              }
+            }
+            """;
+
+        OptReportSummaryJson out = parser.parse(json);
+
+        assertThat(out.topIssues()).hasSize(1);
+        assertThat(out.topIssues().get(0).id()).isEqualTo("issue-1");
+        assertThat(out.topIssues().get(0).suspectSurface()).isEqualTo("behavior_rule");
+    }
+
+    @Test
+    @DisplayName("AUTOEVOLVE: top-level topIssues still parse (legacy opt_report shape) — unwrap is conditional")
+    void parse_topLevelShape_stillParses_whenSummaryFieldAbsent() {
+        String json = """
+            { "topIssues": [ { "id": "issue-1", "title": "t", "severity": "low",
+              "sessionCount": 1, "exampleSessionIds": ["sess-1"], "suspectSurface": "prompt",
+              "confidence": 0.5, "suggestion": "s" } ] }
+            """;
+        assertThat(parser.parse(json).topIssues()).hasSize(1);
+    }
+
+    @Test
     @DisplayName("happy path — parses 2-issue schema with all required fields")
     void parse_happyPath_returnsAllFields() {
         String json = """

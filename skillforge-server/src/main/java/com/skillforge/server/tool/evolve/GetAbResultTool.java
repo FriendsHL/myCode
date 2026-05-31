@@ -58,6 +58,17 @@ public class GetAbResultTool implements Tool {
     private static final Set<String> TERMINAL_STATUSES =
             Set.of("COMPLETED", "FAILED", "ERROR", "SUPERSEDED");
 
+    /**
+     * Block up to this long waiting for the A/B run to reach a terminal status,
+     * re-reading every {@link #DEFAULT_POLL_INTERVAL_MS}. Like {@code GetOptReport},
+     * a blocking call keeps the orchestrator's agent loop at 1-2 iterations per
+     * A/B instead of dozens of tight polls (an A/B runs for minutes), so it doesn't
+     * blow the agent-loop's maxLoops budget. Bounded; the orchestrator calls again
+     * to extend the wait.
+     */
+    static final long DEFAULT_BLOCK_TIMEOUT_MS = 90_000L;
+    static final long DEFAULT_POLL_INTERVAL_MS = 3_000L;
+
     // Gate constants mirrored from the promote services (advisory wouldPromote only).
     private static final double PROMPT_DELTA_THRESHOLD_PP = 15.0;
     private static final double SKILL_DELTA_THRESHOLD_PP = 15.0;
@@ -67,15 +78,30 @@ public class GetAbResultTool implements Tool {
     private final SkillAbRunRepository skillAbRunRepository;
     private final BehaviorRuleAbRunRepository behaviorRuleAbRunRepository;
     private final ObjectMapper objectMapper;
+    private final long blockTimeoutMs;
+    private final long pollIntervalMs;
 
     public GetAbResultTool(PromptAbRunRepository promptAbRunRepository,
                            SkillAbRunRepository skillAbRunRepository,
                            BehaviorRuleAbRunRepository behaviorRuleAbRunRepository,
                            ObjectMapper objectMapper) {
+        this(promptAbRunRepository, skillAbRunRepository, behaviorRuleAbRunRepository,
+                objectMapper, DEFAULT_BLOCK_TIMEOUT_MS, DEFAULT_POLL_INTERVAL_MS);
+    }
+
+    /** Test constructor — small timeout/interval so blocking-wait tests run fast. */
+    GetAbResultTool(PromptAbRunRepository promptAbRunRepository,
+                    SkillAbRunRepository skillAbRunRepository,
+                    BehaviorRuleAbRunRepository behaviorRuleAbRunRepository,
+                    ObjectMapper objectMapper,
+                    long blockTimeoutMs,
+                    long pollIntervalMs) {
         this.promptAbRunRepository = promptAbRunRepository;
         this.skillAbRunRepository = skillAbRunRepository;
         this.behaviorRuleAbRunRepository = behaviorRuleAbRunRepository;
         this.objectMapper = objectMapper;
+        this.blockTimeoutMs = blockTimeoutMs;
+        this.pollIntervalMs = pollIntervalMs;
     }
 
     @Override
@@ -150,14 +176,35 @@ public class GetAbResultTool implements Tool {
                 return SkillResult.validationError("targetAgentId is required");
             }
 
-            Map<String, Object> result = switch (surface) {
-                case PROMPT -> readPrompt(abRunId, targetAgentId);
-                case SKILL -> readSkill(abRunId, targetAgentId);
-                case BEHAVIOR_RULE -> readBehaviorRule(abRunId, targetAgentId);
-            };
-            if (result == null) {
-                return SkillResult.error("A/B run not found for surface=" + surface.wire()
-                        + " abRunId=" + abRunId);
+            // Block (bounded) until the A/B reaches a terminal status, re-reading
+            // every pollIntervalMs. Keeps the orchestrator's agent loop at 1-2
+            // iterations per A/B (which runs for minutes) instead of dozens of
+            // tight polls that would blow its maxLoops budget. Each read is its own
+            // autocommit query, so it observes the eval pipeline's status commits.
+            long deadline = System.currentTimeMillis() + blockTimeoutMs;
+            Map<String, Object> result;
+            while (true) {
+                result = switch (surface) {
+                    case PROMPT -> readPrompt(abRunId, targetAgentId);
+                    case SKILL -> readSkill(abRunId, targetAgentId);
+                    case BEHAVIOR_RULE -> readBehaviorRule(abRunId, targetAgentId);
+                };
+                if (result == null) {
+                    return SkillResult.error("A/B run not found for surface=" + surface.wire()
+                            + " abRunId=" + abRunId);
+                }
+                // "running" = still PENDING/RUNNING; anything else (terminal score
+                // payload / "rejected" ownership mismatch) is returned immediately.
+                boolean stillRunning = "running".equals(result.get("status"));
+                if (!stillRunning || System.currentTimeMillis() >= deadline) {
+                    break;
+                }
+                try {
+                    Thread.sleep(pollIntervalMs);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
             }
             return SkillResult.success(objectMapper.writeValueAsString(result));
         } catch (Exception e) {

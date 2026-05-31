@@ -70,4 +70,15 @@ public interface FlywheelRunRepository extends JpaRepository<FlywheelRunEntity, 
      */
     long countByAgentIdAndLoopKindAndStatusIn(
             Long agentId, String loopKind, java.util.List<String> statuses);
+
+    /**
+     * AUTOEVOLVE-AGENT-FLYWHEEL Module C (run lifecycle): find the run whose
+     * orchestrator/generator session is {@code generatorSessionId}. Used by
+     * {@code EvolveRunCompletionListener} to mark the evolve run terminal when
+     * its orchestrator session loop finishes — without this, a run is left
+     * stuck {@code running} forever (and 409-blocks future runs) when the
+     * orchestrator ends. A generator session drives exactly one run, so
+     * {@code findFirst} is unambiguous.
+     */
+    java.util.Optional<FlywheelRunEntity> findFirstByGeneratorSessionId(String generatorSessionId);
 }

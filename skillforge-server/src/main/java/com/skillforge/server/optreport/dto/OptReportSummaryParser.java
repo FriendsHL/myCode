@@ -67,6 +67,19 @@ public final class OptReportSummaryParser {
                     "summary_json must be a JSON object; got: "
                             + (root == null ? "null" : root.getNodeType().toString()));
         }
+        // AUTOEVOLVE-AGENT-FLYWHEEL: a report produced by RunWorkflow('opt-report')
+        // stores the workflow's RETURN value as summary_json — shape
+        // {status, summary:{...topIssues...}, reviewerId, ...} — i.e. the summary is
+        // nested under "summary". The legacy OptReportService path stores the summary
+        // directly (topIssues at the top level). Unwrap the nested form so BOTH
+        // producers (and both consumers — GetOptReport + OptReportToEventBridge) parse
+        // uniformly without each special-casing the shape.
+        if (!root.has("topIssues")
+                && root.has("summary")
+                && root.get("summary").isObject()
+                && root.get("summary").has("topIssues")) {
+            root = root.get("summary");
+        }
         JsonNode arr = root.get("topIssues");
         if (arr == null || arr.isNull()) {
             // Older V1.0/V1.1 reports may not carry topIssues at all —

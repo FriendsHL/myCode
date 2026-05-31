@@ -40,7 +40,8 @@ class GetOptReportToolTest {
 
     @BeforeEach
     void setUp() {
-        tool = new GetOptReportTool(runRepository, summaryParser, objectMapper);
+        // small block timeout/interval so the not-completed test doesn't wait 90s
+        tool = new GetOptReportTool(runRepository, summaryParser, objectMapper, 80L, 20L);
     }
 
     private SkillResult run(Map<String, Object> input) {
@@ -91,6 +92,26 @@ class GetOptReportToolTest {
     }
 
     @Test
+    @DisplayName("AUTOEVOLVE: accepts a workflow-kind opt-report (RunWorkflow producer)")
+    void workflowKindReport_accepted() {
+        FlywheelRunEntity r = report("wf-1", 5L, "completed", "{...}");
+        r.setLoopKind(FlywheelRunEntity.LOOP_KIND_WORKFLOW);
+        when(runRepository.findById("wf-1")).thenReturn(Optional.of(r));
+        when(summaryParser.parse("{...}")).thenReturn(new OptReportSummaryJson(List.of(
+                issue("issue-1", "prompt", null))));
+
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("reportId", "wf-1");
+        input.put("expectedAgentId", "5");
+
+        SkillResult result = run(input);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getOutput()).contains("\"issueCount\":1");
+        assertThat(result.getOutput()).contains("\"id\":\"issue-1\"");
+    }
+
+    @Test
     @DisplayName("report not found → validation error")
     void notFound_validationError() {
         when(runRepository.findById("nope")).thenReturn(Optional.empty());
@@ -137,8 +158,9 @@ class GetOptReportToolTest {
     }
 
     @Test
-    @DisplayName("report not completed → non-validation error (agent should wait/retry)")
+    @DisplayName("report still running after bounded wait → non-validation error (agent calls again)")
     void notCompleted_error() {
+        // stays 'running' for every poll → tool blocks ~80ms then returns "still running"
         when(runRepository.findById("rep-1"))
                 .thenReturn(Optional.of(report("rep-1", 42L, "running", null)));
 
@@ -150,7 +172,28 @@ class GetOptReportToolTest {
 
         assertThat(result.isSuccess()).isFalse();
         assertThat(result.getErrorType()).isNotEqualTo(SkillResult.ErrorType.VALIDATION);
-        assertThat(result.getError()).contains("not completed yet");
+        assertThat(result.getError()).contains("still running");
+    }
+
+    @Test
+    @DisplayName("report completes mid-wait → blocking poll returns the issues")
+    void completesMidWait_returnsIssues() {
+        // first read 'running', subsequent reads 'completed' → the poll loop picks it up
+        FlywheelRunEntity running = report("rep-2", 42L, "running", null);
+        FlywheelRunEntity done = report("rep-2", 42L, "completed", "{...}");
+        when(runRepository.findById("rep-2"))
+                .thenReturn(Optional.of(running), Optional.of(done));
+        when(summaryParser.parse("{...}")).thenReturn(new OptReportSummaryJson(List.of(
+                issue("issue-1", "prompt", null))));
+
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("reportId", "rep-2");
+        input.put("expectedAgentId", "42");
+
+        SkillResult result = run(input);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getOutput()).contains("\"issueCount\":1");
     }
 
     @Test

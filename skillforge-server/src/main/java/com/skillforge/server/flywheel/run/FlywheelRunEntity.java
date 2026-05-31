@@ -60,6 +60,8 @@ public class FlywheelRunEntity {
     public static final String STATUS_PAUSED = "paused";
 
     public static final String LOOP_KIND_OPT_REPORT = "opt_report";
+    /** A generic DSL workflow run (WorkflowRunnerService). Mirrors that service's local constant. */
+    public static final String LOOP_KIND_WORKFLOW = "workflow";
     public static final String LOOP_KIND_MEMORY_CURATION = "memory_curation";
     public static final String LOOP_KIND_ATTRIBUTION = "attribution";
     public static final String LOOP_KIND_METRICS_COLLECTION = "metrics_collection";
