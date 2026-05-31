@@ -47,6 +47,23 @@ public class OpenAiProvider implements LlmProvider {
     /** Backoff base (ms) for attempt 1 and attempt 2; jitter ±20% applied on top. */
     private static final long[] STREAM_HANDSHAKE_BACKOFF_MS = {2000L, 5000L};
 
+    /**
+     * HTTP 429 (rate limit) retry count. SAFE on BOTH paths: a 429 is the initial
+     * response status, checked BEFORE any SSE delta is read/delivered, so a retry
+     * cannot duplicate already-delivered deltas (project footgun #3 only bans
+     * MID-stream retry, i.e. after deltas have started flowing).
+     */
+    private static final int MAX_RATELIMIT_RETRIES = 4;
+    /** Backoff base (ms) per 429 attempt; jitter ±20%; a {@code Retry-After} header overrides. */
+    private static final long[] RATELIMIT_BACKOFF_MS = {1000L, 3000L, 8000L, 15000L};
+
+    /** Marker: the provider returned HTTP 429 — retryable with backoff. */
+    private static final class RateLimitedException extends RuntimeException {
+        RateLimitedException(String message) {
+            super(message);
+        }
+    }
+
     private final String apiKey;
     private final String baseUrl;
     private final String defaultModel;
@@ -205,6 +222,7 @@ public class OpenAiProvider implements LlmProvider {
         SafeObservers.notifyBefore(observerRegistry, ctx, snap);
 
         int attempt = 0;
+        int rateLimitAttempt = 0;
         while (true) {
             try {
                 LlmResponse parsed = doChatBody(reqBody, model);
@@ -212,6 +230,18 @@ public class OpenAiProvider implements LlmProvider {
                         new byte[0], "application/json");
                 SafeObservers.notifyAfter(observerRegistry, ctx, respSnap, parsed);
                 return parsed;
+            } catch (RateLimitedException rle) {
+                if (rateLimitAttempt >= MAX_RATELIMIT_RETRIES) {
+                    SafeObservers.notifyError(observerRegistry, ctx, rle, null);
+                    throw rle;
+                }
+                long sleepMs = rateLimitBackoffMs(rateLimitAttempt);
+                rateLimitAttempt++;
+                log.warn("{} chat rate-limited (HTTP 429), retry {}/{} in {}ms",
+                        providerDisplayName, rateLimitAttempt, MAX_RATELIMIT_RETRIES, sleepMs);
+                if (!sleepInterruptibly(sleepMs)) {
+                    throw rle;  // interrupted — give up, surface the 429
+                }
             } catch (SocketTimeoutException ste) {
                 if (attempt >= maxRetries) {
                     RuntimeException re = new RuntimeException(providerDisplayName
@@ -227,6 +257,44 @@ public class OpenAiProvider implements LlmProvider {
                 SafeObservers.notifyError(observerRegistry, ctx, re, null);
                 throw re;
             }
+        }
+    }
+
+    /**
+     * Backoff (ms) before retrying a rate-limited (HTTP 429) call. Honors a
+     * {@code Retry-After} header (seconds, capped at 30s) when the provider sends
+     * one, else an exponential table with ±20% jitter.
+     */
+    private long rateLimitBackoffMs(Response response, int attempt) {
+        String retryAfter = response.header("Retry-After");
+        if (retryAfter != null) {
+            try {
+                long secs = Long.parseLong(retryAfter.trim());
+                if (secs > 0) {
+                    return Math.min(secs * 1000L, 30_000L);
+                }
+            } catch (NumberFormatException ignored) {
+                // non-numeric Retry-After (HTTP-date form) — fall through to the table
+            }
+        }
+        return rateLimitBackoffMs(attempt);
+    }
+
+    /** Table-based 429 backoff with ±20% jitter (no Retry-After context — non-stream path). */
+    private long rateLimitBackoffMs(int attempt) {
+        long base = RATELIMIT_BACKOFF_MS[Math.min(attempt, RATELIMIT_BACKOFF_MS.length - 1)];
+        double jitter = 1.0 + (ThreadLocalRandom.current().nextDouble() * 0.4 - 0.2);
+        return Math.max(500L, (long) (base * jitter));
+    }
+
+    /** Sleep {@code ms}; return false if interrupted (caller should give up). */
+    private static boolean sleepInterruptibly(long ms) {
+        try {
+            Thread.sleep(ms);
+            return true;
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            return false;
         }
     }
 
@@ -247,6 +315,9 @@ public class OpenAiProvider implements LlmProvider {
                 if (overflow != null) {
                     throw overflow;
                 }
+                if (response.code() == 429) {
+                    throw new RateLimitedException(providerDisplayName + " API error: HTTP 429 - " + errorBody);
+                }
                 throw new RuntimeException(providerDisplayName + " API error: HTTP "
                         + response.code() + " - " + errorBody);
             }
@@ -261,9 +332,21 @@ public class OpenAiProvider implements LlmProvider {
         // Streaming path (chatStream) is single-attempt on purpose — retrying mid-stream
         // would duplicate already-delivered deltas to the handler.
         int attempt = 0;
+        int rateLimitAttempt = 0;
         while (true) {
             try {
                 return doChat(request);
+            } catch (RateLimitedException rle) {
+                if (rateLimitAttempt >= MAX_RATELIMIT_RETRIES) {
+                    throw rle;
+                }
+                long sleepMs = rateLimitBackoffMs(rateLimitAttempt);
+                rateLimitAttempt++;
+                log.warn("{} chat rate-limited (HTTP 429), retry {}/{} in {}ms",
+                        providerDisplayName, rateLimitAttempt, MAX_RATELIMIT_RETRIES, sleepMs);
+                if (!sleepInterruptibly(sleepMs)) {
+                    throw rle;
+                }
             } catch (SocketTimeoutException ste) {
                 if (attempt >= maxRetries) {
                     throw new RuntimeException(
@@ -296,6 +379,9 @@ public class OpenAiProvider implements LlmProvider {
                         detectContextOverflow(objectMapper, providerDisplayName, response.code(), errorBody);
                 if (overflow != null) {
                     throw overflow;
+                }
+                if (response.code() == 429) {
+                    throw new RateLimitedException(providerDisplayName + " API error: HTTP 429 - " + errorBody);
                 }
                 throw new RuntimeException(providerDisplayName + " API error: HTTP " + response.code() + " - " + errorBody);
             }
@@ -337,6 +423,7 @@ public class OpenAiProvider implements LlmProvider {
         // duplicate already-delivered deltas (project footgun #3).
         // OBS-1 §4.2 invariant: observer hooks NOT called during handshake retry; only at terminal.
         int handshakeAttempt = 0;
+        int rateLimitAttempt = 0;
         while (true) {
             Request httpRequest = new Request.Builder()
                     .url(baseUrl + "/v1/chat/completions")
@@ -400,6 +487,27 @@ public class OpenAiProvider implements LlmProvider {
                     String errorBody = r.body() != null ? r.body().string() : "no body";
                     LlmContextLengthExceededException overflow =
                             detectContextOverflow(objectMapper, providerDisplayName, r.code(), errorBody);
+                    // HTTP 429 rate limit → backoff + retry. SAFE here: we are at the
+                    // initial status check, BEFORE any SSE delta is read, so a retry
+                    // cannot duplicate deltas. observer error is NOT fired on a retry
+                    // (mirrors the handshake-retry path — only the terminal failure notifies).
+                    if (overflow == null && r.code() == 429
+                            && rateLimitAttempt < MAX_RATELIMIT_RETRIES
+                            && !handler.isCancelled()) {
+                        long sleepMs = rateLimitBackoffMs(r, rateLimitAttempt);
+                        rateLimitAttempt++;
+                        log.warn("{} chatStream rate-limited (HTTP 429), retry {}/{} in {}ms",
+                                providerDisplayName, rateLimitAttempt, MAX_RATELIMIT_RETRIES, sleepMs);
+                        try {
+                            Thread.sleep(sleepMs);
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                            SafeObservers.notifyError(observerRegistry, ctx, ie, null);
+                            handler.onError(ie);
+                            return;
+                        }
+                        continue;  // finally clears onStreamStart; loop rebuilds + re-executes
+                    }
                     RuntimeException ex = overflow != null
                             ? overflow
                             : new RuntimeException(
