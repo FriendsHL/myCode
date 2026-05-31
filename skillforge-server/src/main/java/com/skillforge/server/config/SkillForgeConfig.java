@@ -459,6 +459,88 @@ public class SkillForgeConfig {
         return tool;
     }
 
+    /**
+     * AUTOEVOLVE-AGENT-FLYWHEEL Module B (FR-B1) — {@code TriggerAbEval} thin
+     * wrapper over the existing async A/B engine (prompt / skill / behavior_rule).
+     *
+     * <p><b>Invariant:</b> registered ONLY here in the main SkillRegistry —
+     * deliberately NOT added to {@code WorkflowSkillRegistryFactory} (the workflow
+     * sub-agent registry). A workflow sub-agent reaching {@code TriggerAbEval}
+     * would re-open a fan-out / recursion path (same invariant as
+     * {@code RunWorkflowTool}). Not auto-assigned to any agent's tool_ids — the
+     * orchestrator agent (Module C) declares it explicitly.
+     */
+    @Bean
+    public com.skillforge.server.tool.evolve.TriggerAbEvalTool triggerAbEvalTool(
+            com.skillforge.server.improve.PromptImproverService promptImproverService,
+            com.skillforge.server.improve.SkillDraftService skillDraftService,
+            com.skillforge.server.improve.behavior.BehaviorRuleAbEvalService behaviorRuleAbEvalService,
+            com.skillforge.server.repository.SkillDraftRepository skillDraftRepository,
+            com.skillforge.server.repository.BehaviorRuleVersionRepository behaviorRuleVersionRepository,
+            ObjectMapper objectMapper,
+            SkillRegistry skillRegistry) {
+        com.skillforge.server.tool.evolve.TriggerAbEvalTool tool =
+                new com.skillforge.server.tool.evolve.TriggerAbEvalTool(
+                        promptImproverService, skillDraftService, behaviorRuleAbEvalService,
+                        skillDraftRepository, behaviorRuleVersionRepository, objectMapper);
+        skillRegistry.registerTool(tool);
+        log.info("Registered TriggerAbEvalTool into SkillRegistry");
+        return tool;
+    }
+
+    /**
+     * AUTOEVOLVE-AGENT-FLYWHEEL Module B (FR-B2) — {@code GetAbResult} read-only
+     * poll of a surface's ab_run row.
+     *
+     * <p><b>Invariant:</b> registered ONLY here in the main SkillRegistry — NOT in
+     * {@code WorkflowSkillRegistryFactory} (workflow sub-agent registry). Same
+     * recursion-isolation invariant as the other Module B tools.
+     */
+    @Bean
+    public com.skillforge.server.tool.evolve.GetAbResultTool getAbResultTool(
+            com.skillforge.server.repository.PromptAbRunRepository promptAbRunRepository,
+            com.skillforge.server.repository.SkillAbRunRepository skillAbRunRepository,
+            com.skillforge.server.repository.BehaviorRuleAbRunRepository behaviorRuleAbRunRepository,
+            ObjectMapper objectMapper,
+            SkillRegistry skillRegistry) {
+        com.skillforge.server.tool.evolve.GetAbResultTool tool =
+                new com.skillforge.server.tool.evolve.GetAbResultTool(
+                        promptAbRunRepository, skillAbRunRepository,
+                        behaviorRuleAbRunRepository, objectMapper);
+        skillRegistry.registerTool(tool);
+        log.info("Registered GetAbResultTool into SkillRegistry");
+        return tool;
+    }
+
+    /**
+     * AUTOEVOLVE-AGENT-FLYWHEEL Module B (FR-B3) — {@code PromoteCandidate} wraps
+     * the existing guarded promote services (NO guard bypass) and additionally
+     * validates the candidate belongs to {@code targetAgentId}.
+     *
+     * <p><b>Invariant:</b> registered ONLY here in the main SkillRegistry — NOT in
+     * {@code WorkflowSkillRegistryFactory} (workflow sub-agent registry). Same
+     * recursion-isolation invariant as the other Module B tools.
+     */
+    @Bean
+    public com.skillforge.server.tool.evolve.PromoteCandidateTool promoteCandidateTool(
+            com.skillforge.server.improve.PromptPromotionService promptPromotionService,
+            com.skillforge.server.improve.SkillAbEvalService skillAbEvalService,
+            com.skillforge.server.improve.BehaviorRulePromotionService behaviorRulePromotionService,
+            com.skillforge.server.repository.PromptAbRunRepository promptAbRunRepository,
+            com.skillforge.server.repository.SkillAbRunRepository skillAbRunRepository,
+            com.skillforge.server.repository.BehaviorRuleVersionRepository behaviorRuleVersionRepository,
+            ObjectMapper objectMapper,
+            SkillRegistry skillRegistry) {
+        com.skillforge.server.tool.evolve.PromoteCandidateTool tool =
+                new com.skillforge.server.tool.evolve.PromoteCandidateTool(
+                        promptPromotionService, skillAbEvalService, behaviorRulePromotionService,
+                        promptAbRunRepository, skillAbRunRepository,
+                        behaviorRuleVersionRepository, objectMapper);
+        skillRegistry.registerTool(tool);
+        log.info("Registered PromoteCandidateTool into SkillRegistry");
+        return tool;
+    }
+
     @Bean
     public com.skillforge.server.tool.AnalyzeEvalTaskTool analyzeEvalTaskTool(
             com.skillforge.server.repository.EvalTaskRepository evalTaskRepository,

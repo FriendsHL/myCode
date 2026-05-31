@@ -59,6 +59,7 @@
 - **FR-C4**：report-gen 复用现有 opt-report workflow（orchestrator 通过 RunWorkflow 调）。
 - **FR-C5**：末尾 humanApprove — 人看轨迹定夺采纳；采纳的走 PromoteCandidate。
 - **FR-C6**：关掉现有事件驱动 auto-trigger（全局 flag `skillforge.flywheel.auto-trigger-ab-on-candidate-ready=false`）防两套编排对同一 agent 跑。
+- **FR-C7**（Module B security review carry-over，HIGH-1）：**per-evolve-run A/B 预算上限**——orchestrator 的 maxIter 在 agent prompt（不可信面），通用 maxLoops=25 兜底太松（25 次真 A/B = 大量 LLM 算力）。evolve-run 实体（复用 FlywheelRun loop_kind=evolve）记一个 A/B 触发计数,**服务端硬上限**（TriggerAbEval 调用时检查 evolve-run 的 A/B 次数 < cap,超则拒）。需 evolve-run 上下文,故归 Module C（Module B 的 TriggerAbEval 单独无 run 上下文做不了）。
 
 ### 模块 D — 迭代账本 + 轨迹可观测
 - **FR-D1**：迭代账本实体（每轮一行：runId / iteration / surface / changeDesc / candidateId / baselineScore / candidateScore / delta / kept / createdAt）。

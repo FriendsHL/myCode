@@ -74,4 +74,25 @@ class WorkflowSkillRegistryFactoryTest {
     void registryIsShared() {
         assertThat(factory.workflowRegistry()).isSameAs(factory.workflowRegistry());
     }
+
+    /**
+     * AUTOEVOLVE-AGENT-FLYWHEEL Module B — recursion-isolation invariant. The
+     * orchestration tools ({@code RunWorkflow} from Module A, plus the three
+     * A/B tools {@code TriggerAbEval} / {@code GetAbResult} /
+     * {@code PromoteCandidate}) MUST NOT be reachable by a workflow sub-agent,
+     * or a sub-agent could re-open a fan-out / recursion path. They live ONLY
+     * in the main SkillRegistry (SkillForgeConfig). This asserts the workflow
+     * sub-agent registry never exposes them.
+     */
+    @Test
+    @DisplayName("does NOT register orchestration / A-B tools (recursion isolation)")
+    void excludesOrchestrationAndAbTools() {
+        SkillRegistry registry = factory.workflowRegistry();
+        for (String forbidden : List.of(
+                "RunWorkflow", "TriggerAbEval", "GetAbResult", "PromoteCandidate")) {
+            assertThat(registry.getTool(forbidden))
+                    .as(forbidden + " must not be reachable by a workflow sub-agent")
+                    .isEmpty();
+        }
+    }
 }

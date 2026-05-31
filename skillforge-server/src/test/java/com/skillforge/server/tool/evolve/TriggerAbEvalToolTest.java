@@ -1,0 +1,296 @@
+package com.skillforge.server.tool.evolve;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.skillforge.core.skill.SkillContext;
+import com.skillforge.core.skill.SkillResult;
+import com.skillforge.server.entity.BehaviorRuleVersionEntity;
+import com.skillforge.server.entity.SkillDraftEntity;
+import com.skillforge.server.improve.AbEvalRunRequest;
+import com.skillforge.server.improve.PromptImproverService;
+import com.skillforge.server.improve.SkillDraftService;
+import com.skillforge.server.improve.behavior.BehaviorRuleAbEvalService;
+import com.skillforge.server.repository.BehaviorRuleVersionRepository;
+import com.skillforge.server.repository.SkillDraftRepository;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+
+/**
+ * AUTOEVOLVE-AGENT-FLYWHEEL Module B — {@link TriggerAbEvalTool}: surface
+ * routing (prompt / skill / behavior_rule → right service), validation errors,
+ * baseline pass-through, and SECURITY candidate-ownership checks for skill and
+ * behavior_rule (cross-agent candidates rejected before eval fires).
+ */
+@ExtendWith(MockitoExtension.class)
+@DisplayName("TriggerAbEvalTool")
+class TriggerAbEvalToolTest {
+
+    @Mock private PromptImproverService promptImproverService;
+    @Mock private SkillDraftService skillDraftService;
+    @Mock private BehaviorRuleAbEvalService behaviorRuleAbEvalService;
+    @Mock private SkillDraftRepository skillDraftRepository;
+    @Mock private BehaviorRuleVersionRepository behaviorRuleVersionRepository;
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
+    private TriggerAbEvalTool tool;
+
+    @BeforeEach
+    void setUp() {
+        tool = new TriggerAbEvalTool(promptImproverService, skillDraftService,
+                behaviorRuleAbEvalService, skillDraftRepository,
+                behaviorRuleVersionRepository, objectMapper);
+    }
+
+    private SkillResult run(Map<String, Object> input) {
+        return tool.execute(input, new SkillContext("/tmp", "sess", 7L));
+    }
+
+    // ─────────────────── prompt surface ───────────────────
+
+    @Test
+    @DisplayName("prompt surface: routes to runAbTestAgainst with baseline/scenarios passed through")
+    void promptSurface_routesToPromptService() {
+        when(promptImproverService.runAbTestAgainst(any(AbEvalRunRequest.class)))
+                .thenReturn("prompt-ab-1");
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("surface", "prompt");
+        input.put("candidateId", "cand-v2");
+        input.put("targetAgentId", "42");
+        input.put("baselineId", "base-v1");
+        input.put("evalScenarioIds", List.of("s1", "s2"));
+
+        SkillResult result = run(input);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getOutput()).contains("\"abRunId\":\"prompt-ab-1\"");
+        assertThat(result.getOutput()).contains("\"surface\":\"prompt\"");
+
+        ArgumentCaptor<AbEvalRunRequest> cap = ArgumentCaptor.forClass(AbEvalRunRequest.class);
+        verify(promptImproverService).runAbTestAgainst(cap.capture());
+        AbEvalRunRequest req = cap.getValue();
+        assertThat(req.agentId()).isEqualTo("42");
+        assertThat(req.baselineVersionId()).isEqualTo("base-v1");
+        assertThat(req.candidateVersionId()).isEqualTo("cand-v2");
+        assertThat(req.evalScenarioIds()).containsExactly("s1", "s2");
+        // prompt surface does not use the candidate-entity repos
+        verifyNoInteractions(skillDraftRepository, behaviorRuleVersionRepository);
+        verifyNoInteractions(skillDraftService, behaviorRuleAbEvalService);
+    }
+
+    @Test
+    @DisplayName("prompt surface: null baselineId passes through (B4 active-baseline reuse)")
+    void promptSurface_nullBaseline_passesThrough() {
+        when(promptImproverService.runAbTestAgainst(any(AbEvalRunRequest.class)))
+                .thenReturn("prompt-ab-2");
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("surface", "prompt");
+        input.put("candidateId", "cand-v2");
+        input.put("targetAgentId", "42");
+
+        SkillResult result = run(input);
+
+        assertThat(result.isSuccess()).isTrue();
+        ArgumentCaptor<AbEvalRunRequest> cap = ArgumentCaptor.forClass(AbEvalRunRequest.class);
+        verify(promptImproverService).runAbTestAgainst(cap.capture());
+        assertThat(cap.getValue().baselineVersionId()).isNull();
+    }
+
+    // ─────────────────── skill surface ───────────────────
+
+    @Test
+    @DisplayName("skill surface: ownership confirmed → routes to startAbTestFromDraft")
+    void skillSurface_ownershipOk_routesToSkillDraftService() {
+        SkillDraftEntity draft = new SkillDraftEntity();
+        draft.setTargetAgentId(42L);
+        when(skillDraftRepository.findById("draft-9")).thenReturn(Optional.of(draft));
+        when(skillDraftService.startAbTestFromDraft(eq("draft-9"), isNull()))
+                .thenReturn("skill-ab-1");
+
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("surface", "skill");
+        input.put("candidateId", "draft-9");
+        input.put("targetAgentId", "42");
+
+        SkillResult result = run(input);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getOutput()).contains("\"abRunId\":\"skill-ab-1\"");
+        verify(skillDraftService).startAbTestFromDraft("draft-9", null);
+        verifyNoInteractions(promptImproverService, behaviorRuleAbEvalService);
+    }
+
+    @Test
+    @DisplayName("SECURITY skill: draft belongs to another agent → rejected, service NOT called")
+    void skillSurface_crossAgentCandidate_rejected() {
+        SkillDraftEntity draft = new SkillDraftEntity();
+        draft.setTargetAgentId(99L);  // belongs to agent 99
+        when(skillDraftRepository.findById("draft-9")).thenReturn(Optional.of(draft));
+
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("surface", "skill");
+        input.put("candidateId", "draft-9");
+        input.put("targetAgentId", "42");  // caller claims agent 42
+
+        SkillResult result = run(input);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getOutput()).contains("\"status\":\"rejected\"");
+        assertThat(result.getOutput()).contains("ownership mismatch");
+        verify(skillDraftService, never()).startAbTestFromDraft(any(), any());
+    }
+
+    @Test
+    @DisplayName("skill surface: draft not found → passes through to service (service reports error)")
+    void skillSurface_draftNotFound_passesThrough() {
+        // When the draft doesn't exist, we let the downstream service produce the error.
+        when(skillDraftRepository.findById("draft-missing")).thenReturn(Optional.empty());
+        when(skillDraftService.startAbTestFromDraft(eq("draft-missing"), isNull()))
+                .thenThrow(new IllegalArgumentException("Candidate skill draft not found"));
+
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("surface", "skill");
+        input.put("candidateId", "draft-missing");
+        input.put("targetAgentId", "42");
+
+        SkillResult result = run(input);
+
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.getError()).contains("not found");
+    }
+
+    // ─────────────────── behavior_rule surface ───────────────────
+
+    @Test
+    @DisplayName("behavior_rule surface: ownership confirmed → routes to startAbForVersion")
+    void behaviorRuleSurface_ownershipOk_routesToBehaviorService() {
+        BehaviorRuleVersionEntity version = new BehaviorRuleVersionEntity();
+        version.setAgentId("42");
+        when(behaviorRuleVersionRepository.findById("ver-7")).thenReturn(Optional.of(version));
+        when(behaviorRuleAbEvalService.startAbForVersion(eq("ver-7"), eq("ds-1")))
+                .thenReturn("brule-ab-1");
+
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("surface", "behavior_rule");
+        input.put("candidateId", "ver-7");
+        input.put("targetAgentId", "42");
+        input.put("datasetVersionId", "ds-1");
+
+        SkillResult result = run(input);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getOutput()).contains("\"abRunId\":\"brule-ab-1\"");
+        verify(behaviorRuleAbEvalService).startAbForVersion("ver-7", "ds-1");
+        verifyNoInteractions(promptImproverService, skillDraftService);
+    }
+
+    @Test
+    @DisplayName("SECURITY behavior_rule: version belongs to another agent → rejected, service NOT called")
+    void behaviorRuleSurface_crossAgentCandidate_rejected() {
+        BehaviorRuleVersionEntity version = new BehaviorRuleVersionEntity();
+        version.setAgentId("99");  // belongs to agent 99
+        when(behaviorRuleVersionRepository.findById("ver-7")).thenReturn(Optional.of(version));
+
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("surface", "behavior_rule");
+        input.put("candidateId", "ver-7");
+        input.put("targetAgentId", "42");  // caller claims agent 42
+
+        SkillResult result = run(input);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getOutput()).contains("\"status\":\"rejected\"");
+        assertThat(result.getOutput()).contains("ownership mismatch");
+        verify(behaviorRuleAbEvalService, never()).startAbForVersion(any(), any());
+    }
+
+    // ─────────────────── validation ───────────────────
+
+    @Test
+    @DisplayName("unknown surface → validation error, no service called")
+    void unknownSurface_validationError() {
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("surface", "bogus");
+        input.put("candidateId", "x");
+        input.put("targetAgentId", "42");
+
+        SkillResult result = run(input);
+
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.getErrorType()).isEqualTo(SkillResult.ErrorType.VALIDATION);
+        assertThat(result.getError()).contains("surface");
+        verifyNoInteractions(promptImproverService, skillDraftService, behaviorRuleAbEvalService);
+    }
+
+    @Test
+    @DisplayName("missing candidateId → validation error")
+    void missingCandidateId_validationError() {
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("surface", "prompt");
+        input.put("targetAgentId", "42");
+
+        SkillResult result = run(input);
+
+        assertThat(result.getErrorType()).isEqualTo(SkillResult.ErrorType.VALIDATION);
+        assertThat(result.getError()).contains("candidateId is required");
+        verify(promptImproverService, never()).runAbTestAgainst(any(AbEvalRunRequest.class));
+    }
+
+    @Test
+    @DisplayName("missing targetAgentId → validation error")
+    void missingTargetAgentId_validationError() {
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("surface", "prompt");
+        input.put("candidateId", "c");
+
+        SkillResult result = run(input);
+
+        assertThat(result.getErrorType()).isEqualTo(SkillResult.ErrorType.VALIDATION);
+        assertThat(result.getError()).contains("targetAgentId is required");
+    }
+
+    @Test
+    @DisplayName("IllegalStateException from service (e.g. no dataset) → error result, not crash")
+    void serviceIllegalState_mappedToError() {
+        // version found with correct ownership, but service throws (no dataset)
+        BehaviorRuleVersionEntity version = new BehaviorRuleVersionEntity();
+        version.setAgentId("42");
+        when(behaviorRuleVersionRepository.findById("ver-7")).thenReturn(Optional.of(version));
+        when(behaviorRuleAbEvalService.startAbForVersion(any(), any()))
+                .thenThrow(new IllegalStateException("No dataset version available"));
+
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("surface", "behavior_rule");
+        input.put("candidateId", "ver-7");
+        input.put("targetAgentId", "42");
+
+        SkillResult result = run(input);
+
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.getError()).contains("No dataset version available");
+    }
+
+    @Test
+    @DisplayName("tool metadata: name, not read-only")
+    void metadata() {
+        assertThat(tool.getName()).isEqualTo("TriggerAbEval");
+        assertThat(tool.isReadOnly()).isFalse();
+    }
+}
