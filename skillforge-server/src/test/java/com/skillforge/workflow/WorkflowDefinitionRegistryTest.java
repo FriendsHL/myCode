@@ -129,4 +129,47 @@ class WorkflowDefinitionRegistryTest {
         assertThat(def.name()).isEqualTo("n");
         assertThat(def.phases()).hasSize(1);
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // parseInline (RunWorkflow inline mode)
+    // ─────────────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("parseInline: valid source → WorkflowDefinition with correct name + meta-free jsSource")
+    void parseInline_validSource_returnsDefinition() {
+        WorkflowDefinition def = registry.parseInline(VALID);
+
+        assertThat(def.name()).isEqualTo("hello-world");
+        assertThat(def.description()).isEqualTo("smoke");
+        assertThat(def.phases()).hasSize(2);
+        // jsSource is meta-free + export-free so WorkflowEvaluator can run it.
+        assertThat(def.jsSource()).doesNotContain("export");
+        assertThat(def.jsSource()).contains("phase('Greet')");
+        // sourceHash matches the file-path parse of the identical source.
+        assertThat(def.sourceHash()).isEqualTo(registry.parse("x.js", VALID).sourceHash());
+    }
+
+    @Test
+    @DisplayName("parseInline: missing meta declaration → WorkflowMetaException")
+    void parseInline_missingMeta_throws() {
+        assertThatThrownBy(() -> registry.parseInline("phase('x');\nreturn 1;"))
+                .isInstanceOf(WorkflowMetaException.class)
+                .hasMessageContaining("missing");
+    }
+
+    @Test
+    @DisplayName("parseInline: null source → IllegalArgumentException")
+    void parseInline_nullSource_throws() {
+        assertThatThrownBy(() -> registry.parseInline(null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("required");
+    }
+
+    @Test
+    @DisplayName("parseInline: blank source → IllegalArgumentException")
+    void parseInline_blankSource_throws() {
+        assertThatThrownBy(() -> registry.parseInline("   "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("required");
+    }
 }

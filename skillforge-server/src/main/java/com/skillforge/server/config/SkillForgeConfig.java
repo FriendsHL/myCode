@@ -433,6 +433,32 @@ public class SkillForgeConfig {
         return tool;
     }
 
+    /**
+     * AUTOEVOLVING — {@code RunWorkflow} lets an agent trigger the DSL workflow
+     * engine ({@link com.skillforge.workflow.WorkflowRunnerService}) in three
+     * modes: run-by-name, run-inline-script, resume-paused-gate.
+     *
+     * <p><b>Invariant:</b> registered ONLY here in the main SkillRegistry —
+     * deliberately NOT added to {@code WorkflowSkillRegistryFactory} (the workflow
+     * sub-agent registry). A workflow's own sub-agents must not be able to trigger
+     * another workflow, which would allow unbounded recursion / runaway runs. The
+     * tool is registered + assignable but is NOT auto-assigned to any agent's
+     * tool_ids; operators decide which agent may use it.
+     */
+    @Bean
+    public com.skillforge.server.tool.workflow.RunWorkflowTool runWorkflowTool(
+            com.skillforge.workflow.WorkflowRunnerService workflowRunnerService,
+            com.skillforge.workflow.WorkflowDefinitionRegistry workflowDefinitionRegistry,
+            ObjectMapper objectMapper,
+            SkillRegistry skillRegistry) {
+        com.skillforge.server.tool.workflow.RunWorkflowTool tool =
+                new com.skillforge.server.tool.workflow.RunWorkflowTool(
+                        workflowRunnerService, workflowDefinitionRegistry, objectMapper);
+        skillRegistry.registerTool(tool);
+        log.info("Registered RunWorkflowTool into SkillRegistry");
+        return tool;
+    }
+
     @Bean
     public com.skillforge.server.tool.AnalyzeEvalTaskTool analyzeEvalTaskTool(
             com.skillforge.server.repository.EvalTaskRepository evalTaskRepository,

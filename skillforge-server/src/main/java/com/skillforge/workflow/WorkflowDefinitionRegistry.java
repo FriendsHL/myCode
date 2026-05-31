@@ -124,6 +124,26 @@ public class WorkflowDefinitionRegistry {
     // ─────────────────────────────────────────────────────────────────────
 
     /**
+     * Parses an inline workflow source supplied at runtime (the agent-facing
+     * {@code RunWorkflow} tool's inline mode) rather than a classpath file. The
+     * source MUST contain a well-formed {@code export const meta = {...}} block
+     * with at least {@code meta.name}; otherwise a {@link WorkflowMetaException}
+     * (or {@code IllegalArgumentException} for null/blank input) is thrown with a
+     * clear message. Delegates to the same {@link #parse(String, String)} the
+     * classpath scan uses, so inline and registered definitions are validated
+     * identically (pure-literal meta, phase extraction, sourceHash).
+     *
+     * @param source the raw inline {@code .workflow.js} source (with meta + body)
+     * @return the parsed {@link WorkflowDefinition} (NOT added to the registry)
+     */
+    public WorkflowDefinition parseInline(String source) {
+        if (source == null || source.isBlank()) {
+            throw new IllegalArgumentException("inline workflow source is required");
+        }
+        return parse("inline.workflow.js", source);
+    }
+
+    /**
      * Parses one workflow file. Visible for testing.
      *
      * @param fileName logical name (for error messages / AST source uri)

@@ -161,6 +161,38 @@ class WorkflowRunnerServiceTest {
     }
 
     @Test
+    @DisplayName("startRun(def,...) runs an inline definition WITHOUT a registry lookup")
+    void inlineDefStartsWithoutRegistryLookup() throws InterruptedException {
+        // No registry.findByName stub on purpose: the inline overload must not consult it.
+        AgentEntity agent = new AgentEntity();
+        agent.setId(3L);
+        agent.setName("anchor-agent");
+        when(agentRepository.findFirstByName("anchor-agent")).thenReturn(Optional.of(agent));
+
+        FlywheelRunEntity run = new FlywheelRunEntity();
+        run.setId("run-inline");
+        when(flywheelRunService.startRun(eq("workflow"), eq("user_manual"), any(), eq(3L), eq(1)))
+                .thenReturn(run);
+
+        SessionEntity anchor = new SessionEntity();
+        anchor.setId("anchor-sess");
+        when(sessionService.createSession(eq(5L), eq(3L))).thenReturn(anchor);
+        lenient().when(invokerFactory.create(anyString(), any(), any()))
+                .thenReturn((p, o, i) -> "unused");
+
+        WorkflowDefinition def = new WorkflowDefinition(
+                "inline-wf", "d", List.of(), "phase('P'); return ({ ok: true });", "hash-inline");
+
+        String runId = service.startRun(def, Map.of(), 5L);
+        assertThat(runId).isEqualTo("run-inline");
+        awaitBody();
+
+        verify(registry, never()).findByName(anyString());
+        verify(flywheelRunService).markCompleted(eq("run-inline"), eq(null), anyString());
+        assertThat(lock.isHeld("inline-wf")).isFalse();
+    }
+
+    @Test
     @DisplayName("script runtime error → markError + lock released")
     void errorPathMarksError() throws InterruptedException {
         stubStartRunInfra("phase('P'); undefinedFnXyz();");

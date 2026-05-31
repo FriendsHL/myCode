@@ -117,6 +117,30 @@ public class WorkflowRunnerService {
     public String startRun(String workflowName, Map<String, Object> args, Long userId) {
         WorkflowDefinition def = registry.findByName(workflowName)
                 .orElseThrow(() -> new WorkflowNotFoundException(workflowName));
+        return startRun(def, args, userId);
+    }
+
+    /**
+     * Starts a workflow run from an already-parsed {@link WorkflowDefinition},
+     * bypassing the registry name lookup. Used by the agent-facing
+     * {@code RunWorkflow} tool's inline mode, where the JS source (with its
+     * {@code export const meta = {...}} block) is parsed on the fly via
+     * {@link WorkflowDefinitionRegistry#parseInline(String)} rather than loaded
+     * from the classpath.
+     *
+     * <p>Locking: keyed on {@code def.name()} — the SAME per-name lock the
+     * registered-name path uses. An inline definition whose {@code meta.name}
+     * collides with a registered workflow (or another in-flight inline run of the
+     * same name) is correctly serialized: a collision throws
+     * {@link WorkflowAlreadyRunningException}, never runs two bodies under one
+     * name concurrently. The inline source still runs through
+     * {@link WorkflowEvaluator#evaluate} → the same L1 sandbox as named runs.
+     *
+     * @return the {@code t_flywheel_run} id
+     * @throws WorkflowAlreadyRunningException a run for {@code def.name()} is already in flight
+     */
+    public String startRun(WorkflowDefinition def, Map<String, Object> args, Long userId) {
+        String workflowName = def.name();
 
         if (!consolidationLock.tryAcquire(workflowName)) {
             throw new WorkflowAlreadyRunningException(workflowName);
