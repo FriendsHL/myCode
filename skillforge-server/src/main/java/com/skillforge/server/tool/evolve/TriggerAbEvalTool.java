@@ -10,6 +10,8 @@ import com.skillforge.server.entity.SkillDraftEntity;
 import com.skillforge.server.improve.AbEvalRunRequest;
 import com.skillforge.server.improve.PromptImproverService;
 import com.skillforge.server.improve.SkillDraftService;
+import com.skillforge.server.flywheel.run.FlywheelRunEntity;
+import com.skillforge.server.flywheel.run.FlywheelRunService;
 import com.skillforge.server.improve.behavior.BehaviorRuleAbEvalService;
 import com.skillforge.server.repository.BehaviorRuleVersionRepository;
 import com.skillforge.server.repository.SkillDraftRepository;
@@ -73,10 +75,28 @@ import java.util.Map;
  * recursion path — same invariant as {@code RunWorkflowTool} (see its comment at
  * {@code RunWorkflowTool.java:46-50}). The orchestrator runs top-level, so its
  * A/B fan-out stays 2 layers deep (same as the existing flywheel).
+ *
+ * <p><b>FR-C7 — per-agent A/B budget cap (security CRIT-1 / HIGH-2 fix).</b>
+ * The orchestrator's {@code maxIter} lives in its agent prompt (an untrusted
+ * surface) and the generic engine {@code maxLoops=25} fallback is too loose for
+ * real A/B compute. The cap is enforced on {@code targetAgentId}, which is
+ * ALWAYS REQUIRED in this tool — so an LLM that omits {@code evolveRunId}
+ * cannot bypass it. Implementation: count total {@code evolve_iteration} steps
+ * across ALL evolve runs for the agent
+ * ({@link FlywheelRunService#countEvolveAbTriggersForAgent(Long)}); when
+ * {@code evolveRunId} is also provided use the higher of the per-run count vs
+ * the per-agent count. REJECT when the count reaches the configurable cap
+ * ({@code skillforge.evolve.ab-budget-per-run}, default
+ * {@value #DEFAULT_AB_BUDGET_PER_RUN}). A DB error during the cap check
+ * <b>fails closed</b> (rejects the trigger) — security checks must not allow
+ * through on failure.
  */
 public class TriggerAbEvalTool implements Tool {
 
     public static final String NAME = "TriggerAbEval";
+
+    /** FR-C7: default per-evolve-run A/B trigger cap when none is configured. */
+    public static final int DEFAULT_AB_BUDGET_PER_RUN = 30;
 
     private static final Logger log = LoggerFactory.getLogger(TriggerAbEvalTool.class);
 
@@ -85,6 +105,8 @@ public class TriggerAbEvalTool implements Tool {
     private final BehaviorRuleAbEvalService behaviorRuleAbEvalService;
     private final SkillDraftRepository skillDraftRepository;
     private final BehaviorRuleVersionRepository behaviorRuleVersionRepository;
+    private final FlywheelRunService flywheelRunService;
+    private final int abBudgetPerRun;
     private final ObjectMapper objectMapper;
 
     public TriggerAbEvalTool(PromptImproverService promptImproverService,
@@ -92,12 +114,16 @@ public class TriggerAbEvalTool implements Tool {
                              BehaviorRuleAbEvalService behaviorRuleAbEvalService,
                              SkillDraftRepository skillDraftRepository,
                              BehaviorRuleVersionRepository behaviorRuleVersionRepository,
+                             FlywheelRunService flywheelRunService,
+                             int abBudgetPerRun,
                              ObjectMapper objectMapper) {
         this.promptImproverService = promptImproverService;
         this.skillDraftService = skillDraftService;
         this.behaviorRuleAbEvalService = behaviorRuleAbEvalService;
         this.skillDraftRepository = skillDraftRepository;
         this.behaviorRuleVersionRepository = behaviorRuleVersionRepository;
+        this.flywheelRunService = flywheelRunService;
+        this.abBudgetPerRun = abBudgetPerRun > 0 ? abBudgetPerRun : DEFAULT_AB_BUDGET_PER_RUN;
         this.objectMapper = objectMapper;
     }
 
@@ -120,6 +146,8 @@ public class TriggerAbEvalTool implements Tool {
                 + "held-out set / dataset.\n"
                 + "- \"datasetVersionId\" (optional): pin the run to an immutable dataset snapshot "
                 + "(mutually exclusive with evalScenarioIds; prompt/behavior_rule).\n"
+                + "- \"evolveRunId\" (optional): the evolve run this A/B belongs to. Optional metadata "
+                + "— the per-agent A/B budget cap fires regardless (keyed on targetAgentId).\n"
                 + "Returns an \"abRunId\" immediately — the eval runs in the background. Poll "
                 + "GetAbResult with that id to read the baseline/candidate scores when terminal.";
     }
@@ -164,6 +192,12 @@ public class TriggerAbEvalTool implements Tool {
                 "description", "Optional immutable dataset version to pin the run to (mutually "
                         + "exclusive with evalScenarioIds)."
         ));
+        properties.put("evolveRunId", Map.of(
+                "type", "string",
+                "description", "Optional evolve-run id for traceability / per-run budget precision. "
+                        + "The per-agent A/B budget cap fires unconditionally on targetAgentId "
+                        + "regardless of whether this is supplied."
+        ));
 
         Map<String, Object> schema = new LinkedHashMap<>();
         schema.put("type", "object");
@@ -191,6 +225,17 @@ public class TriggerAbEvalTool implements Tool {
             String targetAgentId = trimToNull(input.get("targetAgentId"));
             if (targetAgentId == null) {
                 return SkillResult.validationError("targetAgentId is required");
+            }
+
+            // FR-C7 (CRIT-1 fix): per-agent A/B budget cap — ALWAYS enforced on
+            // targetAgentId (which is required), never optional. An LLM that
+            // omits evolveRunId cannot bypass the cap. evolveRunId is retained as
+            // optional metadata for per-run precision (we use the higher of the
+            // per-agent count vs the per-run count as the budget consumed).
+            String evolveRunId = trimToNull(input.get("evolveRunId"));
+            SkillResult capReject = enforceAbBudget(targetAgentId, evolveRunId);
+            if (capReject != null) {
+                return capReject;
             }
 
             // SECURITY: validate candidate belongs to targetAgentId before firing
@@ -238,6 +283,73 @@ public class TriggerAbEvalTool implements Tool {
             log.error("TriggerAbEval execute failed", e);
             return SkillResult.error("TriggerAbEval error: " + e.getMessage());
         }
+    }
+
+    /**
+     * FR-C7 (CRIT-1 fix) — enforce the per-agent A/B budget cap. Always keyed
+     * on {@code targetAgentId} (required); {@code evolveRunId} is optional and
+     * used for additional precision (we take the higher of per-agent vs per-run
+     * count to be conservative). Returns a rejection {@link SkillResult} when the
+     * cap is reached, or {@code null} to proceed.
+     *
+     * <p><b>Fail closed (HIGH-3 fix):</b> if the DB count throws, we REJECT the
+     * trigger rather than allowing it through. A security check that fails open is
+     * no security check.
+     */
+    private SkillResult enforceAbBudget(String targetAgentId, String evolveRunId) {
+        long agentCount;
+        try {
+            long agentId = Long.parseLong(targetAgentId);
+            agentCount = flywheelRunService.countEvolveAbTriggersForAgent(agentId);
+        } catch (RuntimeException e) {
+            // HIGH-3 fix: fail closed — if the budget count fails, REJECT rather
+            // than allowing through. Security checks must not fail open.
+            log.error("[TriggerAbEval] FR-C7 per-agent budget count FAILED for targetAgentId={}: {} "
+                    + "— rejecting to fail closed",
+                    targetAgentId, e.getMessage());
+            return SkillResult.error(
+                    "A/B budget check failed (targetAgentId=" + targetAgentId
+                            + "): cannot confirm budget headroom — trigger rejected for safety");
+        }
+
+        // Optional per-run refinement: use the higher of agent-wide vs run-specific
+        // count so we're conservative in both directions.
+        long used = agentCount;
+        if (evolveRunId != null) {
+            try {
+                long runCount = flywheelRunService.countEvolveAbTriggers(evolveRunId);
+                used = Math.max(agentCount, runCount);
+            } catch (RuntimeException e) {
+                // Per-run count is supplementary — if it fails, fall back to per-agent
+                // count (already have it). This sub-path is not a security boundary
+                // because the per-agent count already enforces the cap.
+                log.warn("[TriggerAbEval] FR-C7 per-run count failed for evolveRunId={}, "
+                        + "using per-agent count={}: {}", evolveRunId, agentCount, e.getMessage());
+            }
+        }
+
+        if (used >= abBudgetPerRun) {
+            log.warn("[TriggerAbEval] FR-C7 REJECTED: targetAgentId={} reached A/B budget cap "
+                    + "(used={} cap={} evolveRunId={})", targetAgentId, used, abBudgetPerRun, evolveRunId);
+            String msg = "per-agent A/B budget reached (targetAgentId=" + targetAgentId
+                    + ", used=" + used + ", cap=" + abBudgetPerRun + "): stop triggering A/B "
+                    + "and summarize the kept candidates for human review";
+            try {
+                Map<String, Object> body = new LinkedHashMap<>();
+                body.put("status", "rejected");
+                body.put("reason", msg);
+                body.put("targetAgentId", targetAgentId);
+                body.put("abBudgetUsed", used);
+                body.put("abBudgetCap", abBudgetPerRun);
+                if (evolveRunId != null) {
+                    body.put("evolveRunId", evolveRunId);
+                }
+                return SkillResult.success(objectMapper.writeValueAsString(body));
+            } catch (Exception e) {
+                return SkillResult.error(msg);
+            }
+        }
+        return null;
     }
 
     /**

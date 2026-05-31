@@ -5,6 +5,7 @@ import com.skillforge.core.skill.SkillContext;
 import com.skillforge.core.skill.SkillResult;
 import com.skillforge.server.entity.BehaviorRuleVersionEntity;
 import com.skillforge.server.entity.SkillDraftEntity;
+import com.skillforge.server.flywheel.run.FlywheelRunService;
 import com.skillforge.server.improve.AbEvalRunRequest;
 import com.skillforge.server.improve.PromptImproverService;
 import com.skillforge.server.improve.SkillDraftService;
@@ -48,6 +49,9 @@ class TriggerAbEvalToolTest {
     @Mock private BehaviorRuleAbEvalService behaviorRuleAbEvalService;
     @Mock private SkillDraftRepository skillDraftRepository;
     @Mock private BehaviorRuleVersionRepository behaviorRuleVersionRepository;
+    @Mock private FlywheelRunService flywheelRunService;
+
+    private static final int AB_BUDGET = 3;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private TriggerAbEvalTool tool;
@@ -56,7 +60,7 @@ class TriggerAbEvalToolTest {
     void setUp() {
         tool = new TriggerAbEvalTool(promptImproverService, skillDraftService,
                 behaviorRuleAbEvalService, skillDraftRepository,
-                behaviorRuleVersionRepository, objectMapper);
+                behaviorRuleVersionRepository, flywheelRunService, AB_BUDGET, objectMapper);
     }
 
     private SkillResult run(Map<String, Object> input) {
@@ -285,6 +289,116 @@ class TriggerAbEvalToolTest {
 
         assertThat(result.isSuccess()).isFalse();
         assertThat(result.getError()).contains("No dataset version available");
+    }
+
+    // ─────────────────── FR-C7 (CRIT-1 fix): per-agent A/B budget cap ───────────────────
+    //
+    // Cap is always enforced on targetAgentId (always-required). An LLM that omits
+    // evolveRunId cannot bypass it. evolveRunId is optional metadata for per-run
+    // precision. DB failure during count → fail closed (reject).
+
+    @Test
+    @DisplayName("FR-C7 CRIT-1: cap fires on agent count under cap → A/B fires")
+    void abBudget_perAgent_underCap_fires() {
+        // Per-agent count under cap → should allow through.
+        when(flywheelRunService.countEvolveAbTriggersForAgent(42L)).thenReturn(2L); // < AB_BUDGET=3
+        when(promptImproverService.runAbTestAgainst(any(AbEvalRunRequest.class)))
+                .thenReturn("prompt-ab-ok");
+
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("surface", "prompt");
+        input.put("candidateId", "cand-v2");
+        input.put("targetAgentId", "42");
+
+        SkillResult result = run(input);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getOutput()).contains("\"abRunId\":\"prompt-ab-ok\"");
+        verify(flywheelRunService).countEvolveAbTriggersForAgent(42L);
+        verify(promptImproverService).runAbTestAgainst(any(AbEvalRunRequest.class));
+    }
+
+    @Test
+    @DisplayName("FR-C7 CRIT-1: cap fires on agent count at cap → REJECTED (no evolveRunId = no bypass)")
+    void abBudget_perAgent_atCap_rejected_withoutEvolveRunId() {
+        // Per-agent count at cap — LLM omitted evolveRunId, should still be REJECTED.
+        when(flywheelRunService.countEvolveAbTriggersForAgent(42L)).thenReturn(3L); // == AB_BUDGET=3
+
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("surface", "prompt");
+        input.put("candidateId", "cand-v2");
+        input.put("targetAgentId", "42");
+        // evolveRunId deliberately omitted — must NOT bypass cap
+
+        SkillResult result = run(input);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getOutput()).contains("\"status\":\"rejected\"");
+        assertThat(result.getOutput()).contains("A/B budget reached");
+        assertThat(result.getOutput()).contains("targetAgentId");
+        verify(flywheelRunService).countEvolveAbTriggersForAgent(42L);
+        verify(promptImproverService, never()).runAbTestAgainst(any(AbEvalRunRequest.class));
+    }
+
+    @Test
+    @DisplayName("FR-C7 CRIT-1: per-run count higher than per-agent → higher count used (conservative)")
+    void abBudget_perRunCountHigher_takesMax() {
+        // Agent count under cap, but per-run count is at cap → still reject.
+        when(flywheelRunService.countEvolveAbTriggersForAgent(42L)).thenReturn(1L); // < cap
+        when(flywheelRunService.countEvolveAbTriggers("evolve-1")).thenReturn(3L); // == cap
+
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("surface", "prompt");
+        input.put("candidateId", "cand-v2");
+        input.put("targetAgentId", "42");
+        input.put("evolveRunId", "evolve-1");
+
+        SkillResult result = run(input);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getOutput()).contains("\"status\":\"rejected\"");
+        verify(promptImproverService, never()).runAbTestAgainst(any(AbEvalRunRequest.class));
+    }
+
+    @Test
+    @DisplayName("FR-C7 HIGH-3: DB error during cap count → FAIL CLOSED (reject, not allow)")
+    void abBudget_dbError_failsClosed() {
+        when(flywheelRunService.countEvolveAbTriggersForAgent(42L))
+                .thenThrow(new RuntimeException("DB connection lost"));
+
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("surface", "prompt");
+        input.put("candidateId", "cand-v2");
+        input.put("targetAgentId", "42");
+
+        SkillResult result = run(input);
+
+        // Must fail closed — error (not success/allowed through).
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.getError()).contains("budget check failed");
+        verify(promptImproverService, never()).runAbTestAgainst(any(AbEvalRunRequest.class));
+    }
+
+    @Test
+    @DisplayName("FR-C7 CRIT-1: evolveRunId present + both counts under cap → A/B fires")
+    void abBudget_withEvolveRunId_bothUnderCap_fires() {
+        when(flywheelRunService.countEvolveAbTriggersForAgent(42L)).thenReturn(2L);
+        when(flywheelRunService.countEvolveAbTriggers("evolve-1")).thenReturn(1L);
+        when(promptImproverService.runAbTestAgainst(any(AbEvalRunRequest.class)))
+                .thenReturn("prompt-ab-ok");
+
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("surface", "prompt");
+        input.put("candidateId", "cand-v2");
+        input.put("targetAgentId", "42");
+        input.put("evolveRunId", "evolve-1");
+
+        SkillResult result = run(input);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getOutput()).contains("\"abRunId\":\"prompt-ab-ok\"");
+        verify(flywheelRunService).countEvolveAbTriggersForAgent(42L);
+        verify(flywheelRunService).countEvolveAbTriggers("evolve-1");
     }
 
     @Test

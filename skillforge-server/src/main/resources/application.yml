@@ -112,6 +112,16 @@ skillforge:
   # approve → candidate_ready sits idle waiting for an operator to manually click
   # "Run A/B". Read by @ConditionalOnProperty on OptimizationEventAutoTriggerListener
   # — false skips the listener bean entirely (no event delivery, no auto-trigger).
+  #
+  # AUTOEVOLVE-AGENT-FLYWHEEL Module C (FR-C6): the agent-driven evolve
+  # orchestrator (EvolveController → evolve-orchestrator agent) drives its own
+  # report→candidate→A/B→gate loop. To avoid the old event-driven flywheel racing
+  # it on the same agent (two編排 over one agent → ImprovementConflictException /
+  # divergence), set
+  #   skillforge.flywheel.auto-trigger-ab-on-candidate-ready: false
+  # in the DOGFOOD profile (e.g. application-dogfood.yml) while running the
+  # orchestrator. Default stays true here (no behavior change for the existing
+  # event-driven flywheel); flip it off only in the profile that runs evolve.
   flywheel:
     auto-trigger-ab-on-candidate-ready: true
     ab-eval:
@@ -122,6 +132,15 @@ skillforge:
       # 120s gives 2× headroom while still bounding worst-case AB pipeline at
       # ~24min (12 scenarios × 2 sides). Override per env if needed.
       scenario-timeout-ms: 120000
+
+  # AUTOEVOLVE-AGENT-FLYWHEEL Module C (FR-C7): per-evolve-run A/B budget cap.
+  # The orchestrator's maxIter lives in its agent prompt (untrusted surface) and
+  # the engine's maxLoops=25 fallback is too loose for real A/B compute. When the
+  # orchestrator threads evolveRunId into TriggerAbEval, the tool counts the run's
+  # recorded A/B triggers (evolve_iteration steps) and rejects once it reaches this
+  # cap. Default 30 (TriggerAbEvalTool.DEFAULT_AB_BUDGET_PER_RUN).
+  evolve:
+    ab-budget-per-run: 30
 
   session-message-store:
     row-read-enabled: true

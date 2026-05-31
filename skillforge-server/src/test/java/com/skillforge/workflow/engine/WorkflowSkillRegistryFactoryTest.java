@@ -76,20 +76,23 @@ class WorkflowSkillRegistryFactoryTest {
     }
 
     /**
-     * AUTOEVOLVE-AGENT-FLYWHEEL Module B — recursion-isolation invariant. The
-     * orchestration tools ({@code RunWorkflow} from Module A, plus the three
-     * A/B tools {@code TriggerAbEval} / {@code GetAbResult} /
-     * {@code PromoteCandidate}) MUST NOT be reachable by a workflow sub-agent,
-     * or a sub-agent could re-open a fan-out / recursion path. They live ONLY
-     * in the main SkillRegistry (SkillForgeConfig). This asserts the workflow
-     * sub-agent registry never exposes them.
+     * AUTOEVOLVE-AGENT-FLYWHEEL Module B + C — recursion-isolation invariant. The
+     * orchestration tools ({@code RunWorkflow} from Module A, the three A/B tools
+     * {@code TriggerAbEval} / {@code GetAbResult} / {@code PromoteCandidate} from
+     * Module B, and the Module C orchestrator tools {@code GenerateCandidate} /
+     * {@code RecordIteration}) MUST NOT be reachable by a workflow sub-agent, or a
+     * sub-agent could re-open a fan-out / recursion path. They live ONLY in the
+     * main SkillRegistry (SkillForgeConfig). The orchestrator runs TOP-LEVEL, not
+     * as a workflow sub-agent. This asserts the workflow sub-agent registry never
+     * exposes any of them.
      */
     @Test
-    @DisplayName("does NOT register orchestration / A-B tools (recursion isolation)")
+    @DisplayName("does NOT register orchestration / A-B / evolve tools (recursion isolation)")
     void excludesOrchestrationAndAbTools() {
         SkillRegistry registry = factory.workflowRegistry();
         for (String forbidden : List.of(
-                "RunWorkflow", "TriggerAbEval", "GetAbResult", "PromoteCandidate")) {
+                "RunWorkflow", "TriggerAbEval", "GetAbResult", "PromoteCandidate",
+                "GenerateCandidate", "RecordIteration")) {
             assertThat(registry.getTool(forbidden))
                     .as(forbidden + " must not be reachable by a workflow sub-agent")
                     .isEmpty();

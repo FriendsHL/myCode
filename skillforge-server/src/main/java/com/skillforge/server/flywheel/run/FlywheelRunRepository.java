@@ -59,4 +59,15 @@ public interface FlywheelRunRepository extends JpaRepository<FlywheelRunEntity, 
      * derives the query from the method name; no {@code @Query} needed.
      */
     long countByLoopKindAndStatusAndCreatedAtAfter(String loopKind, String status, Instant after);
+
+    /**
+     * AUTOEVOLVE-AGENT-FLYWHEEL Module C (HIGH-1 fix): check for an active
+     * (running / pending) evolve run for a given agent. Used by
+     * {@code EvolveController} to reject a second trigger with 409 while a run
+     * is already in flight, preventing concurrent overlapping evolve loops on the
+     * same agent (mirrors the {@code ImprovementConflictException} guards in
+     * {@code PromptImproverService} / {@code SkillAbEvalService}).
+     */
+    long countByAgentIdAndLoopKindAndStatusIn(
+            Long agentId, String loopKind, java.util.List<String> statuses);
 }

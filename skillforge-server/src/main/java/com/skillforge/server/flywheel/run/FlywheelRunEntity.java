@@ -65,6 +65,16 @@ public class FlywheelRunEntity {
     public static final String LOOP_KIND_METRICS_COLLECTION = "metrics_collection";
     public static final String LOOP_KIND_CUSTOM = "custom";
 
+    /**
+     * AUTOEVOLVE-AGENT-FLYWHEEL Module C (V130): an agent-driven auto-evolving
+     * run. The orchestrator agent (V131 {@code evolve-orchestrator}) drives the
+     * report→candidate→A/B→gate→record loop top-level; each iteration is a
+     * {@link FlywheelRunStepEntity} with {@code step_kind='evolve_iteration'}.
+     * No new table — reuses {@code t_flywheel_run} + {@code t_flywheel_run_step}
+     * (architect REUSE TABLE verdict).
+     */
+    public static final String LOOP_KIND_EVOLVE = "evolve";
+
     public static final String TRIGGER_SOURCE_CRON = "cron";
     public static final String TRIGGER_SOURCE_USER_MANUAL = "user_manual";
     public static final String TRIGGER_SOURCE_API = "api";

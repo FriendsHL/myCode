@@ -1,6 +1,8 @@
 package com.skillforge.server.flywheel.run;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import java.util.List;
 import java.util.Optional;
@@ -65,4 +67,37 @@ public interface FlywheelRunStepRepository extends JpaRepository<FlywheelRunStep
      */
     List<FlywheelRunStepEntity> findByRunIdAndStepKindAndStatus(
             String runId, String stepKind, String status);
+
+    /**
+     * AUTOEVOLVE-AGENT-FLYWHEEL Module C (FR-C7): per-evolve-run A/B budget
+     * counter. Counts {@code evolve_iteration} steps for a run — each recorded
+     * iteration corresponds to one A/B trigger, so this is the run's A/B count
+     * used to enforce the per-evolve-run cap before firing another
+     * {@code TriggerAbEval}. (Soft cap: counts iterations the orchestrator has
+     * already recorded via {@code RecordIteration}; documented design — see
+     * {@code TriggerAbEvalTool} FR-C7 javadoc.)
+     */
+    long countByRunIdAndStepKind(String runId, String stepKind);
+
+    /**
+     * AUTOEVOLVE-AGENT-FLYWHEEL Module C (FR-C7 CRIT-1 fix): count
+     * {@code evolve_iteration} steps across ALL evolve runs for a given
+     * {@code agentId}. Used as the per-agent A/B budget counter in
+     * {@link FlywheelRunService#countEvolveAbTriggersForAgent(Long)} — the cap
+     * fires on {@code targetAgentId} (always-required in TriggerAbEval) so an
+     * LLM that omits {@code evolveRunId} cannot bypass it.
+     *
+     * <p>The JPQL join traverses:
+     * {@code t_flywheel_run_step.run_id → t_flywheel_run.id (agentId = :agentId,
+     * loopKind = 'evolve')}.
+     */
+    @Query("""
+            SELECT COUNT(s)
+            FROM FlywheelRunStepEntity s
+            JOIN FlywheelRunEntity r ON s.runId = r.id
+            WHERE r.agentId = :agentId
+              AND r.loopKind = 'evolve'
+              AND s.stepKind = 'evolve_iteration'
+            """)
+    long countEvolveIterationStepsByAgentId(@Param("agentId") Long agentId);
 }

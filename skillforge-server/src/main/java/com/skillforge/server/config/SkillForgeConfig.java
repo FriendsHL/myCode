@@ -477,14 +477,18 @@ public class SkillForgeConfig {
             com.skillforge.server.improve.behavior.BehaviorRuleAbEvalService behaviorRuleAbEvalService,
             com.skillforge.server.repository.SkillDraftRepository skillDraftRepository,
             com.skillforge.server.repository.BehaviorRuleVersionRepository behaviorRuleVersionRepository,
+            FlywheelRunService flywheelRunService,
+            @Value("${skillforge.evolve.ab-budget-per-run:30}") int abBudgetPerRun,
             ObjectMapper objectMapper,
             SkillRegistry skillRegistry) {
         com.skillforge.server.tool.evolve.TriggerAbEvalTool tool =
                 new com.skillforge.server.tool.evolve.TriggerAbEvalTool(
                         promptImproverService, skillDraftService, behaviorRuleAbEvalService,
-                        skillDraftRepository, behaviorRuleVersionRepository, objectMapper);
+                        skillDraftRepository, behaviorRuleVersionRepository,
+                        flywheelRunService, abBudgetPerRun, objectMapper);
         skillRegistry.registerTool(tool);
-        log.info("Registered TriggerAbEvalTool into SkillRegistry");
+        log.info("Registered TriggerAbEvalTool into SkillRegistry (FR-C7 abBudgetPerRun={})",
+                abBudgetPerRun);
         return tool;
     }
 
@@ -538,6 +542,54 @@ public class SkillForgeConfig {
                         behaviorRuleVersionRepository, objectMapper);
         skillRegistry.registerTool(tool);
         log.info("Registered PromoteCandidateTool into SkillRegistry");
+        return tool;
+    }
+
+    /**
+     * AUTOEVOLVE-AGENT-FLYWHEEL Module C (FR-C2) — {@code GenerateCandidate} thin
+     * wrapper over the existing improver candidate-gen (prompt / skill /
+     * behavior_rule), reusing the same one-shot LLM-fill path
+     * {@code AttributionApprovalService} uses. Returns the persisted candidateId.
+     *
+     * <p><b>Invariant:</b> registered ONLY here in the main SkillRegistry — NOT in
+     * {@code WorkflowSkillRegistryFactory} (workflow sub-agent registry). Same
+     * recursion-isolation invariant as the Module A/B tools. Declared explicitly
+     * in the {@code evolve-orchestrator} agent's tool_ids (V131); not auto-assigned.
+     */
+    @Bean
+    public com.skillforge.server.tool.evolve.GenerateCandidateTool generateCandidateTool(
+            com.skillforge.server.improve.PromptImproverService promptImproverService,
+            com.skillforge.server.improve.SkillDraftService skillDraftService,
+            com.skillforge.server.improve.BehaviorRuleImproverService behaviorRuleImproverService,
+            ObjectMapper objectMapper,
+            SkillRegistry skillRegistry) {
+        com.skillforge.server.tool.evolve.GenerateCandidateTool tool =
+                new com.skillforge.server.tool.evolve.GenerateCandidateTool(
+                        promptImproverService, skillDraftService,
+                        behaviorRuleImproverService, objectMapper);
+        skillRegistry.registerTool(tool);
+        log.info("Registered GenerateCandidateTool into SkillRegistry");
+        return tool;
+    }
+
+    /**
+     * AUTOEVOLVE-AGENT-FLYWHEEL Module C (RecordIteration) — {@code RecordIteration}
+     * appends an {@code evolve_iteration} ledger step (no new table; reuses
+     * {@code t_flywheel_run_step}). These rows are also the FR-C7 A/B budget counter.
+     *
+     * <p><b>Invariant:</b> registered ONLY here in the main SkillRegistry — NOT in
+     * {@code WorkflowSkillRegistryFactory}. Same recursion-isolation invariant.
+     */
+    @Bean
+    public com.skillforge.server.tool.evolve.RecordIterationTool recordIterationTool(
+            FlywheelRunService flywheelRunService,
+            ObjectMapper objectMapper,
+            SkillRegistry skillRegistry) {
+        com.skillforge.server.tool.evolve.RecordIterationTool tool =
+                new com.skillforge.server.tool.evolve.RecordIterationTool(
+                        flywheelRunService, objectMapper);
+        skillRegistry.registerTool(tool);
+        log.info("Registered RecordIterationTool into SkillRegistry");
         return tool;
     }
 

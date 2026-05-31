@@ -482,6 +482,94 @@ public class FlywheelRunService {
         return gates.isEmpty() ? Optional.empty() : Optional.of(gates.get(0));
     }
 
+    /**
+     * AUTOEVOLVE-AGENT-FLYWHEEL Module C (RecordIteration): append a completed
+     * {@code evolve_iteration} ledger step to an {@code evolve} run in one shot.
+     * The orchestrator's {@code RecordIteration} tool calls this each loop turn;
+     * {@code stepOutputJson} carries the iteration / surface / changeDesc /
+     * candidateId / baselineScore / candidateScore / delta / kept (+ optional
+     * abRunId). Unlike the OPT-REPORT batch path there is no separate worker
+     * session, so the row is created and immediately marked {@code completed}.
+     *
+     * <p>Two writes (append pending + transition to completed) run in this
+     * method's single transaction. Reuses {@link #appendStep(String, String,
+     * String, Integer)} + the package-private {@link #doTransitionStepStatus}
+     * (NOT the public {@code @Transactional} overload via {@code this.} — that
+     * would self-invoke past the proxy; java.md footgun #2).
+     *
+     * @param runId        the evolve run id
+     * @param iteration    1-based iteration index (used as the deterministic
+     *                     {@code step_index})
+     * @param outputJson   free-schema iteration payload (serialized to JSONB)
+     * @return the new step's id (UUID)
+     */
+    @Transactional
+    public String appendEvolveIterationStep(String runId, int iteration, JsonNode outputJson) {
+        if (runId == null || runId.isBlank()) {
+            throw new IllegalArgumentException("runId is required");
+        }
+        if (iteration < 1) {
+            throw new IllegalArgumentException("iteration must be >= 1");
+        }
+        String stepId = appendStep(runId, "{}",
+                FlywheelRunStepEntity.STEP_KIND_EVOLVE_ITERATION, iteration);
+        doTransitionStepStatus(
+                stepId, FlywheelRunStepEntity.STATUS_COMPLETED, outputJson, null);
+        log.info("FlywheelRunService.appendEvolveIterationStep: runId={} iteration={} stepId={}",
+                runId, iteration, stepId);
+        return stepId;
+    }
+
+    /**
+     * AUTOEVOLVE-AGENT-FLYWHEEL Module C (FR-C7): per-run A/B trigger count —
+     * number of {@code evolve_iteration} steps recorded for a specific run.
+     * Used by {@code TriggerAbEval} when {@code evolveRunId} is provided (precise
+     * per-run count, may trail in-flight A/Bs).
+     */
+    @Transactional(readOnly = true)
+    public long countEvolveAbTriggers(String runId) {
+        if (runId == null || runId.isBlank()) {
+            throw new IllegalArgumentException("runId is required");
+        }
+        return stepRepository.countByRunIdAndStepKind(
+                runId, FlywheelRunStepEntity.STEP_KIND_EVOLVE_ITERATION);
+    }
+
+    /**
+     * AUTOEVOLVE-AGENT-FLYWHEEL Module C (FR-C7 CRIT-1 fix): per-agent A/B
+     * trigger count — total {@code evolve_iteration} steps across ALL evolve runs
+     * for the given agent. Used as the always-enforced cap counter in
+     * {@code TriggerAbEval}: since {@code targetAgentId} is always-required in
+     * that tool, the cap fires unconditionally (an LLM that omits
+     * {@code evolveRunId} cannot bypass it by switching to this path).
+     */
+    @Transactional(readOnly = true)
+    public long countEvolveAbTriggersForAgent(Long agentId) {
+        if (agentId == null || agentId <= 0L) {
+            throw new IllegalArgumentException("agentId must be a positive long");
+        }
+        return stepRepository.countEvolveIterationStepsByAgentId(agentId);
+    }
+
+    /**
+     * AUTOEVOLVE-AGENT-FLYWHEEL Module C (HIGH-1 fix): check whether this agent
+     * already has an active ({@code running} or {@code pending}) evolve run.
+     * {@code EvolveController} calls this before creating a new run to reject the
+     * request with 409, preventing concurrent overlapping evolve loops on the same
+     * agent (mirrors {@code ImprovementConflictException} guards in the improver
+     * services).
+     */
+    @Transactional(readOnly = true)
+    public boolean hasActiveEvolveRun(Long agentId) {
+        if (agentId == null || agentId <= 0L) {
+            throw new IllegalArgumentException("agentId must be a positive long");
+        }
+        return runRepository.countByAgentIdAndLoopKindAndStatusIn(
+                agentId,
+                FlywheelRunEntity.LOOP_KIND_EVOLVE,
+                List.of(FlywheelRunEntity.STATUS_PENDING, FlywheelRunEntity.STATUS_RUNNING)) > 0;
+    }
+
     private FlywheelRunEntity requireWritableRun(String runId) {
         if (runId == null || runId.isBlank()) {
             throw new IllegalArgumentException("runId is required");

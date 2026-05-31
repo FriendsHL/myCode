@@ -35,6 +35,12 @@ public final class SystemAgentNames {
     public static final String ATTRIBUTION_DISPATCHER = "attribution-dispatcher";
     public static final String USER_SIMULATOR = "user-simulator";
 
+    /**
+     * AUTOEVOLVE-AGENT-FLYWHEEL Module C (V131 seed): top-level driver of the
+     * agent-driven auto-evolving loop, fired on-demand by EvolveController.
+     */
+    public static final String EVOLVE_ORCHESTRATOR = "evolve-orchestrator";
+
     /** OPT-REPORT-V1 (V97 seed): orchestrator for the "Generate Report" flywheel route. */
     public static final String REPORT_GENERATOR = "report-generator";
     /** OPT-REPORT-V1 (V97 seed): worker dispatched by report-generator for per-batch session annotation. */

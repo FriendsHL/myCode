@@ -59,6 +59,16 @@ public class FlywheelRunStepEntity {
      */
     public static final String STEP_KIND_HUMAN_APPROVE = "human_approve";
 
+    /**
+     * AUTOEVOLVE-AGENT-FLYWHEEL Module C (V130): one iteration of an
+     * {@code evolve} loop run. {@code RecordIterationTool} appends a row with
+     * the iteration's surface / changeDesc / candidateId / baseline+candidate
+     * scores / delta / kept (+ optional abRunId) in {@code step_output_json}.
+     * Also the FR-C7 per-evolve-run A/B budget counter: counting these rows for
+     * a run (alongside in-flight A/B markers) caps unbounded TriggerAbEval.
+     */
+    public static final String STEP_KIND_EVOLVE_ITERATION = "evolve_iteration";
+
     @Id
     @Column(length = 36)
     private String id;
