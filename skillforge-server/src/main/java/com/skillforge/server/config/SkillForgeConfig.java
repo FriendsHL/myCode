@@ -561,14 +561,43 @@ public class SkillForgeConfig {
             com.skillforge.server.improve.PromptImproverService promptImproverService,
             com.skillforge.server.improve.SkillDraftService skillDraftService,
             com.skillforge.server.improve.BehaviorRuleImproverService behaviorRuleImproverService,
+            com.skillforge.server.optreport.OptReportToEventBridge optReportToEventBridge,
+            com.skillforge.server.flywheel.run.FlywheelRunRepository flywheelRunRepository,
             ObjectMapper objectMapper,
             SkillRegistry skillRegistry) {
         com.skillforge.server.tool.evolve.GenerateCandidateTool tool =
                 new com.skillforge.server.tool.evolve.GenerateCandidateTool(
                         promptImproverService, skillDraftService,
-                        behaviorRuleImproverService, objectMapper);
+                        behaviorRuleImproverService, optReportToEventBridge,
+                        flywheelRunRepository, objectMapper);
         skillRegistry.registerTool(tool);
         log.info("Registered GenerateCandidateTool into SkillRegistry");
+        return tool;
+    }
+
+    /**
+     * AUTOEVOLVE-AGENT-FLYWHEEL Module C — {@code GetOptReport} read-only tool:
+     * returns a completed opt-report's {@code topIssues} so the orchestrator can
+     * drive its loop ({@code RunWorkflow('opt-report')} is async + returns only a
+     * runId). Reuses {@code FlywheelRunRepository} + the existing
+     * {@code OptReportSummaryParser}.
+     *
+     * <p><b>Invariant:</b> registered ONLY here in the main SkillRegistry — NOT in
+     * {@code WorkflowSkillRegistryFactory}. Same recursion-isolation invariant as
+     * the other Module A/B/C tools. Declared in the {@code evolve-orchestrator}
+     * agent's tool_ids (V132).
+     */
+    @Bean
+    public com.skillforge.server.tool.evolve.GetOptReportTool getOptReportTool(
+            com.skillforge.server.flywheel.run.FlywheelRunRepository flywheelRunRepository,
+            com.skillforge.server.optreport.dto.OptReportSummaryParser optReportSummaryParser,
+            ObjectMapper objectMapper,
+            SkillRegistry skillRegistry) {
+        com.skillforge.server.tool.evolve.GetOptReportTool tool =
+                new com.skillforge.server.tool.evolve.GetOptReportTool(
+                        flywheelRunRepository, optReportSummaryParser, objectMapper);
+        skillRegistry.registerTool(tool);
+        log.info("Registered GetOptReportTool into SkillRegistry");
         return tool;
     }
 

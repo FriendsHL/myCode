@@ -10,8 +10,13 @@ import com.skillforge.server.improve.BehaviorRuleImproverService;
 import com.skillforge.server.improve.ImprovementStartResult;
 import com.skillforge.server.improve.PromptImproverService;
 import com.skillforge.server.improve.SkillDraftService;
+import com.skillforge.server.flywheel.run.FlywheelRunEntity;
+import com.skillforge.server.flywheel.run.FlywheelRunRepository;
+import com.skillforge.server.optreport.OptReportToEventBridge;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.NoSuchElementException;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -35,18 +40,35 @@ import java.util.Map;
  *       ({@code candidateId} = the new behavior-rule version id)</li>
  * </ul>
  *
- * <p><b>eventId linkage (v1 FIRST-CUT, signature adaptation).</b> The existing
- * improver candidate-gen methods persist the candidate with a non-null
- * {@code eventId} FK (the {@code t_optimization_event} audit-trail link). The
- * evolve orchestrator works off an opt-report attribution {@code report} which
- * surfaces real optimization events, so the orchestrator threads the originating
- * {@code eventId} (and, for skill, {@code patternId} + {@code ownerId}) through
- * this tool. When the required linkage fields are absent the tool returns a clear
- * validation error rather than fabricating an event — keeping the wrapper thin
- * (no new persistence / no LLM-fill duplication). 主会话 may later add an
- * attribution-free improver entry point so the orchestrator can generate
- * candidates without a pre-existing opt-event; that is out of scope for this
- * thin v1 wrapper.
+ * <p><b>eventId linkage — two input modes.</b> The existing improver
+ * candidate-gen methods persist the candidate with a non-null {@code eventId}
+ * (the {@code source_event_id} audit-trail column — NOT a hard DB FK; it is a
+ * service-level validation + an audit pivot string). The orchestrator does NOT
+ * normally pre-create opt-events, so this tool accepts EITHER:
+ * <ul>
+ *   <li><b>report-issue mode (preferred)</b> — {@code reportId} +
+ *       {@code issueId} from the opt-report {@code topIssues} (read via
+ *       {@code GetOptReport}). The tool mints the {@code eventId} by delegating
+ *       to the EXISTING {@link OptReportToEventBridge#convertIssueToEvent}
+ *       (idempotent on {@code (reportId, issueId)}, audit back-link via
+ *       {@code source_report_id} / {@code source_issue_id}). No new
+ *       event-creation logic is written here.</li>
+ *   <li><b>direct mode (backward-compat)</b> — an explicit {@code eventId}
+ *       (e.g. a curator-authored event). Threaded straight through.</li>
+ * </ul>
+ * Exactly one mode must be supplied; when neither is present the tool returns a
+ * clean validation error. {@code sessionId} is intentionally NOT a substitute:
+ * the audit column is a {@code Long} event id, and the report issue already
+ * carries its {@code exampleSessionIds} evidence, so the bridge (report→event)
+ * is the aligned anchor.
+ *
+ * <p><b>ownerId / patternId defaults.</b> The evolve loop is system-driven, so
+ * {@code ownerId} defaults to {@code SYSTEM_USER_ID} (0) when the orchestrator
+ * omits it. For {@code surface=skill}, the existing
+ * {@code createDraftFromAttribution} requires a {@code patternId} — but it is
+ * used ONLY for the audit-rationale text + suggested name (not a hard FK), and
+ * report-derived events carry a null patternId, so this tool synthesises
+ * {@code patternId = eventId} when absent.
  *
  * <p><b>Recursion guard (invariant).</b> Registered ONLY in the main
  * {@code SkillRegistry} (see {@code SkillForgeConfig}); deliberately ABSENT from
@@ -57,20 +79,29 @@ public class GenerateCandidateTool implements Tool {
 
     public static final String NAME = "GenerateCandidate";
 
+    /** System owner for system-driven evolve candidates (mirrors OptReportService.SYSTEM_USER_ID). */
+    static final long SYSTEM_USER_ID = 0L;
+
     private static final Logger log = LoggerFactory.getLogger(GenerateCandidateTool.class);
 
     private final PromptImproverService promptImproverService;
     private final SkillDraftService skillDraftService;
     private final BehaviorRuleImproverService behaviorRuleImproverService;
+    private final OptReportToEventBridge optReportToEventBridge;
+    private final FlywheelRunRepository flywheelRunRepository;
     private final ObjectMapper objectMapper;
 
     public GenerateCandidateTool(PromptImproverService promptImproverService,
                                  SkillDraftService skillDraftService,
                                  BehaviorRuleImproverService behaviorRuleImproverService,
+                                 OptReportToEventBridge optReportToEventBridge,
+                                 FlywheelRunRepository flywheelRunRepository,
                                  ObjectMapper objectMapper) {
         this.promptImproverService = promptImproverService;
         this.skillDraftService = skillDraftService;
         this.behaviorRuleImproverService = behaviorRuleImproverService;
+        this.optReportToEventBridge = optReportToEventBridge;
+        this.flywheelRunRepository = flywheelRunRepository;
         this.objectMapper = objectMapper;
     }
 
@@ -87,10 +118,13 @@ public class GenerateCandidateTool implements Tool {
                 + "- \"issue\": the issue / failure pattern description (from the opt-report "
                 + "attribution report) the candidate should address (text or JSON).\n"
                 + "- \"targetAgentId\": the agent being evolved (numeric agent id).\n"
-                + "- \"eventId\": the originating optimization-event id from the report (required "
-                + "for all surfaces — the candidate is linked to it for audit).\n"
-                + "- \"patternId\" (skill only): the originating pattern id from the report.\n"
-                + "- \"ownerId\" (skill only): the owner user id for the new skill draft.\n"
+                + "Provide ONE of these two audit-anchor modes:\n"
+                + "- PREFERRED: \"reportId\" + \"issueId\" — the report id and the topIssues[].id "
+                + "from GetOptReport; the tool mints the audit event from the report issue.\n"
+                + "- OR: \"eventId\" — an explicit pre-existing optimization-event id.\n"
+                + "Optional:\n"
+                + "- \"ownerId\": owner user id (defaults to the system user when omitted).\n"
+                + "- \"patternId\" (skill only): originating pattern id (defaults to the event id).\n"
                 + "Returns a \"candidateId\" (prompt version id / skill draft id / behavior-rule "
                 + "version id) you then pass to TriggerAbEval.";
     }
@@ -119,23 +153,33 @@ public class GenerateCandidateTool implements Tool {
                 "type", "string",
                 "description", "The agent being evolved (numeric agent id)."
         ));
+        properties.put("reportId", Map.of(
+                "type", "string",
+                "description", "Opt-report id (from GetOptReport). Provide with issueId as the "
+                        + "preferred audit anchor; the tool mints the event from the report issue."
+        ));
+        properties.put("issueId", Map.of(
+                "type", "string",
+                "description", "topIssues[].id from GetOptReport. Required when using reportId."
+        ));
         properties.put("eventId", Map.of(
                 "type", "string",
-                "description", "Originating optimization-event id from the report (required)."
+                "description", "Explicit pre-existing optimization-event id (alternative to "
+                        + "reportId+issueId)."
         ));
         properties.put("patternId", Map.of(
                 "type", "string",
-                "description", "Originating pattern id (required for surface=skill)."
+                "description", "Originating pattern id (skill only; defaults to the event id)."
         ));
         properties.put("ownerId", Map.of(
                 "type", "string",
-                "description", "Owner user id for the new skill draft (required for surface=skill)."
+                "description", "Owner user id (defaults to the system user when omitted)."
         ));
 
         Map<String, Object> schema = new LinkedHashMap<>();
         schema.put("type", "object");
         schema.put("properties", properties);
-        schema.put("required", java.util.List.of("surface", "issue", "targetAgentId", "eventId"));
+        schema.put("required", java.util.List.of("surface", "issue", "targetAgentId"));
         return new ToolSchema(getName(), getDescription(), schema);
     }
 
@@ -159,12 +203,11 @@ public class GenerateCandidateTool implements Tool {
             if (targetAgentId == null) {
                 return SkillResult.validationError("targetAgentId is required");
             }
-            Long eventId = parseLong(input.get("eventId"));
-            if (eventId == null) {
-                return SkillResult.validationError(
-                        "eventId is required (the originating optimization-event id from the "
-                                + "report; the candidate is linked to it for audit)");
-            }
+
+            // Resolve the audit-anchor eventId from ONE of two modes:
+            //   direct mode      → explicit "eventId"
+            //   report-issue mode → "reportId" + "issueId" → existing bridge mints it
+            Long eventId = resolveEventId(input, targetAgentId);
 
             // SECURITY note: targetAgentId is threaded to the improver service,
             // which validates the agent exists. The improvers persist the
@@ -173,12 +216,12 @@ public class GenerateCandidateTool implements Tool {
             String candidateId = switch (surface) {
                 case PROMPT -> {
                     ImprovementStartResult r = promptImproverService.startImprovementFromAttribution(
-                            eventId, targetAgentId, issue, ownerIdOrNull(input));
+                            eventId, targetAgentId, issue, ownerIdOrDefault(input));
                     yield r.promptVersionId();
                 }
                 case BEHAVIOR_RULE -> {
                     ImprovementStartResult r = behaviorRuleImproverService.startImprovementFromAttribution(
-                            eventId, targetAgentId, issue, ownerIdOrNull(input));
+                            eventId, targetAgentId, issue, ownerIdOrDefault(input));
                     yield r.promptVersionId();
                 }
                 case SKILL -> generateSkillDraft(input, issue, eventId);
@@ -194,8 +237,10 @@ public class GenerateCandidateTool implements Tool {
             response.put("message", "Candidate generated. Pass candidateId to TriggerAbEval "
                     + "(surface=" + surface.wire() + ") to start the A/B.");
             return SkillResult.success(objectMapper.writeValueAsString(response));
-        } catch (IllegalArgumentException e) {
-            // Bad agent / missing required field / unparsable number → LLM fixes + retries.
+        } catch (IllegalArgumentException | NoSuchElementException e) {
+            // Bad agent / missing field / unparsable number / unknown reportId or
+            // issueId / non-convertible issue surface → LLM fixes + retries (or skips
+            // the issue). NoSuchElementException comes from the report→event bridge.
             return SkillResult.validationError(e.getMessage());
         } catch (IllegalStateException e) {
             // Surface precondition not met (e.g. agent has empty system_prompt for the
@@ -208,21 +253,83 @@ public class GenerateCandidateTool implements Tool {
     }
 
     /**
-     * Skill surface needs patternId + ownerId (the existing
-     * {@code createDraftFromAttribution} signature). A deterministic suggested
-     * name mirrors {@code AttributionApprovalService.dispatchSkillSurface}.
+     * Resolve the audit-anchor {@code eventId} from the two supported modes and
+     * validate ownership.
+     *
+     * <ul>
+     *   <li><b>direct</b> — an explicit {@code eventId} is threaded through
+     *       unchanged (no extra ownership check — a curator-authored event is
+     *       trusted; the candidate is still persisted against
+     *       {@code targetAgentId} by the improver).</li>
+     *   <li><b>report-issue</b> — {@code reportId} + {@code issueId} → the
+     *       EXISTING {@link OptReportToEventBridge#convertIssueToEvent} mints
+     *       (idempotently) the event. SECURITY: the report's {@code agentId} is
+     *       verified to match {@code targetAgentId} BEFORE the bridge is called,
+     *       because {@code convertIssueToEvent} commits a {@code t_optimization_event}
+     *       row — so an unchecked cross-agent {@code reportId} would otherwise
+     *       pollute agent B's optimization-event / approval queue. The ownership
+     *       gate therefore precedes the (side-effecting) mint.</li>
+     * </ul>
+     *
+     * @throws IllegalArgumentException neither / both modes supplied, unparsable
+     *                                  ids, non-convertible issue surface, or a
+     *                                  report/target agent mismatch.
+     * @throws NoSuchElementException   reportId or issueId not found.
+     * @throws IllegalStateException    report not in {@code completed} status (from the bridge).
+     */
+    private Long resolveEventId(Map<String, Object> input, String targetAgentId) {
+        Long directEventId = parseLong(input.get("eventId"));
+        String reportId = trimToNull(input.get("reportId"));
+        String issueId = trimToNull(input.get("issueId"));
+        boolean hasReportAnchor = reportId != null || issueId != null;
+
+        if (directEventId != null && hasReportAnchor) {
+            throw new IllegalArgumentException(
+                    "provide EITHER eventId OR (reportId + issueId), not both");
+        }
+        if (directEventId != null) {
+            return directEventId;
+        }
+        if (reportId == null || issueId == null) {
+            throw new IllegalArgumentException(
+                    "an audit anchor is required: provide reportId + issueId "
+                            + "(preferred, from GetOptReport) or an explicit eventId");
+        }
+
+        // SECURITY (ownership gate BEFORE the side-effecting mint): the report
+        // must belong to targetAgentId. parseLong wraps NumberFormatException as
+        // IllegalArgumentException so a non-numeric targetAgentId is a clean
+        // validation error (not a generic 500).
+        Long target = parseLong(targetAgentId);
+        FlywheelRunEntity report = flywheelRunRepository.findById(reportId)
+                .orElseThrow(() -> new NoSuchElementException("opt-report not found: " + reportId));
+        Long reportAgentId = report.getAgentId();
+        if (reportAgentId == null || !reportAgentId.equals(target)) {
+            throw new IllegalArgumentException(
+                    "report " + reportId + " belongs to agent " + reportAgentId
+                            + " but targetAgentId=" + target + " — cannot anchor a candidate "
+                            + "for one agent to another agent's report");
+        }
+
+        OptReportToEventBridge.ConvertResult result =
+                optReportToEventBridge.convertIssueToEvent(reportId, issueId);
+        return result.event().getId();
+    }
+
+    /**
+     * Skill surface needs patternId + ownerId for the existing
+     * {@code createDraftFromAttribution} signature. patternId is an
+     * audit/naming value only (not a hard FK) — report-derived events have no
+     * pattern, so we synthesise {@code patternId = eventId}. ownerId defaults to
+     * the system user. A deterministic suggested name mirrors
+     * {@code AttributionApprovalService.dispatchSkillSurface}.
      */
     private String generateSkillDraft(Map<String, Object> input, String issue, Long eventId) {
         Long patternId = parseLong(input.get("patternId"));
         if (patternId == null) {
-            throw new IllegalArgumentException(
-                    "patternId is required for surface=skill (the originating pattern id from the report)");
+            patternId = eventId;   // synth — audit/naming only, not a hard FK
         }
-        Long ownerId = ownerIdOrNull(input);
-        if (ownerId == null) {
-            throw new IllegalArgumentException(
-                    "ownerId is required for surface=skill (owner user id for the new skill draft)");
-        }
+        Long ownerId = ownerIdOrDefault(input);
         String suggestedSkillName = "EvolveSkill" + patternId + "_" + eventId;
         SkillDraftEntity draft = skillDraftService.createDraftFromAttribution(
                 eventId,
@@ -235,8 +342,9 @@ public class GenerateCandidateTool implements Tool {
         return draft.getId();
     }
 
-    private Long ownerIdOrNull(Map<String, Object> input) {
-        return parseLong(input.get("ownerId"));
+    private Long ownerIdOrDefault(Map<String, Object> input) {
+        Long ownerId = parseLong(input.get("ownerId"));
+        return ownerId != null ? ownerId : SYSTEM_USER_ID;
     }
 
     private static Long parseLong(Object value) {

@@ -60,6 +60,10 @@ public class EvolveController {
     static final int MIN_MAX_ITER = 1;
     static final int MAX_MAX_ITER = 50;
 
+    /** reportId is embedded into the LLM kickoff prompt — restrict to id-safe chars. */
+    static final java.util.regex.Pattern REPORT_ID_PATTERN =
+            java.util.regex.Pattern.compile("^[A-Za-z0-9-]{1,64}$");
+
     /**
      * OPT-REPORT-V1 reused window (the evolve run reuses the FlywheelRun time
      * window columns; the orchestrator itself scopes the report via the
@@ -97,12 +101,27 @@ public class EvolveController {
      */
     @PostMapping("/agents/{agentId}/run")
     public ResponseEntity<?> run(@PathVariable("agentId") Long agentId,
-                                 @RequestParam(value = "maxIter", required = false) Integer maxIterRaw) {
+                                 @RequestParam(value = "maxIter", required = false) Integer maxIterRaw,
+                                 @RequestParam(value = "reportId", required = false) String reportIdRaw) {
         if (agentId == null || agentId <= 0L) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "agentId must be a positive long; got " + agentId);
         }
         int maxIter = clampMaxIter(maxIterRaw);
+        // Optional pre-existing completed opt-report to drive the loop from. When
+        // present the orchestrator reads it via GetOptReport and SKIPS the live
+        // RunWorkflow('opt-report') step (focused-loop path). When absent the
+        // orchestrator runs opt-report itself (full-chain path).
+        //
+        // SECURITY: reportId is embedded verbatim into the orchestrator kickoff
+        // prompt, so it must be format-validated (FlywheelRun ids are UUIDs) to
+        // block prompt-injection via crafted punctuation/instructions. Reject
+        // anything outside [A-Za-z0-9-], length 1..64, with a 400.
+        String reportId = (reportIdRaw == null || reportIdRaw.isBlank()) ? null : reportIdRaw.trim();
+        if (reportId != null && !REPORT_ID_PATTERN.matcher(reportId).matches()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "reportId must match " + REPORT_ID_PATTERN.pattern() + "; got: " + reportId);
+        }
 
         // Pre-check: the target agent (being evolved) exists. Like
         // FlywheelController, we don't gate on agent_type — operators may evolve
@@ -137,6 +156,9 @@ public class EvolveController {
         inputJson.put("targetAgentId", agentId);
         inputJson.put("maxIter", maxIter);
         inputJson.put("orchestratorAgentId", orchestratorAgent.getId());
+        if (reportId != null) {
+            inputJson.put("reportId", reportId);
+        }
         FlywheelRunEntity run = flywheelRunService.startRun(
                 FlywheelRunEntity.LOOP_KIND_EVOLVE,
                 FlywheelRunEntity.TRIGGER_SOURCE_API,
@@ -153,17 +175,20 @@ public class EvolveController {
         // the orchestrator session id (mirrors OptReportService's pattern).
         flywheelRunService.attachGeneratorSession(run.getId(), orchestratorSession.getId());
 
+        String reportClause = reportId != null
+                ? "已提供现成报告 reportId=" + reportId + "（已 completed）：直接 GetOptReport(reportId=" + reportId
+                        + ", expectedAgentId=" + agentId + ") 读 issue，跳过 RunWorkflow。"
+                : "先 RunWorkflow opt-report 拿归因 report（runId 即 reportId），再 GetOptReport 读 issue。";
         String kickoffPrompt = String.format(
-                "targetAgentId=%d evolveRunId=%s maxIter=%d。请按你的系统提示驱动自动进化 loop："
-                        + "先 RunWorkflow opt-report 拿归因 report，再对每个 issue 迭代"
-                        + "（GenerateCandidate → TriggerAbEval（带 evolveRunId=%s）→ GetAbResult 轮询"
-                        + " → 科学判断是否保留 → RecordIteration），最多 %d 轮，"
-                        + "末尾汇总 kept 候选交人定夺，不要直接 promote。",
-                agentId, run.getId(), maxIter, run.getId(), maxIter);
+                "targetAgentId=%d evolveRunId=%s maxIter=%d。请按你的系统提示驱动自动进化 loop：%s"
+                        + "再对每个 issue 迭代（GenerateCandidate（带 reportId+issueId）→ "
+                        + "TriggerAbEval（带 evolveRunId=%s）→ GetAbResult 轮询 → 科学判断是否保留 → "
+                        + "RecordIteration），最多 %d 轮，末尾汇总 kept 候选交人定夺，不要直接 promote。",
+                agentId, run.getId(), maxIter, reportClause, run.getId(), maxIter);
         chatService.chatAsync(orchestratorSession.getId(), kickoffPrompt, SYSTEM_USER_ID);
 
-        log.info("[Evolve] evolve run started: evolveRunId={} targetAgentId={} orchestratorSessionId={} maxIter={}",
-                run.getId(), agentId, orchestratorSession.getId(), maxIter);
+        log.info("[Evolve] evolve run started: evolveRunId={} targetAgentId={} orchestratorSessionId={} maxIter={} reportId={}",
+                run.getId(), agentId, orchestratorSession.getId(), maxIter, reportId);
 
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("evolveRunId", run.getId());
