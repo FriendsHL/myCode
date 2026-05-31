@@ -67,6 +67,27 @@
   transform: translateY(1px);
 }
 
+/* Header can hold multiple trigger actions side-by-side. */
+.ae-header-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Secondary action (Evolve agent) — outlined, lets the primary workflow CTA lead. */
+.ae-trigger-btn--ghost {
+  color: var(--accent-primary);
+  background: transparent;
+  border-color: color-mix(in srgb, var(--accent-primary) 45%, transparent);
+}
+
+.ae-trigger-btn--ghost:hover {
+  filter: none;
+  background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
+  border-color: var(--accent-primary);
+}
+
 .ae-error {
   padding: 10px 14px;
   font-size: 13px;

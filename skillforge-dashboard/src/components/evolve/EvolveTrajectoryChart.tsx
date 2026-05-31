@@ -85,18 +85,31 @@ const EvolveTrajectoryChart: React.FC<EvolveTrajectoryChartProps> = ({
   height = 340,
 }) => {
   const option = useMemo((): EChartsOption => {
-    if (runs.length === 0) {
+    // Only plot runs that recorded at least one iteration. Empty runs (errored
+    // early / still running before any RecordIteration) would otherwise add a
+    // legend entry with no line — and since they share the agent name, several
+    // empty runs of the same agent look like "several Research Agents".
+    const plotted = runs.filter((r) => (r.iterations?.length ?? 0) > 0);
+    if (plotted.length === 0) {
       return {};
     }
 
-    const series = runs.map((run, idx) => buildSeries(run, idx));
+    const series = plotted.map((run, idx) => buildSeries(run, idx));
+
+    // Pad the x-axis to [0, maxIter+1] so points never sit on the chart edge.
+    // With a single iteration (point at x=1) the axis is 0..2, centering it;
+    // multi-iteration runs get symmetric breathing room on both sides.
+    const maxIter = Math.max(
+      1,
+      ...plotted.flatMap((r) => r.iterations.map((it) => it.iteration)),
+    );
 
     return {
       backgroundColor: 'transparent',
       animation: true,
       animationDuration: 400,
       legend: {
-        show: runs.length > 1,
+        show: plotted.length > 1,
         top: 4,
         right: 8,
         textStyle: { color: 'var(--text-secondary, #5d5952)', fontSize: 12 },
@@ -105,7 +118,7 @@ const EvolveTrajectoryChart: React.FC<EvolveTrajectoryChartProps> = ({
         itemHeight: 10,
       },
       grid: {
-        top: runs.length > 1 ? 48 : 24,
+        top: plotted.length > 1 ? 48 : 24,
         right: 24,
         bottom: 48,
         left: 56,
@@ -116,6 +129,8 @@ const EvolveTrajectoryChart: React.FC<EvolveTrajectoryChartProps> = ({
         nameLocation: 'middle',
         nameGap: 28,
         nameTextStyle: { color: 'var(--text-tertiary, #7a7770)', fontSize: 12 },
+        min: 0,
+        max: maxIter + 1,
         minInterval: 1,
         axisLine: { lineStyle: { color: 'var(--border-subtle, #e2ded3)' } },
         axisTick: { lineStyle: { color: 'var(--border-subtle, #e2ded3)' } },
@@ -188,6 +203,24 @@ const EvolveTrajectoryChart: React.FC<EvolveTrajectoryChartProps> = ({
     return (
       <div className="etc-empty" data-testid="evolve-trajectory-chart-empty">
         Select an evolve run to view its trajectory.
+      </div>
+    );
+  }
+
+  // A run is selected but none of the selected runs recorded any iteration — show a
+  // clear message instead of a blank chart. A run only records points after it
+  // completes an A/B-evaluated iteration; runs that errored early (max_loops /
+  // duration / rate-limit before RecordIteration) have an empty trajectory.
+  const totalPoints = runs.reduce(
+    (n, r) => n + (r.iterations?.length ?? 0),
+    0,
+  );
+  if (totalPoints === 0) {
+    return (
+      <div className="etc-empty" data-testid="evolve-trajectory-chart-noiter">
+        No iterations recorded for the selected run{runs.length > 1 ? 's' : ''} yet.
+        A run plots points only after it completes an A/B-evaluated iteration —
+        runs that errored early (or are still running) have none.
       </div>
     );
   }

@@ -109,3 +109,40 @@ export const listEvolveRuns = (agentId: number, limit = 20) =>
  */
 export const getEvolveRun = (evolveRunId: string) =>
   api.get<EvolveRunDetail>(`/evolve/runs/${evolveRunId}`);
+
+// ─────────────────────────── trigger ───────────────────────────────────────
+
+/** Body returned by POST /api/evolve/agents/{agentId}/run (202 ACCEPTED). */
+export interface EvolveTriggerResult {
+  evolveRunId: string;
+  sessionId: string;
+  agentId: number;
+  agentName: string;
+  maxIter: number;
+  /** Always 'running' on a fresh trigger. */
+  status: string;
+}
+
+/**
+ * Trigger an agent-driven evolve run.
+ * `POST /api/evolve/agents/{agentId}/run?reportId=&maxIter=` (no body; params only).
+ *
+ * @param agentId  The agent to evolve.
+ * @param opts.reportId  Optional pre-existing completed opt-report id to drive
+ *                       the loop from (focused-loop path; skips the live
+ *                       opt-report workflow). Server 400s on a malformed id.
+ * @param opts.maxIter   Optional iteration ceiling (server clamps to [1, 50]).
+ *
+ * Errors: 404 (agent missing), 409 (an evolve run already in flight for the
+ * agent), 400 (malformed reportId).
+ */
+export const triggerEvolveRun = (
+  agentId: number,
+  opts?: { reportId?: string; maxIter?: number },
+) =>
+  api.post<EvolveTriggerResult>(`/evolve/agents/${agentId}/run`, null, {
+    params: {
+      ...(opts?.reportId ? { reportId: opts.reportId } : {}),
+      ...(opts?.maxIter != null ? { maxIter: opts.maxIter } : {}),
+    },
+  });

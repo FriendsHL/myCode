@@ -12,6 +12,7 @@ import AnomalyPanel from '../components/autoevolving/AnomalyPanel';
 import { usePendingApprovals } from '../hooks/usePendingApprovals';
 import '../components/autoevolving/autoevolving.css';
 import EvolveTrajectoryPanel from '../components/evolve/EvolveTrajectoryPanel';
+import EvolveTriggerModal from '../components/evolve/EvolveTriggerModal';
 
 // Lazy-load the workflow runs panel so its react-flow dependency stays in a
 // split chunk (matches Insights.tsx; avoids bundling react-flow into the main
@@ -35,7 +36,12 @@ const AutoEvolving: React.FC = () => {
   const navigate = useNavigate();
   const { userId } = useAuth();
   const [triggerOpen, setTriggerOpen] = useState(false);
+  const [evolveOpen, setEvolveOpen] = useState(false);
   const dagRef = useRef<HTMLDivElement | null>(null);
+  const evolveRef = useRef<HTMLDivElement | null>(null);
+
+  const scrollToEvolve = () =>
+    evolveRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
   // ── Overview snapshot (KPI + reports + anomalies) ──
   const {
@@ -96,14 +102,24 @@ const AutoEvolving: React.FC = () => {
             Self-improvement signals, workflow runs, and human-in-the-loop gates.
           </p>
         </div>
-        <button
-          type="button"
-          className="ae-trigger-btn"
-          onClick={() => setTriggerOpen(true)}
-          data-testid="ae-trigger-btn"
-        >
-          Trigger workflow ▸
-        </button>
+        <div className="ae-header-actions">
+          <button
+            type="button"
+            className="ae-trigger-btn ae-trigger-btn--ghost"
+            onClick={() => setEvolveOpen(true)}
+            data-testid="ae-evolve-btn"
+          >
+            Evolve agent ▸
+          </button>
+          <button
+            type="button"
+            className="ae-trigger-btn"
+            onClick={() => setTriggerOpen(true)}
+            data-testid="ae-trigger-btn"
+          >
+            Trigger workflow ▸
+          </button>
+        </div>
       </header>
 
       {overviewErrMsg && (
@@ -156,12 +172,20 @@ const AutoEvolving: React.FC = () => {
 
       <AnomalyPanel anomalies={recentAnomalies} loading={overviewLoading} />
 
-      <EvolveTrajectoryPanel />
+      <div ref={evolveRef}>
+        <EvolveTrajectoryPanel />
+      </div>
 
       <TriggerWorkflowModal
         open={triggerOpen}
         onClose={() => setTriggerOpen(false)}
         onTriggered={scrollToDag}
+      />
+
+      <EvolveTriggerModal
+        open={evolveOpen}
+        onClose={() => setEvolveOpen(false)}
+        onTriggered={scrollToEvolve}
       />
     </div>
   );

@@ -234,3 +234,29 @@
   font-size: 13px;
   color: var(--text-tertiary);
 }
+
+/* ───────────────── evolve trigger modal ─────────────────────────────────── */
+
+.evolve-trigger-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.evolve-trigger-label {
+  margin-top: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.evolve-trigger-label:first-child {
+  margin-top: 0;
+}
+
+.evolve-trigger-hint {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-tertiary);
+}

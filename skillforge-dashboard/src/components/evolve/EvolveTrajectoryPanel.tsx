@@ -14,22 +14,35 @@
  * because this is a trajectory history view, not a live feed.
  */
 import React, { useState, useCallback } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueries } from '@tanstack/react-query';
+import { Select } from 'antd';
 import { listEvolveRuns, getEvolveRun } from '../../api/evolve';
 import type { EvolveRunSummary, EvolveRunDetail } from '../../api/evolve';
+import { getAgents } from '../../api/index';
 import EvolveRunList from './EvolveRunList';
 import EvolveTrajectoryChart from './EvolveTrajectoryChart';
 import './evolve.css';
 
 const MAX_OVERLAY_RUNS = 4;
 
+interface AgentLite {
+  id: number;
+  name: string;
+}
+
 const EvolveTrajectoryPanel: React.FC = () => {
-  // Agent ID controlled input
-  const [agentIdInput, setAgentIdInput] = useState('');
-  // The committed agent ID (on Load click)
+  // The selected agent (drives the run list). Selecting from the dropdown
+  // commits immediately — no separate Load step.
   const [committedAgentId, setCommittedAgentId] = useState<number | null>(null);
   // Selected run IDs for charting (up to MAX_OVERLAY_RUNS)
   const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
+
+  // ── agents for the picker ──
+  const { data: agents, isLoading: agentsLoading } = useQuery({
+    queryKey: ['agents', 'evolve-trajectory'],
+    queryFn: () => getAgents().then((r) => (r.data as AgentLite[]) ?? []),
+    staleTime: 60_000,
+  });
 
   // ── list runs ──
   const {
@@ -50,35 +63,28 @@ const EvolveTrajectoryPanel: React.FC = () => {
   const runs = runsEnvelope?.items ?? [];
 
   // ── detail queries for each selected run (parallel) ──
-  const selectedRunQueries = selectedRunIds.map((id) =>
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    useQuery({
+  // MUST use useQueries (a single, stable hook) — NOT selectedRunIds.map(useQuery),
+  // which calls a variable number of hooks per render and violates the Rules of
+  // Hooks: selecting a run changes the hook count → React's areHookInputsEqual
+  // reads `.length` on undefined prevDeps → "Cannot read properties of undefined
+  // (reading 'length')" crash the moment a run row is clicked.
+  const selectedRunQueries = useQueries({
+    queries: selectedRunIds.map((id) => ({
       queryKey: ['evolve-run-detail', id],
       queryFn: () => getEvolveRun(id).then((r) => r.data),
-      enabled: selectedRunIds.includes(id),
       staleTime: 30_000,
-    }),
-  );
+    })),
+  });
 
   const detailsLoading = selectedRunQueries.some((q) => q.isLoading);
   const detailRuns: EvolveRunDetail[] = selectedRunQueries
     .filter((q) => q.data != null)
     .map((q) => q.data as EvolveRunDetail);
 
-  const handleLoad = useCallback(() => {
-    const parsed = parseInt(agentIdInput, 10);
-    if (!isNaN(parsed) && parsed > 0) {
-      setCommittedAgentId(parsed);
-      setSelectedRunIds([]);
-    }
-  }, [agentIdInput]);
-
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLInputElement>) => {
-      if (e.key === 'Enter') handleLoad();
-    },
-    [handleLoad],
-  );
+  const handleSelectAgent = useCallback((agentId: number) => {
+    setCommittedAgentId(agentId);
+    setSelectedRunIds([]);
+  }, []);
 
   const handleSelectRun = useCallback((runId: string) => {
     setSelectedRunIds((prev) => {
@@ -111,32 +117,27 @@ const EvolveTrajectoryPanel: React.FC = () => {
         )}
       </div>
 
-      {/* Agent ID input */}
+      {/* Agent picker */}
       <div className="etraj-agent-select">
-        <label className="etraj-agent-label" htmlFor="etraj-agent-id-input">
-          Agent ID
+        <label className="etraj-agent-label" htmlFor="etraj-agent-select">
+          Agent
         </label>
-        <input
-          id="etraj-agent-id-input"
-          className="etraj-agent-input"
-          type="number"
-          min="1"
-          placeholder="e.g. 42"
-          value={agentIdInput}
-          onChange={(e) => setAgentIdInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          aria-label="Agent ID"
-          data-testid="etraj-agent-id-input"
+        <Select
+          id="etraj-agent-select"
+          className="etraj-agent-dropdown"
+          style={{ minWidth: 240 }}
+          showSearch
+          optionFilterProp="label"
+          placeholder={agentsLoading ? 'Loading agents…' : 'Select an agent'}
+          loading={agentsLoading || runsLoading}
+          value={committedAgentId ?? undefined}
+          onChange={handleSelectAgent}
+          options={(agents ?? []).map((a) => ({
+            label: `${a.name} (#${a.id})`,
+            value: a.id,
+          }))}
+          data-testid="etraj-agent-select"
         />
-        <button
-          type="button"
-          className="etraj-load-btn"
-          onClick={handleLoad}
-          disabled={agentIdInput.trim() === '' || runsLoading}
-          data-testid="etraj-load-btn"
-        >
-          Load
-        </button>
       </div>
 
       {runsErrMsg && (
