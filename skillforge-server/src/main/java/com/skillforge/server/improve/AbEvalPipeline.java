@@ -64,6 +64,14 @@ public class AbEvalPipeline {
     private final ChatEventBroadcaster broadcaster;
     private final ExecutorService loopExecutor;
     private final long scenarioTimeoutMs;
+    /**
+     * Max A/B scenarios run concurrently (each spawns an inner engine.run, so the
+     * abEvalLoopExecutor pool must hold ~2× this + buffer — kept in sync in
+     * AbEvalExecutorConfig). Configurable: a fresh A/B with no cached baseline is
+     * dominated by scenario wall-clock, so more parallelism = faster A/B when the
+     * provider's rate limit allows (429s are retried). Default 3 (now configurable; was a hardcoded 3). Higher hurts on a rate-limited provider — more parallel calls = more 429..
+     */
+    private final int scenarioConcurrency;
     // EVAL-DATASET-LAYER V1: nullable so the existing unit test ctor
     // (AbEvalPipelineAttributionBaselineTest) doesn't have to wire these — the
     // new dataset-version path that uses them is exercised by a separate test.
@@ -84,7 +92,7 @@ public class AbEvalPipeline {
                            @Value("${skillforge.flywheel.ab-eval.scenario-timeout-ms:120000}") long scenarioTimeoutMs) {
         this(scenarioLoader, sandboxFactory, evalEngineFactory, evalJudgeTool,
              promptAbRunRepository, promptVersionRepository, agentService, objectMapper,
-             broadcaster, loopExecutor, scenarioTimeoutMs, null, null);
+             broadcaster, loopExecutor, scenarioTimeoutMs, null, null, 3);
     }
 
     /**
@@ -105,7 +113,9 @@ public class AbEvalPipeline {
                            @Qualifier("abEvalLoopExecutor") ExecutorService loopExecutor,
                            @Value("${skillforge.flywheel.ab-eval.scenario-timeout-ms:120000}") long scenarioTimeoutMs,
                            EvalDatasetService evalDatasetService,
-                           EvalDatasetVersionRepository evalDatasetVersionRepository) {
+                           EvalDatasetVersionRepository evalDatasetVersionRepository,
+                           @Value("${skillforge.flywheel.ab-eval.scenario-concurrency:3}") int scenarioConcurrency) {
+        this.scenarioConcurrency = Math.max(1, scenarioConcurrency);
         this.scenarioLoader = scenarioLoader;
         this.sandboxFactory = sandboxFactory;
         this.evalEngineFactory = evalEngineFactory;
@@ -347,7 +357,7 @@ public class AbEvalPipeline {
         // submit 49 scenarios 撑爆 + 内部 runSingleScenario.submit(engine.run) 跟
         // 自己抢 pool → cascading reject (Event 122 第 6 次 retry 暴露)。
         // Semaphore cap=3 限并发：3 outer + 3 inner = 6 ≤ 8 pool max，留 2 buffer。
-        final Semaphore concurrency = new Semaphore(3);
+        final Semaphore concurrency = new Semaphore(scenarioConcurrency);
 
         for (EvalScenarioEntity entity : scenarios) {
             EvalScenario scenario = toEvalScenario(entity);
@@ -500,7 +510,7 @@ public class AbEvalPipeline {
 
         // Mirror the prompt-surface fan-out: cap=3 Semaphore + loopExecutor
         // (4 core / 8 max). 3 outer × 2 inner = 6 ≤ 8 with 2 buffer.
-        final Semaphore concurrency = new Semaphore(3);
+        final Semaphore concurrency = new Semaphore(scenarioConcurrency);
         List<CompletableFuture<AbScenarioResult>> futures = new ArrayList<>(scenarios.size());
 
         for (EvalScenarioEntity entity : scenarios) {
